@@ -1,0 +1,40 @@
+{
+  "name": "dsh-coordinator",
+  "version": "0.1.0",
+  "description": "Coordinator/worker orchestration for DeepSeek Harness: protocol skills, project bootstrap, and a delivery board.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./src/host": "./src/host/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "src/**",
+    "skills/**",
+    "locale/*.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check index.js && node --test tests/*.test.js"
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.0 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "orchestration",
+    "coordinator"
+  ],
+  "license": "MIT"
+}

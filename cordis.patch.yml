@@ -1,0 +1,8 @@
+# dsh-coordinator bundle 的插件层。
+# 每一行是一个 Cordis 插件；`name` 指向本包内的模块，由 Node 解析。
+- insert:
+    - id: coordinator-host
+      name: 'dsh-coordinator/src/host'
+      inject:
+        - skills
+        - tools
