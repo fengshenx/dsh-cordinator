@@ -65,3 +65,20 @@ test('init_project 拒绝不存在的目录', async () => {
   const tool = createInitProjectTool({ conventionsPath: '/nonexistent/conventions.md' })
   await assert.rejects(() => tool.execute({ path: '/nonexistent/dir' }, {}), /目标目录不存在/)
 })
+
+test('dryRun 类型不符时报错，不静默当成要写入', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-coordinator-init-'))
+  try {
+    const conventionsPath = join(directory, 'conventions.md')
+    await writeFile(conventionsPath, CONVENTIONS, 'utf8')
+    const tool = createInitProjectTool({ conventionsPath })
+    await assert.rejects(
+      () => tool.execute({ path: directory, dryRun: 'true' }, {}),
+      /dryRun 必须是布尔值/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

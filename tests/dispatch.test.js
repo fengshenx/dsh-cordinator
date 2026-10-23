@@ -320,3 +320,12 @@ test('未启用 subagents 服务时派工明确报错', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('派工工具拒绝非字符串的 label，不静默换成任务前缀', async () => {
+  const dispatcher = { dispatch: async () => ({ childId: 'child-1', label: 'x' }) }
+  const tool = createSpawnWorkerTool({ dispatcher })
+  await assert.rejects(
+    () => tool.execute({ task: '做一件事', label: 7 }, { signal: new AbortController().signal, agent: createParent('p', []) }),
+    /label 必须是字符串/,
+  )
+})

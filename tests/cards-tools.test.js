@@ -233,3 +233,86 @@ test('只带 id 的改卡不递增版本，不作废他人持有的 expectedRevi
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('建卡与改卡工具拒绝类型不符的规格', async () => {
+  const { home, tools } = await createTools()
+  try {
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', spec: 123 }, exec),
+      /spec 必须是字符串/,
+    )
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await assert.rejects(
+      () => tools.update_card.execute({ id: created.card.id, spec: 123 }, exec),
+      /spec 必须是字符串/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('改卡工具拒绝非数字的排序序号', async () => {
+  const { home, tools } = await createTools()
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await assert.rejects(
+      () => tools.update_card.execute({ id: created.card.id, sortOrder: '1' }, exec),
+      /sortOrder 必须是数字/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('建卡与改卡工具拒绝类型不符的检查点字段', async () => {
+  const { home, tools } = await createTools()
+  try {
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', checkpoint: { summary: 42 } }, exec),
+      /checkpoint.summary 必须是字符串/,
+    )
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await assert.rejects(
+      () => tools.update_card.execute({ id: created.card.id, checkpoint: { blocker: 1 } }, exec),
+      /checkpoint.blocker 必须是字符串/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('建卡工具拒绝类型不符的链接字段', async () => {
+  const { home, tools } = await createTools()
+  try {
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', links: [{ label: 'MR', url: 42 }] }, exec),
+      /url 必须是字符串/,
+    )
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', links: [{ label: 'MR', purpose: 1 }] }, exec),
+      /purpose 必须是字符串/,
+    )
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', links: [{ label: 'MR', id: 7 }] }, exec),
+      /id 必须是非空字符串/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('查卡工具拒绝非法状态与非布尔的 includeArchived', async () => {
+  const { home, tools } = await createTools()
+  try {
+    await assert.rejects(
+      () => tools.list_cards.execute({ status: 'archivedd' }, exec),
+      /status 非法/,
+    )
+    await assert.rejects(
+      () => tools.list_cards.execute({ includeArchived: 'true' }, exec),
+      /includeArchived 必须是布尔值/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})

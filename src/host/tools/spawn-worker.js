@@ -58,6 +58,11 @@ export function createSpawnWorkerTool({ dispatcher }) {
       if (typeof input.task !== 'string' || input.task.trim() === '') {
         throw new Error('spawn_worker: task 不能为空')
       }
+      // 入参 schema 在运行时不生效：label 传非字符串会被静默换成 task 前缀，
+      // 任务标识与调用方以为的不一致。
+      if (input.label !== undefined && typeof input.label !== 'string') {
+        throw new Error('spawn_worker: label 必须是字符串')
+      }
       const parent = exec.agent
       if (parent === undefined) {
         throw new Error('spawn_worker: 需要调用方 agent 才能派工')
