@@ -169,12 +169,17 @@ Telov 的 `SKILL.md` 按阶段调用 15 个专项技能。这些技能**内容�
 
 | Telov | dsh 侧 | 备注 |
 |---|---|---|
-| `SpawnWorker` | team 的 teammate 创建（服务 API `spawnTeammate()`） | 模型可见工具名以 `dsh-experimental-tool-agent-team` 为准，本方案不臆造 |
-| `MessageWorker` | team `sendMessage()` → 目标 inbox | |
-| `ListWorkers` | team roster | |
-| `StopWorker` | team `interrupt()`（Lead-only） | |
-| `ReadWorkerTurn` | 无直接对应 | 走 session 投影 / 日志读取 |
-| `CreateCard` / `UpdateCard` / `ListCards` | **自建 Card 存储域** | dsh team 任务板覆盖「任务 + 依赖 + owner + CAS」，但**不覆盖 slot→session 绑定**（一个卡同时挂 dev 与 review 两个会话）、links、checkpoint、编号不复用。人类可见的交付看板与机器侧任务板职责必须分开 |
+| `SpawnWorker` | **自建 `spawn_worker`** | 走 `ctx.subagents.startActivation` + `delivery:'caller'`，派完即返回子会话 id，不等结果；dsh 的 `subagent` 工具是阻塞式，不适合并行派工 |
+| `MessageWorker` | 原生 `send_message` | `agent_id` 即子会话 id（父子模型） |
+| `ListWorkers` | 原生 `list_agents` | 列调用者派出的子会话，含 id/label/状态 |
+| `StopWorker` | 原生 `interrupt_agent` | 对子会话发中断信号，不等待其停下 |
+| `ReadWorkerTurn` | 完成通知的产物摘要 | 无直接对应；深读可用 `send_message` 向该 worker 追问。`session_event_read` 属 experimental 包，默认不启用 |
+| `CreateCard` / `UpdateCard` / `ListCards` | **自建 `create_card` / `update_card` / `list_cards`** | dsh team 任务板覆盖「任务 + 依赖 + owner + CAS」，但**不覆盖 slot→session 绑定**（一个卡同时挂 dev 与 review 两个会话）、links、checkpoint、编号不复用。人类可见的交付看板与机器侧任务板职责必须分开 |
+
+**两套同名工具的辨析**（实测确认）：dsh 有两处 `send_message` / `interrupt_agent` / `list_agents`——
+
+- `@deepseek-ai/dsh-tool-subagent-control`（base bundle 默认启用）：**父子模型**，`agent_id` 是子会话 id，作用于调用者派出的子会话。**本方案用这套。**
+- `@deepseek-ai/dsh-tool-agent-team`（experimental，base bundle 未启用）：**同伴模型**，target 是 teammate 名字，作用于 team 成员。与本流程的执行者不是同一批，不要混用。
 
 ### 4.5 初始化 skill（承载原 AGENTS.md 仓库约定）
 
@@ -221,16 +226,27 @@ dsh team 的消息是 inbox 投递：target 睡着时排队，等它自己醒来
 
 ### 5.3 Card 存储域
 
-字段（对齐 `candyapp/packages/shared/src/types/task-card.ts:51`）：
+**P2 决策：不进 dsh storage domain，改用自建落盘**（`src/host/cards/store.js`）。
 
-- `id`、`number`（项目内递增，不复用）、`title`、`spec`
+storage domain 需要 zod schema + `@deepseek-ai/dsh-storage-domain` peer 依赖，违反「bundle 零 dsh 内部依赖」原则；自建与 P1 的通知队列同构（原子写 + 读-改-写串行化），落在 `$DSH_HOME/dsh-coordinator/cards.json`。
+
+字段（对齐 `candyapp/packages/shared/src/types/task-card.ts:51`，去掉项目语义）：
+
+- `id`、`number`（**全局**递增，不复用）、`title`、`spec`
 - `status`: `active | done | archived`（`archived` 终态）
-- `projectId?`
 - `slots`: `{ dev?: {sessionId}, review?: {sessionId} }` —— dsh team 不覆盖的部分，自建
-- `links[]`、`checkpoint`、`revision`、`createdAt/updatedAt`
-- `nextAction`（待决事项）
+- `links[]`（条目 id 由宿主补）、`checkpoint`、`revision`、`sortOrder?`、`doneAt?`、`createdAt/updatedAt`
 
-并发：`expectedRevision` 乐观并发（Telov 已有，team 任务板也有 CAS，语义一致）。Card 写入口串行化，避免同会话内多写竞争。
+领域规则（实测通过）：
+
+- 编号全局递增永不复用（`counter` 字段持久化）
+- 每次内容更新 `revision + 1`；`expectedRevision` 不符即报错且**不落盘**
+- `active ⇄ done` 可逆：切 done 记 `doneAt`，回 active 清除
+- `archived` 终态，不可再改
+- `checkpoint` 的 `updatedBy`/`updatedAt` 由**宿主补写**（`updatedBy` 取调用方 agent 的 session id），调用方只能提供 summary/nextAction/blocker/outputVersion
+- 库文件损坏时备份原文件并写回空库（不能只备份——否则存储文件就此消失）
+
+**编号作用域的迁移代价**：当前是全局编号（无项目实体）。将来若引入项目实体并要求按项目编号，需迁移存量卡片的编号作用域，此代价记入 Agent Note。
 
 ### 5.4 项目存储域
 
@@ -243,6 +259,14 @@ dsh team 的消息是 inbox 投递：target 睡着时排队，等它自己醒来
 - 要「多项目列表 + 切换 UI」（Telov 现状）→ 建实体 + 项目选择面板。
 
 **建议**：P0–P2 不建实体，先用目录级配置跑通；P3 按实际需求决定。**注意 dsh 已有 profile 概念**（`$DSH_HOME/profiles/<name>`，插件组合层），若项目的诉求是「一套插件组合 + 一个协调者」，profile 可能已经够用——**P3 开工前先核对这一点，避免自建重复概念**。
+
+### 5.5 看板 UI
+
+**P2 决策：先落 host 侧数据通道，client 侧 UI 单列**（见第 6 节 P2 阶段）。
+
+数据通道（已实测）：工具的 `output.render` 只给模型看文本，客户端拿不到结构化数据；改用 `output.presentationMeta` 把卡片投影成 `meta`——它随 `tool/result` 事件持久化进 session log。实测确认 `tool/result` 事件的 `meta` 携带完整卡片对象，`content` 仍是给模型的精简视图。客户端据此重建看板。
+
+信号灯（stale/停滞判定）在 Telov 是 renderer 纯投影（`board-projection.ts:189`），零存储，可整段直搬；dsh 侧同样不落盘——状态由会话活性实时投影。
 
 ### 5.5 看板 UI
 
@@ -337,6 +361,23 @@ dsh 侧实现：
 - 卡片槽位能绑定到实际会话（dev/review）
 - 并发改卡触发 revision 冲突并给出可读错误
 - 信号灯与 Telov 语义一致（用同一组场景对照）
+
+**P2 验收结果（2026-10-23，host 侧）**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 卡片存储域与领域规则 | 通过 | `src/host/cards/store.js`；49 例单测全绿（编号不复用、revision 递增、archived 终态、done⇄active 的 doneAt、检查点宿主补写、库损坏备份并写回空库、并发建卡不重号） |
+| 模型侧卡片工具 | 通过 | sdk profile + mock LLM 实测：模型工具列表含 `create_card`/`update_card`/`list_cards`，并实际调用成功 |
+| 建卡 | 通过 | 模型调 `create_card` → 落盘 `#1「实现派工」`，`counter: 1`，`revision: 0`，`status: active` |
+| 改卡 | 通过 | 模型调 `update_card` → `revision: 0 → 1`，`status: done` 且 `doneAt` 已记；`checkpoint.updatedBy` 被宿主补成调用方会话 id |
+| 并发改卡触发版本冲突 | 通过 | 带过期 `expectedRevision: 0` 调用 → 报错「卡片版本冲突：期望 0，当前 1；请重新读取卡片后判断」，且**未落盘**（revision 仍 1、title 未变） |
+| 查卡 | 通过 | `list_cards` 返回精简视图「共 1 张卡片：#1 实现派工（done）」给模型；归档卡默认排除，`includeArchived` 才返回 |
+| 客户端取数通道 | 通过 | 工具的 `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化；实测事件 `meta` 携带完整卡片对象，`content` 仍是给模型的精简文本 |
+| 右栏看板 Tab（client 侧） | **未完成** | tab 注册与 slot body 都在浏览器侧（`ctx.sidebarRightTabs` / `ctx.slots` 是 client 服务），需引入 tsdown 构建链产出 `lib/client.js` 并声明 `dsh.client`；另需解决「tab body 如何拿到会话的 tool-result 节点」——已确认 `ToolResultNode.meta` 携带卡片数据，但取用 API 待摸清 |
+| 信号灯投影 | **未完成** | 依赖看板 UI 一并落地（纯投影，不落盘） |
+| 槽位绑定到实际会话 | **未完成** | `slots` 字段与改卡通路已就绪；与「执行者名录」的绑定规则待 P3 角色槽位一并定 |
+
+**P2 结论**：host 侧（存储域、工具、协议层映射、数据通道）已闭环并实测通过；client 侧看板 UI 仍待实现，其构建链与状态取用是主要成本。
 
 ### P3 · 项目作用域与角色槽位（5–8 人日）
 
