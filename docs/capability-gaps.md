@@ -120,6 +120,41 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：后台编排只适用于长驻组合（web / desktop / sdk）；headless 的一次性任务模式不适用——这是宿主语义，不是本 bundle 的缺陷。
 
+### 13. 两套同名工具：父子模型与同伴模型
+
+**实测**：dsh 有两处 `send_message` / `interrupt_agent` / `list_agents`：
+
+| 来源 | 模型 | 寻址 | 作用域 |
+|---|---|---|---|
+| `@deepseek-ai/dsh-tool-subagent-control`（base bundle 默认启用） | 父子 | `agent_id` 即子会话 id | 调用者派出的子会话 |
+| `@deepseek-ai/dsh-tool-agent-team`（experimental，base bundle 未启用） | 同伴 | teammate 名字 | team 成员 |
+
+**影响**：本流程用**父子模型**那套（`tool-subagent-control`）。早期方案文档按 team 工具写过映射表，是错的——team 的 `sendMessage` 走 `ctx.agentTeams`，管不到用 `ctx.subagents.startActivation` 派出的子会话。协议层已按实测订正，并显式提示「不要与同伴模型那套混用」。
+
+### 14. 工具的结构化结果不进事件流 content，只在 `presentationMeta` 投影的 `meta` 里
+
+**实测**：`tool/result` 事件的 `message.content` 只有 `output.render` 给模型的文本；`output.value`（结构化结果）不出现在事件里。`output.presentationMeta(args, value)` 投影的 `meta` 才随事件持久化（`tool/result` 事件的 `data.meta`），并被客户端的 `ToolResultNode.meta` 读回。
+
+**影响**：客户端要拿结构化数据，只能走 `presentationMeta`。本 bundle 的卡片工具据此投影 `meta`（`{kind:'dsh-coordinator-cards', scope, cards}`），客户端据此重建看板。
+
+### 15. 右栏 tab 注册与 slot body 都在浏览器侧，host 插件够不着
+
+**实测**：`ctx.sidebarRightTabs.register` 与 `ctx.slots.inject('sidebar.right.pane.tab', …)` 是 client 服务（`packages/client/ui-sidebar-right`，browser-side UI plugin layer），host 进程（Node 侧插件）注册不了。
+
+**影响**：看板 UI 必须有 client 半边——package.json 声明 `dsh.client`（`platform:'web'`、`exports:'./client'`、`external` 列非 baseline 模块），并用 tsdown 产出 `lib/client.js`（closure-factory 格式，React 等 baseline 模块由宿主提供）。这是 P2 剩余工作的主要成本。
+
+### 16. 读子会话原始回合内容没有默认可用的工具
+
+**实测**：`session_event_read` / `session_search` / `session_trace` 属 `@deepseek-ai/dsh-tool-session-query`（experimental），base bundle 未启用；其「authorized session」授权校验在 dsh 内部，仓外插件无法零依赖正确复刻。
+
+**影响**：Telov 的 `ReadWorkerTurn` 没有直接对应物，降级为「完成通知携带产物摘要」；需要深挖时用 `send_message` 向该 worker 追问（会唤醒它开新回合）。若要直读子会话原始事件，须显式安装 `tool-session-query` 并接受其 experimental 状态。
+
+### 17. storage domain 需要 dsh 内部包与 zod，与「bundle 零内部依赖」冲突
+
+**实测**：`defineDomain` / `domainTable`（`packages/storage/storage-domain/src/spec.ts:107`）要求 zod schema，存储域服务本身是 `@deepseek-ai/dsh-storage-domain` peer 依赖，dsh 按 peer 版本与宿主严格校验。
+
+**影响**：卡片与通知队列改用自建落盘（原子写 + 读-改-写串行化），落在 `$DSH_HOME/dsh-coordinator/`。代价是不享受 dsh 的存储域生态（迁移、备份、跨端同步），换来的是零版本耦合。
+
 ---
 
 ## 四、工具级（已验证可用，无缺口）
@@ -134,12 +169,17 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 后台派工（派完即返回） | 通过 | `spawn_worker` 立即返回子会话 id，父 turn 正常结束，worker 在后台继续 |
 | 完成自动唤醒 | 通过 | 父 inbox 收到「【worker 回报】…」后状态 `idle → running → idle`，通知队列清空 |
 | 协议层与工具对模型可见 | 通过 | 模型侧工具列表同时含 `init_project` 与 `spawn_worker`；skill catalog 含 `coordinator-mode` 与 `init-project` |
+| 原生工具管理子会话 | 通过（源码核验） | base bundle 启用 `tool-subagent-control` 与 `tool-subagent-control/list-agents`；`agent_id` 即子会话 id |
+| 卡片存储与领域规则 | 通过 | 49 例单测全绿；sdk profile + mock LLM 实测建卡/改卡/查卡/版本冲突 |
+| 客户端取数通道 | 通过 | `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化，实测携带完整卡片对象 |
 
 ---
 
 ## 五、待验证
 
 - **worktree 隔离**：team 明确不提供 worktree；`dsh-experimental-worktree` 是否能接入编排约定，未实测。
-- **右栏看板**（P2）：`ctx.sidebarRightTabs.register` + `sidebar.right.pane.tab` slot 的实际接线，未实测。
+- **右栏看板 client 半边**（P2 剩余）：`dsh.client` 声明、tsdown 构建链、tab body 取会话 tool-result 节点的 API，均未实测。
 - **真实模型下的协议遵循**：本轮用 mock 触发的工具调用验证了工具通路，未验证模型在真实推理下是否按协议层派工。
 - **web 组合下的唤醒**：P1 的完整链路在 sdk profile 验证；web profile 的组合更接近真实使用，但其会话由 UI 创建，尚未用同一套探针跑通。
+- **`list_agents` 能否列出本 bundle 派出的 worker**：源码路径一致（同一 `ctx.subagents` 与 catalog 投影），但未跑实测。
+
