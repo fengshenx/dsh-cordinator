@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent 编排协议层移植到 dsh：协议 skill、项目初始化工具、后台派工与完成唤醒、任务看板卡片，以及后续阶段的交付看板 UI。
 
-当前状态：**P2（骨架 + 协议层 + 初始化 + 派工唤醒 + 卡片存储与卡片工具）**。右栏看板 UI 待实现。
+当前状态：**P2（骨架 + 协议层 + 初始化 + 派工唤醒 + 卡片存储与卡片工具 + 右栏看板 UI）**。信号灯投影与角色槽位待做。
 
 ## 组成
 
@@ -17,6 +17,8 @@ DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent �
 | 卡片工具 | `src/host/tools/cards.js` | `create_card` / `update_card` / `list_cards`：建卡、改卡、查卡 |
 | 卡片存储 | `src/host/cards/store.js` | 卡片落盘与领域规则：编号不复用、revision 乐观并发、归档终态、检查点由宿主补写 |
 | skill provider | `src/host/skills.js` | 把 bundle 内的 skill 注册进 `ctx.skills`，让模型能通过 dsh 的 `skill` 工具发现与加载 |
+| 右栏看板 Tab | `src/client/index.js` | 浏览器侧注册「看板」Tab 类型与面板主体 |
+| 看板面板 | `src/client/board.js` | 订阅本会话事件窗口，重放卡片投影还原看板 |
 
 bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ctx`，不 peer 依赖任何 dsh 内部包——避免宿主解析失败导致整个 bundle 加载失败。
 
@@ -63,6 +65,7 @@ dsh plugin --profile dev add dsh-coordinator
 2. **初始化项目**：调用 `init_project`，参数 `path` 指向项目目录。约定写入项目的 `AGENTS.md` 受管区块，dsh 读取 `AGENTS.md` 作为系统提示段落，因此写入即对模型生效。重复调用只替换受管区块，不动项目已有内容。
 3. **派工**：调用 `spawn_worker`，参数 `task` 必填、`label` 可选。工具立即返回子会话 id；worker 结束后，协调者会被自动唤醒，收到一条「【worker 回报】」完成通知（任务、子会话、状态、产物摘要、下一步）。
 4. **记任务事实**：调用 `create_card` 建卡（`title` 必填），`update_card` 改卡（`id` 必填，改内容带 `expectedRevision` 做乐观并发），`list_cards` 查卡（默认不含归档卡）。卡片落盘在 `$DSH_HOME/dsh-coordinator/cards.json`，编号全局递增不复用。
+5. **看交付看板**：浏览器右栏打开「看板」Tab。卡片不另存一份——卡片工具把卡片结构投影到 `tool/result` 事件的 `meta` 上，与 session log 一起持久化；面板重放本会话的投影还原看板。因此**卡片要在同一个会话里产生**才会出现在该会话的看板上。
 
 协议层也随 bundle 分发到 `skills/` 下；项目内若自行放置 `.agents/skills/coordinator-mode/`，项目副本优先（dsh 的 skill 发现按来源层级取优）。
 
@@ -77,7 +80,7 @@ dsh plugin --profile dev add dsh-coordinator
 ## 已知限制
 
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
-- **右栏看板 UI 尚未实现**。卡片存储、卡片工具与客户端取数通道已就绪（卡片数据随 `tool/result` 事件的 `meta` 持久化），但右栏 tab 注册与 React 组件在浏览器侧，需引入 tsdown 构建链产出 `lib/client.js` 并声明 `dsh.client`。
+- **看板只覆盖当前会话**。卡片数据随会话事件持久化，看板重放本会话的投影——别的会话建的卡不会出现在这里。信号灯（停滞判定）尚未实现。
 - **角色槽位尚未实现**（P3）。协议层现在用通用方法描述代替槽位指派。
 - **卡片编号是全局的**。P2 没有项目实体，编号跨项目不复用也不分区——将来若引入项目并要求按项目编号，需迁移存量卡片。
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
@@ -85,8 +88,11 @@ dsh plugin --profile dev add dsh-coordinator
 ## 开发
 
 ```sh
-npm test        # node --test，零依赖
-npm run check   # 语法检查 + 测试
+npm test           # node --test，零依赖
+npm run check      # 语法检查 + 测试
+npm run build:client  # 构建浏览器侧产物 lib/client.js（esbuild）
 ```
+
+浏览器侧产物不入库（`.gitignore` 忽略 `lib/`），发布时由 `prepublishOnly` 重建。`cordis.patch.yml` 的插件行名必须是**纯包名**——写成子路径，浏览器侧定位不到包 manifest，宿主便不下发 client bundle。
 
 协议层的相对链接完整性由测试守住——搬动文件后链接断裂会直接测试失败。

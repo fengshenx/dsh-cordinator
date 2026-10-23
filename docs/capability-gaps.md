@@ -141,7 +141,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **实测**：`ctx.sidebarRightTabs.register` 与 `ctx.slots.inject('sidebar.right.pane.tab', …)` 是 client 服务（`packages/client/ui-sidebar-right`，browser-side UI plugin layer），host 进程（Node 侧插件）注册不了。
 
-**影响**：看板 UI 必须有 client 半边——package.json 声明 `dsh.client`（`platform:'web'`、`exports:'./client'`、`external` 列非 baseline 模块），并用 tsdown 产出 `lib/client.js`（closure-factory 格式，React 等 baseline 模块由宿主提供）。这是 P2 剩余工作的主要成本。
+**影响**：看板 UI 必须有 client 半边——package.json 声明 `dsh.client`（`platform:'web'`、`exports:'./client'`、`external` 列非 baseline 模块），并产出 `lib/client.js`（closure-factory 格式，React 等 baseline 模块由宿主提供）。构建链见第 19 条，插件行名的硬约束见第 18 条。
 
 ### 16. 读子会话原始回合内容没有默认可用的工具
 
@@ -154,6 +154,26 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 **实测**：`defineDomain` / `domainTable`（`packages/storage/storage-domain/src/spec.ts:107`）要求 zod schema，存储域服务本身是 `@deepseek-ai/dsh-storage-domain` peer 依赖，dsh 按 peer 版本与宿主严格校验。
 
 **影响**：卡片与通知队列改用自建落盘（原子写 + 读-改-写串行化），落在 `$DSH_HOME/dsh-coordinator/`。代价是不享受 dsh 的存储域生态（迁移、备份、跨端同步），换来的是零版本耦合。
+
+### 18. 插件行名必须是纯包名，否则浏览器侧发现不到 client 半边
+
+**实测**：`packages/client/modules/src/index.ts:892` 的 `locatePkgJson` 要求 Loader 行名可解析成包名：`exactPackageSpecifier` 不接受含 `/` 的子路径。行名写成 `dsh-coordinator/src/host` 时定位不到包 manifest，该行不会被识别为 client row——宿主不下发 client bundle，浏览器侧完全没有本包的 UI。
+
+**实测（修复后）**：行名改为 `dsh-coordinator`（纯包名）→ web profile 的 boot manifest 从 70 条目变 71 条目，多出的条目即本包，附带 `plugins/??dsh-coordinator/client.js` 下发路径；浏览器右栏随即出现本包注册的 Tab。
+
+**影响**：bundle 的插件行名不能为了定位子模块而写成子路径；子模块仍可通过 `exports` 映射（如 `"./src/host"`）供包内引用。
+
+### 19. client 产物得自己产出 closure-factory 封装
+
+**实测**：dsh 的 `clientBundle` 预设（`packages/client/tsdown.client.ts`）绑定仓内 `PLATFORM_MODULES` 等多个模块，第三方仓无法直接引用；宿主按 closure-factory 约定加载产物——`window.__ModuleLoader__.load({ id, factory: (require) => { var module = { exports: {} }; … return module.exports; } })`。
+
+**影响**：本 bundle 用 esbuild 自建轻量构建链（`build/client.mjs`）：产物体是 CJS，banner 注册工厂并注入 require，footer 交回 exports；宿主模块表里的行（React 等）由 `dsh.client.external` 声明，运行时由工厂的 require 解析。
+
+### 20. 面板读会话事件要走 `ctx.sessions`，不是纯 session projection
+
+**实测**：`ctx.sessions.retain(sessionId, { source })` → `reference.ready` → `reference.binding.eventSource`（`ObservableSnapshot<SessionEventWindow>`）→ `getSnapshot().entries` 里筛 `entry.type === 'event' && entry.event.type === 'tool/result'`。纯 session projection 路线走不通：仓外事件类型不进宿主读路径（见第 8 条）。
+
+**影响**：看板面板按事件顺序重放卡片投影——全量投影（`scope:'all'`）清空视图，单卡投影（`scope:'card'`）覆盖一张卡。面板挂在 `sidebar.right.pane.tab` 座，scope 是 session，运行时 props 自带 `sessionId`。
 
 ---
 
@@ -172,14 +192,16 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 原生工具管理子会话 | 通过（源码核验） | base bundle 启用 `tool-subagent-control` 与 `tool-subagent-control/list-agents`；`agent_id` 即子会话 id |
 | 卡片存储与领域规则 | 通过 | 49 例单测全绿；sdk profile + mock LLM 实测建卡/改卡/查卡/版本冲突 |
 | 客户端取数通道 | 通过 | `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化，实测携带完整卡片对象 |
+| 右栏看板 client 半边 | 通过 | web profile boot manifest 含本包条目（71 条目）；浏览器右栏出现「看板」Tab 并显示卡片；插件行名须为纯包名（见第 18 条） |
+| 面板读会话事件 | 通过 | `ctx.sessions.retain` → `binding.eventSource` → 筛 `tool/result` 事件取 `meta`（见第 20 条） |
 
 ---
 
 ## 五、待验证
 
 - **worktree 隔离**：team 明确不提供 worktree；`dsh-experimental-worktree` 是否能接入编排约定，未实测。
-- **右栏看板 client 半边**（P2 剩余）：`dsh.client` 声明、tsdown 构建链、tab body 取会话 tool-result 节点的 API，均未实测。
 - **真实模型下的协议遵循**：本轮用 mock 触发的工具调用验证了工具通路，未验证模型在真实推理下是否按协议层派工。
 - **web 组合下的唤醒**：P1 的完整链路在 sdk profile 验证；web profile 的组合更接近真实使用，但其会话由 UI 创建，尚未用同一套探针跑通。
 - **`list_agents` 能否列出本 bundle 派出的 worker**：源码路径一致（同一 `ctx.subagents` 与 catalog 投影），但未跑实测。
+- **看板的信号灯与槽位绑定**：纯投影与槽位绑定规则尚未实现（P2 剩余项），依赖看板 UI 落地后一并做。
 
