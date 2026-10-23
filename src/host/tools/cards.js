@@ -119,6 +119,20 @@ function normalizeLinks(links) {
 }
 
 /**
+ * 卡片数据投影：结构化卡片随工具结果进 session log，客户端看板据此重建。
+ *
+ * 工具的 `render` 只给模型看文本，客户端拿不到结构化数据；`presentationMeta`
+ * 投影的 `meta` 会持久化在 `tool/result` 事件上，是客户端唯一稳定的取数通道。
+ *
+ * @param {string} scope - `card` 表示单卡变更，`all` 表示全量快照
+ * @param {object[]} cards - 卡片数组
+ * @returns {object} 投影载荷
+ */
+function cardMeta(scope, cards) {
+  return { kind: 'dsh-coordinator-cards', scope, cards }
+}
+
+/**
  * 创建 `create_card` 工具定义。
  * @param {object} options - 工具选项
  * @param {{ create: (input: object) => Promise<object> }} options.store - 卡片存储
@@ -163,6 +177,10 @@ export function createCreateCardTool({ store }) {
             text: `已建卡 #${card.number}「${card.title}」。`,
           },
         ]
+      },
+      presentationMeta(args, value) {
+        const card = /** @type {{ card: object }} */ (value).card
+        return cardMeta('card', [card])
       },
     },
     async execute(args, exec) {
@@ -230,6 +248,10 @@ export function createUpdateCardTool({ store }) {
           },
         ]
       },
+      presentationMeta(args, value) {
+        const card = /** @type {{ card: object }} */ (value).card
+        return cardMeta('card', [card])
+      },
     },
     async execute(args, exec) {
       const input = /** @type {{ id: string, expectedRevision?: number, title?: string, spec?: string, status?: string, links?: object[], slots?: object, checkpoint?: object, sortOrder?: number }} */ (args)
@@ -291,6 +313,10 @@ export function createListCardsTool({ store }) {
           (card) => `#${card.number} ${card.title}（${card.status}）`,
         )
         return [{ type: 'text', text: `共 ${cards.length} 张卡片：\n${lines.join('\n')}` }]
+      },
+      presentationMeta(args, value) {
+        const cards = /** @type {{ cards: object[] }} */ (value).cards
+        return cardMeta('all', cards)
       },
     },
     async execute(args) {
