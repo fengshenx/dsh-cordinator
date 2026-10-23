@@ -11,6 +11,54 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { CARD_STATUSES } from '../cards/store.js'
+
+/**
+ * 校验可选字符串字段。
+ *
+ * 手写 ToolDefinition 绕过了宿主的入参 schema 校验：类型不符的参数会一路落库，
+ * 直到输出 schema 校验（发生在 execute 之后）才报错——副作用已发生，调用方却
+ * 看到工具失败。因此类型错误必须在落库前抛出。
+ *
+ * @param {unknown} value - 字段值
+ * @param {string} label - 字段名，用于报错
+ * @returns {string | undefined} 原值
+ */
+function optionalString(value, label) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new Error(`卡片工具: ${label} 必须是字符串`)
+  }
+  return value
+}
+
+/**
+ * 校验可选数字字段。
+ * @param {unknown} value - 字段值
+ * @param {string} label - 字段名，用于报错
+ * @returns {number | undefined} 原值
+ */
+function optionalNumber(value, label) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`卡片工具: ${label} 必须是数字`)
+  }
+  return value
+}
+
+/**
+ * 校验可选布尔字段。
+ * @param {unknown} value - 字段值
+ * @param {string} label - 字段名，用于报错
+ * @returns {boolean | undefined} 原值
+ */
+function optionalBoolean(value, label) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') {
+    throw new Error(`卡片工具: ${label} 必须是布尔值`)
+  }
+  return value
+}
 
 /**
  * 链接条目的 JSON Schema。
@@ -125,13 +173,44 @@ function normalizeLinks(links) {
     if (typeof link.label !== 'string' || link.label.trim() === '') {
       throw new Error('卡片工具: links 条目缺 label')
     }
+    if (link.id !== undefined && (typeof link.id !== 'string' || link.id === '')) {
+      throw new Error('卡片工具: links 条目的 id 必须是非空字符串')
+    }
+    if (link.url !== undefined && typeof link.url !== 'string') {
+      throw new Error('卡片工具: links 条目的 url 必须是字符串')
+    }
+    if (link.purpose !== undefined && typeof link.purpose !== 'string') {
+      throw new Error('卡片工具: links 条目的 purpose 必须是字符串')
+    }
     return {
-      id: typeof link.id === 'string' && link.id !== '' ? link.id : randomUUID(),
+      id: typeof link.id === 'string' ? link.id : randomUUID(),
       label: link.label,
       ...link.url === undefined ? {} : { url: link.url },
       ...link.purpose === undefined ? {} : { purpose: link.purpose },
     }
   })
+}
+
+/**
+ * 校验检查点事实。
+ *
+ * 检查点的四个事实字段都进输出 schema（`cardSchema.checkpoint`），类型不符会
+ * 在落库后才被输出校验拦下。
+ *
+ * @param {object} checkpoint - 原始检查点
+ * @returns {object} 校验通过的检查点
+ */
+function normalizeCheckpoint(checkpoint) {
+  if (checkpoint === null || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) {
+    throw new Error('卡片工具: checkpoint 必须是对象')
+  }
+  for (const field of ['summary', 'nextAction', 'blocker', 'outputVersion']) {
+    const value = checkpoint[field]
+    if (value !== undefined && typeof value !== 'string') {
+      throw new Error(`卡片工具: checkpoint.${field} 必须是字符串`)
+    }
+  }
+  return checkpoint
 }
 
 /**
@@ -228,12 +307,16 @@ export function createCreateCardTool({ store }) {
       if (typeof input.title !== 'string' || input.title.trim() === '') {
         throw new Error('create_card: title 不能为空')
       }
+      const spec = optionalString(input.spec, 'spec')
+      const links = input.links === undefined ? undefined : normalizeLinks(input.links)
+      const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
+      const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
       const card = await store.create({
         title: input.title.trim(),
-        ...input.spec === undefined ? {} : { spec: input.spec },
-        ...input.links === undefined ? {} : { links: normalizeLinks(input.links) },
-        ...input.slots === undefined ? {} : { slots: normalizeSlots(input.slots) },
-        ...input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint },
+        ...spec === undefined ? {} : { spec },
+        ...links === undefined ? {} : { links },
+        ...slots === undefined ? {} : { slots },
+        ...checkpoint === undefined ? {} : { checkpoint },
         updatedBy: exec.agent?.id,
       })
       return { card }
@@ -306,16 +389,21 @@ export function createUpdateCardTool({ store }) {
       if (input.title !== undefined && (typeof input.title !== 'string' || input.title.trim() === '')) {
         throw new Error('update_card: title 不能为空')
       }
+      const spec = optionalString(input.spec, 'spec')
+      const links = input.links === undefined ? undefined : normalizeLinks(input.links)
+      const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
+      const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
+      const sortOrder = optionalNumber(input.sortOrder, 'sortOrder')
       const card = await store.update({
         id: input.id.trim(),
         ...input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision },
         ...input.title === undefined ? {} : { title: input.title.trim() },
-        ...input.spec === undefined ? {} : { spec: input.spec },
+        ...spec === undefined ? {} : { spec },
         ...input.status === undefined ? {} : { status: input.status },
-        ...input.links === undefined ? {} : { links: normalizeLinks(input.links) },
-        ...input.slots === undefined ? {} : { slots: normalizeSlots(input.slots) },
-        ...input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint },
-        ...input.sortOrder === undefined ? {} : { sortOrder: input.sortOrder },
+        ...links === undefined ? {} : { links },
+        ...slots === undefined ? {} : { slots },
+        ...checkpoint === undefined ? {} : { checkpoint },
+        ...sortOrder === undefined ? {} : { sortOrder },
         updatedBy: exec.agent?.id,
       })
       return { card }
@@ -369,6 +457,10 @@ export function createListCardsTool({ store }) {
     },
     async execute(args) {
       const input = /** @type {{ status?: string, includeArchived?: boolean }} */ (args)
+      if (input.status !== undefined && !CARD_STATUSES.includes(input.status)) {
+        throw new Error(`list_cards: status 非法：${String(input.status)}`)
+      }
+      optionalBoolean(input.includeArchived, 'includeArchived')
       const all = await store.list(
         input.status === undefined ? {} : { status: input.status },
       )

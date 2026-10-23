@@ -94,6 +94,11 @@ export function createInitProjectTool({ conventionsPath }) {
       if (typeof input.path !== 'string' || input.path.trim() === '') {
         throw new Error('init_project: path 必须是目标项目目录的绝对路径')
       }
+      // 入参 schema 在运行时不生效：dryRun 传字符串会让 `=== true` 落空，
+      // 本该只预览的调用反而真的写文件。
+      if (input.dryRun !== undefined && typeof input.dryRun !== 'boolean') {
+        throw new Error('init_project: dryRun 必须是布尔值')
+      }
       const directory = resolve(input.path)
       const info = await stat(directory).catch(() => undefined)
       if (info === undefined || !info.isDirectory()) {
