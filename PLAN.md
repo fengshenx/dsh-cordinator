@@ -33,11 +33,11 @@ dsh 已自带 Telov 这套编排约 70% 的基础设施。真正要写的是三�
 | 能力面 | Telov 现状 | dsh 现状 | 差距 | 工作量 |
 |---|---|---|---|---|
 | 协议层（编排 playbook） | `.agents/skills/telov-mode/`，413 行 | skill 发现支持 `.agents/skills`（优先级 200） | 交叉引用需重写；15 个兄弟技能需决策 | 2–3 人日 |
-| worker 派生 | `SpawnWorker`（`apps/electron/src/main/lib/project/tools.ts:426`） | `ctx.subagents` provider 族（base bundle 内置，可用，但**阻塞式**）；`ctx.agentTeams.spawnTeammate()`（本机因版本不兼容被 dsh 禁用） | 派生可用；**异步唤醒缺失** | 0（语义差异见缺口 2） |
+| worker 派生 | `SpawnWorker`（`apps/electron/src/main/lib/project/tools.ts:426`） | `ctx.subagents.startActivation({ delivery: 'caller' })`（非阻塞，**P1 已用**）；`ctx.agentTeams.spawnTeammate()` | 已覆盖 | 0 |
 | 定向消息 | `MessageWorker` → worker inbox（`worker-orchestration.ts:308`） | `sendMessage()` → 目标 Agent inbox，冷唤醒可收 | 基本覆盖 | 0 |
 | worker 名录 / 中断 | `ListWorkers` / `StopWorker` | roster（lead/teammate + running/inactive/provisioning/failed）/ `interrupt()` | 基本覆盖 | 0 |
 | 任务依赖与并发控制 | Card `expectedRevision` 乐观并发 | team 任务板全量快照 + CAS + `blockedBy` DAG | team 板更严，但缺 slot→session 绑定 | 3–5 人日 |
-| **完成唤醒协调者** | `coordinator-wake.ts`（390 行）：事件触发 → 协调者自动开新 turn + 富通知 + 落盘补投 + 自动续行护栏 | team 消息是 inbox 投递（target 醒来才读），**无被动唤醒** | **必须自建** | 3–5 人日 |
+| **完成唤醒协调者** | `coordinator-wake.ts`（390 行）：事件触发 → 协调者自动开新 turn + 富通知 + 落盘补投 + 自动续行护栏 | team 消息是 inbox 投递（target 醒来才读），**无被动唤醒** | **已自建**（P1 实测通过） | 3–5 人日 |
 | 角色槽位（`SLOTS.md`） | 目录级文件 → role_context 注入（`slot-templates.ts:90`） | 无角色/权限模型；仅 agent preset / persona / skill 双布尔开关 | 自建薄层 | 2–3 人日 |
 | 项目作用域 | `packages/shared/src/types/project.ts:15`，存 `~/.telov/projects.json` | 无 project 实体；`projectRoot` 仅用于 skill 发现 | 自建存储域 | 3–5 人日 |
 | 看板 UI | `renderer/components/board/` 1073 行 + `lib/board-projection.ts` 230 行 | `ctx.sidebarRightTabs.register` + `sidebar.right.pane.tab` slot | 视觉层可直抄，接线重写 | 5–8 人日 |
@@ -71,11 +71,14 @@ dsh-coordinator/                    # 独立 git 仓库
 ├── index.js                        # bundle 入口
 ├── src/
 │   ├── host/
-│   │   ├── index.ts                # Host 侧插件：工具注册、编排服务
-│   │   ├── coordinator.ts          # 协调者角色服务
-│   │   ├── wake.ts                 # 唤醒回传（缺口自建）
-│   │   ├── cards/                  # Card 存储域 + 投影
-│   │   └── projects/               # 项目存储域 + 投影
+│   │   ├── index.js                # Host 侧插件：工具注册、编排服务
+│   │   ├── dispatch.js             # 派工与完成唤醒（缺口自建）
+│   │   ├── notification-store.js   # 完成通知落盘队列
+│   │   ├── message.js              # UserMessage 构造
+│   │   ├── skills.js               # bundle 内 skill provider
+│   │   ├── tools/                  # init_project / spawn_worker
+│   │   ├── cards/                  # Card 存储域 + 投影（P2）
+│   │   └── projects/               # 项目存储域 + 投影（P3）
 │   ├── client/
 │   │   ├── index.ts                # Client 侧插件：右栏 Tab
 │   │   └── board/                  # 看板组件（从 Telov 直抄后改接线）
@@ -207,12 +210,14 @@ dsh team 的消息是 inbox 投递：target 睡着时排队，等它自己醒来
 
 实现路径（借 dsh 既有机制，不发明新的）：
 
-1. 监听子会话的 `turn/end` 事件（`extension-cookbook.md:108` 的 `/loop` 就是这个模式：`turn/end` → `followup()`）。
-2. 子会话结束时，向协调者会话投递一条结构化完成通知（来源 sessionId、状态、产物指针）。
+1. 派工走 `ctx.subagents.startActivation({ delivery: 'caller' })`：立即返回子会话 id，`activation.result` 是终态 promise。
+2. 终态到达时构造结构化完成通知（来源 sessionId、状态、产物摘要、下一步）。
 3. 对协调者会话调用 `followup()`，开新 turn。
 4. 落盘通知（崩溃窗口补投）+ 连续自动续行上限护栏。
 
-对照 Telov `coordinator-wake.ts` 的四项职责：富通知构造（`buildWorkerTurnNotificationXml`）、落盘队列（`coordinator-notification-store.ts`）、崩溃对账补投（`reconcilePendingNotifications`）、自动续行护栏（`orchestrator-resume.ts`）。全部要重写，但**算法逻辑不足 500 行**，且 dsh 的 `turn/end` + `followup()` 比 Telov 的事件总线链更短。
+对照 Telov `coordinator-wake.ts` 的四项职责：富通知构造（`buildWorkerTurnNotificationXml`）、落盘队列（`coordinator-notification-store.ts`）、崩溃对账补投（`reconcilePendingNotifications`）、自动续行护栏（`orchestrator-resume.ts`）。全部重写，**算法逻辑不足 500 行**，且 dsh 的 `followup()` 比 Telov 的事件总线链更短。
+
+**P1 实测后的修正**：原设想靠 `turn/end` 事件感知子会话结束，实际用 `activation.result` 更直接——它是子会话的终态 promise，不需要额外订阅事件。另一个实测结论是**唤醒失败的真因不是投影未注册，而是父会话已被销毁**（headless 一次性 CLI 在 turn 结束后 dispose 会话）；只要父会话存活，对空闲 agent 调 `followup()` 就能可靠唤醒。
 
 ### 5.3 Card 存储域
 
@@ -295,7 +300,7 @@ dsh 侧实现：
 | 工具注册生效 | 通过 | mock LLM 触发的模型调用执行 `init_project` → 目标目录生成含受管区块的 `AGENTS.md`（4307 字节） |
 | 协议层 skill 可被模型发现 | 通过 | `ctx.skills.list()` 返回 `coordinator-mode` 与 `init-project`，provider `dsh-coordinator`，source `bundled` |
 | 能力缺口清单 | 已产出 | [docs/capability-gaps.md](docs/capability-gaps.md)：9 条分级缺口、5 条已验证能力、4 条待验证项 |
-| 跑通一轮完整派工-回传-验收 | **未完成** | 缺模型凭据（`deepseek-official` 无 key），改用 dsh 自带 mock LLM 验证了工具通路；真实多轮编排依赖 P1 的唤醒机制先落地（缺口 2） |
+| 跑通一轮完整派工-回传-验收 | **未完成** | P0 阶段缺模型凭据（`deepseek-official` 无 key），改用 dsh 自带 mock LLM 验证了工具通路；该项在 P1 阶段完成（见 P1 验收结果） |
 
 ### P1 · 唤醒回传（3–5 人日）
 
@@ -307,6 +312,19 @@ dsh 侧实现：
 - worker 结束 → 协调者在无人工干预下开新 turn 并收到通知
 - 协调者重启后未投递的通知被补投
 - 续行护栏生效（超过上限不无限自动唤醒）
+
+**P1 验收结果（2026-10-23）**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| worker 结束 → 协调者开新 turn 并收到通知 | 通过 | sdk profile 实测：父 inbox 收到「【worker 回报】任务「写文件」已结束…」后状态 `idle → running → idle` |
+| 派工不阻塞父 turn | 通过 | `spawn_worker` 立即返回子会话 id，父 turn 正常结束，worker 在后台跑完 |
+| 完成通知落盘 | 通过 | `$DSH_HOME/dsh-coordinator/notifications.json` 记录通知，投递成功后出队（实测 `pending: 0`） |
+| 协调者重启后未投递的通知被补投 | 通过（单测） | `agent/created` 触发 `redeliverPending`；崩溃窗口由落盘队列覆盖 |
+| 续行护栏生效 | 通过（单测） | 超过 `autoResumeLimit` 不再自动唤醒，通知留队 |
+| 协议层与工具对模型可见 | 通过 | 模型侧工具列表含 `init_project` 与 `spawn_worker`；skill catalog 含 `coordinator-mode` 与 `init-project` |
+
+**运行前提**：后台编排只适用于长驻组合（web / desktop / sdk）。headless 一次性 CLI 会在 turn 结束后销毁父会话，没有载体接收通知。
 
 ### P2 · Card 与看板（8–13 人日）
 
