@@ -1,10 +1,12 @@
 /**
  * dsh-coordinator 的宿主侧插件。
  *
- * 贡献五件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
- * 派工完成后的自动唤醒，以及任务看板卡片存储与卡片工具。
+ * 贡献七件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
+ * 派工完成后的自动唤醒、任务看板卡片存储与卡片工具、项目作用域工具，以及角色
+ * 槽位到系统提示词的注入。
  *
- * 客户端侧（交付看板 UI）在 `src/client/`，跑在浏览器进程，与本模块不共处。
+ * 客户端侧（交付看板 UI 与项目切换器）在 `src/client/`，跑在浏览器进程，与本模块
+ * 不共处。
  *
  * @module dsh-coordinator/host
  */
@@ -15,9 +17,11 @@ import { createSkillProvider } from './skills.js'
 import { createInitProjectTool } from './tools/init-project.js'
 import { createSpawnWorkerTool } from './tools/spawn-worker.js'
 import { createCreateCardTool, createUpdateCardTool, createListCardsTool } from './tools/cards.js'
+import { createListProjectsTool, createSwitchProjectTool } from './tools/projects.js'
 import { createNotificationStore, resolveDshHome } from './notification-store.js'
 import { createCardStore } from './cards/store.js'
 import { createDispatcher } from './dispatch.js'
+import { applyRoleContext } from './slots/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -25,7 +29,11 @@ const here = dirname(fileURLToPath(import.meta.url))
 const bundleRoot = join(here, '..', '..')
 
 export const name = 'dsh-coordinator-host'
-export const inject = ['skills', 'tools', 'subagents']
+// `systemPrompt` 必须声明：角色槽位靠它注册运行时上下文，服务不在作用域内时
+// 注入静默失效（实测：不声明时上下文不进组装结果）。该服务由 base bundle 提供，
+// 官方各 profile 都有。
+// `sessionQuery` 与会话目录走 `ctx.get()` 惰性获取——sqlite 引擎可能被部署替换。
+export const inject = ['skills', 'tools', 'subagents', 'systemPrompt']
 
 /**
  * 挂载本 bundle 的能力。
@@ -59,6 +67,23 @@ export function apply(ctx) {
   ctx.tools.register(createCreateCardTool({ store: cards }))
   ctx.tools.register(createUpdateCardTool({ store: cards }))
   ctx.tools.register(createListCardsTool({ store: cards }))
+
+  ctx.tools.register(createListProjectsTool({ ctx }))
+  ctx.tools.register(createSwitchProjectTool({ ctx }))
+
+  // 角色槽位注入：会话被卡片绑到某个槽位时，每轮 turn 注入该槽位在项目
+  // `SLOTS.md` 里的正文。槽位不注册工具、不改工具可见性。
+  applyRoleContext({
+    ctx,
+    slotIndex: cards.slotIndex,
+    resolveCwd: (sessionId) => ctx.get('sessions')?.get(sessionId)?.header?.cwd,
+    logger,
+  })
+
+  // 槽位反查索引是进程内的，崩溃后不会留下：启动时从卡片库重建。
+  void cards.loadSlotIndex().catch((error) => {
+    logger(`dsh-coordinator: 重建槽位索引失败：${error instanceof Error ? error.message : String(error)}`)
+  })
 
   // 父会话注册后补投此前未送达的完成通知（进程崩溃窗口）。
   ctx.on('agent/created', ({ agent }) => {
