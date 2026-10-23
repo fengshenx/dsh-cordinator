@@ -7,6 +7,7 @@
   "exports": {
     ".": "./index.js",
     "./src/host": "./src/host/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
@@ -14,13 +15,16 @@
     "index.js",
     "cordis.patch.yml",
     "src/**",
+    "lib/client.js",
     "skills/**",
     "locale/*.json",
     "README.md"
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check index.js && node --test tests/*.test.js"
+    "check": "node --check index.js && node --check src/client/index.js && node --check src/client/board.js && node --test tests/*.test.js",
+    "build:client": "node build/client.mjs",
+    "prepublishOnly": "npm run build:client"
   },
   "engines": {
     "dsh": ">=0.2.1-rc.0 <0.3.0"
@@ -28,6 +32,18 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-api-session-controller"
+      ],
+      "external": [
+        "react",
+        "react-dom",
+        "@deepseek-ai/dsh-client-ui-sidebar-right/client"
+      ]
     }
   },
   "keywords": [
@@ -36,5 +52,8 @@
     "orchestration",
     "coordinator"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
 }
