@@ -132,3 +132,20 @@ test('查卡工具按状态过滤，模型视图列出编号与标题', async ()
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('卡片数据投影到 presentationMeta，客户端据此重建看板', async () => {
+  const { home, tools } = await createTools()
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    const single = tools.create_card.output.presentationMeta({}, created)
+    assert.equal(single.kind, 'dsh-coordinator-cards')
+    assert.equal(single.scope, 'card')
+    assert.equal(single.cards[0].title, '任务')
+    const listed = await tools.list_cards.execute({}, exec)
+    const all = tools.list_cards.output.presentationMeta({}, listed)
+    assert.equal(all.scope, 'all')
+    assert.equal(all.cards.length, 1)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
