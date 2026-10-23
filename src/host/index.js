@@ -1,10 +1,10 @@
 /**
  * dsh-coordinator 的宿主侧插件。
  *
- * 贡献四件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具，
- * 以及派工完成后的自动唤醒。
+ * 贡献五件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
+ * 派工完成后的自动唤醒，以及任务看板卡片存储与卡片工具。
  *
- * 客户端侧（交付看板）属于后续阶段，此处不注册。
+ * 客户端侧（交付看板 UI）属于后续阶段，此处不注册。
  *
  * @module dsh-coordinator/host
  */
@@ -14,7 +14,9 @@ import { dirname, join } from 'node:path'
 import { createSkillProvider } from './skills.js'
 import { createInitProjectTool } from './tools/init-project.js'
 import { createSpawnWorkerTool } from './tools/spawn-worker.js'
-import { createNotificationStore } from './notification-store.js'
+import { createCreateCardTool, createUpdateCardTool, createListCardsTool } from './tools/cards.js'
+import { createNotificationStore, resolveDshHome } from './notification-store.js'
+import { createCardStore } from './cards/store.js'
 import { createDispatcher } from './dispatch.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -52,6 +54,11 @@ export function apply(ctx) {
   const dispatcher = createDispatcher({ ctx, store, logger })
 
   ctx.tools.register(createSpawnWorkerTool({ dispatcher }))
+
+  const cards = createCardStore({ home: resolveDshHome(), logger })
+  ctx.tools.register(createCreateCardTool({ store: cards }))
+  ctx.tools.register(createUpdateCardTool({ store: cards }))
+  ctx.tools.register(createListCardsTool({ store: cards }))
 
   // 父会话注册后补投此前未送达的完成通知（进程崩溃窗口）。
   ctx.on('agent/created', ({ agent }) => {

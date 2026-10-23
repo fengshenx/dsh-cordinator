@@ -1,0 +1,145 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { createCardStore } from '../src/host/cards/store.js'
+
+/**
+ * 建一个临时 home 下的卡片存储。
+ * @returns {Promise<{ store: object, home: string }>} 存储与 home 目录
+ */
+async function createStore() {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-cards-'))
+  return { store: createCardStore({ home }), home }
+}
+
+test('建卡分配编号，编号逐张递增且不复用', async () => {
+  const { store, home } = await createStore()
+  try {
+    const first = await store.create({ title: '第一张' })
+    const second = await store.create({ title: '第二张' })
+    assert.equal(first.number, 1)
+    assert.equal(second.number, 2)
+    assert.equal(first.revision, 0)
+    assert.equal(first.status, 'active')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('改卡递增内容版本，版本不符即冲突且不落盘', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '标题' })
+    const updated = await store.update({ id: card.id, title: '新标题', expectedRevision: 0 })
+    assert.equal(updated.revision, 1)
+    assert.equal(updated.title, '新标题')
+    await assert.rejects(
+      () => store.update({ id: card.id, title: '再改', expectedRevision: 0 }),
+      /版本冲突/,
+    )
+    const current = await store.get(card.id)
+    assert.equal(current.title, '新标题')
+    assert.equal(current.revision, 1)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('状态流转：切 done 记 doneAt，回到 active 清除', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '任务' })
+    const done = await store.update({ id: card.id, status: 'done' })
+    assert.equal(done.status, 'done')
+    assert.equal(typeof done.doneAt, 'number')
+    const active = await store.update({ id: card.id, status: 'active' })
+    assert.equal(active.status, 'active')
+    assert.equal(active.doneAt, undefined)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('归档是终态，归档后不可再改', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '任务' })
+    const archived = await store.update({ id: card.id, status: 'archived' })
+    assert.equal(archived.status, 'archived')
+    await assert.rejects(() => store.update({ id: card.id, title: '再改' }), /已归档/)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('检查点的维护者与确认时间由宿主补写', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({
+      title: '任务',
+      checkpoint: { summary: '已确认结论', nextAction: '下一步' },
+      updatedBy: 'session-1',
+    })
+    assert.equal(card.checkpoint.updatedBy, 'session-1')
+    assert.equal(typeof card.checkpoint.updatedAt, 'number')
+    assert.equal(card.checkpoint.summary, '已确认结论')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('列表按编号升序，可按状态过滤', async () => {
+  const { store, home } = await createStore()
+  try {
+    const first = await store.create({ title: '一' })
+    await store.create({ title: '二' })
+    await store.update({ id: first.id, status: 'done' })
+    const all = await store.list()
+    assert.deepEqual(all.map((card) => card.number), [1, 2])
+    const done = await store.list({ status: 'done' })
+    assert.equal(done.length, 1)
+    assert.equal(done[0].number, 1)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('改不存在的卡片报错', async () => {
+  const { store, home } = await createStore()
+  try {
+    await assert.rejects(() => store.update({ id: 'nope', title: 'x' }), /卡片不存在/)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('卡片库损坏时备份原文件并以空库继续', async () => {
+  const { store, home } = await createStore()
+  try {
+    await store.create({ title: '一张' })
+    await writeFile(store.file, '{ 坏掉的 json', 'utf8')
+    const cards = await store.list()
+    assert.deepEqual(cards, [])
+    const raw = await readFile(store.file, 'utf8')
+    assert.deepEqual(JSON.parse(raw).cards, [])
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('并发建卡不丢卡、编号不重复', async () => {
+  const { store, home } = await createStore()
+  try {
+    const created = await Promise.all(
+      Array.from({ length: 5 }, (_, index) => store.create({ title: `卡 ${index}` })),
+    )
+    const numbers = created.map((card) => card.number).sort((a, b) => a - b)
+    assert.deepEqual(numbers, [1, 2, 3, 4, 5])
+    const cards = await store.list()
+    assert.equal(cards.length, 5)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})

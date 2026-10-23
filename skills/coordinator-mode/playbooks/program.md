@@ -2,7 +2,27 @@
 
 共用 [并行协作](../references/parallel.md)：按验收和 owner 建任务，卡片/spec 承载简报，代码托管平台与宿主各守事实源。多个 worktree 可以处于不同阶段；活跃数随审查、CI、共享资源和依赖容量调整。
 
-卡片与执行者名录由本 bundle 提供的工具读写；工具不可用时先报告缺口，不要用别的机制猜着模拟。
+卡片与派工由本 bundle 提供的工具读写；执行者名录、传话与中止用宿主的 subagent 工具。工具不可用时先报告缺口，不要用别的机制猜着模拟。
+
+## 协调者动作与工具
+
+| 动作 | 工具 |
+|---|---|
+| 派工给后台 worker（立即返回，不等结果） | `spawn_worker` |
+| 查执行者名录 | `list_agents` |
+| 给执行者传话 | `send_message` |
+| 中止执行者当前回合 | `interrupt_agent` |
+| 读 worker 回报 | 完成通知（无需轮询） |
+| 建卡 | `create_card` |
+| 改卡（带 `expectedRevision`） | `update_card` |
+| 查卡 | `list_cards` |
+| 写入仓库工程约定 | `init_project` |
+
+派工用 `spawn_worker` 而不是通用委派工具：它立即返回子会话 id，worker 结束后自动唤醒你并附完成通知，同一轮里可连派多个工。
+
+`list_agents`、`send_message`、`interrupt_agent` 是宿主按父子关系提供的工具，`agent_id` 就是 worker 的子会话 id（`spawn_worker` 的返回值）。它们只看得到你直接派出的执行者。宿主另有同伴模型的一套同名工具，按成员名寻址，与本流程的执行者不是同一批，不要混用。
+
+worker 回报的产物摘要在完成通知里，不需要轮询查询。通知缺失、截断或需要深挖时，用 `send_message` 向该 worker 追问，它会被唤醒并回话。
 
 ## Orchestrate
 
