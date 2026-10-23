@@ -1,8 +1,16 @@
 # dsh-coordinator bundle 的插件层。
 # 每一行是一个 Cordis 插件；`name` 指向本包内的模块，由 Node 解析。
+#
+# `subagents` 必须显式声明：Cordis 只把已声明的服务暴露给插件作用域，
+# 未声明时 `ctx.get('subagents')` 拿不到，派工器就派不出 worker。
+#
+# `sessionController` 不能声明：它只挂在 web-app bundle 上，声明成必需依赖会让
+# headless 等不含该服务的 profile 整个插件挂起。它改由 `ctx.get()` 惰性获取，
+# 缺失时唤醒能力降级而非失效。
 - insert:
     - id: coordinator-host
       name: 'dsh-coordinator/src/host'
       inject:
         - skills
         - tools
+        - subagents

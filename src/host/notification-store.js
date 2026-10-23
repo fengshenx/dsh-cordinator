@@ -1,0 +1,146 @@
+/**
+ * 完成通知的落盘队列。
+ *
+ * 通知在唤醒父会话**之前**先落盘：唤醒是「向父 agent 投一条消息并开新 turn」的
+ * 动作，一旦进程在唤醒前崩溃，通知会丢，协调者将永远不知道 worker 完成了。落盘
+ * 队列让这类通知在下次启动时被补投。
+ *
+ * 落盘位置在 dsh home 下的自有目录，不占用 session 事件流——仓外插件不得新增
+ * session event 类型。
+ *
+ * @module dsh-coordinator/host/notification-store
+ */
+
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+const QUEUE_VERSION = 1
+
+/**
+ * 解析 dsh home 目录。dsh 允许用 `DSH_HOME` 覆盖默认位置。
+ * @returns {string} dsh home 绝对路径
+ */
+export function resolveDshHome(env = process.env, homedir) {
+  const configured = env.DSH_HOME
+  if (typeof configured === 'string' && configured.trim() !== '') return configured
+  const home = typeof homedir === 'function' ? homedir() : process.env.HOME
+  return join(home, '.dsh')
+}
+
+/**
+ * 创建通知落盘队列。
+ *
+ * @param {object} options - 队列选项
+ * @param {string} [options.home] - dsh home 目录，默认按环境解析
+ * @param {(message: string) => void} [options.logger] - 日志输出
+ * @returns {object} 队列接口
+ */
+export function createNotificationStore({ home, logger = () => {} } = {}) {
+  const directory = join(home ?? resolveDshHome(), 'dsh-coordinator')
+  const file = join(directory, 'notifications.json')
+  const temporary = join(directory, 'notifications.json.tmp')
+
+  /** 队列操作的串行链，保证读-改-写不交错。 */
+  let tail = Promise.resolve()
+
+  /**
+   * 读取队列；文件缺失返回空队列。
+   * @returns {Promise<{ version: number, pending: object[] }>} 队列快照
+   */
+  async function read() {
+    const raw = await readFile(file, 'utf8').catch(() => undefined)
+    if (raw === undefined) return { version: QUEUE_VERSION, pending: [] }
+    try {
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.pending)) {
+        throw new Error('通知队列结构非法：缺少 pending 数组')
+      }
+      return { version: QUEUE_VERSION, pending: parsed.pending }
+    } catch (error) {
+      const backup = `${file}.corrupt-${Date.now()}`
+      await rename(file, backup).catch(() => undefined)
+      logger(`通知队列损坏，已备份到 ${backup}：${error instanceof Error ? error.message : String(error)}`)
+      return { version: QUEUE_VERSION, pending: [] }
+    }
+  }
+
+  /**
+   * 把队列快照原子写回磁盘。
+   * @param {{ version: number, pending: object[] }} queue - 队列快照
+   * @returns {Promise<void>} 写盘完成
+   */
+  async function write(queue) {
+    await mkdir(directory, { recursive: true })
+    await writeFile(temporary, `${JSON.stringify(queue, null, 2)}\n`, 'utf8')
+    await rename(temporary, file)
+  }
+
+  /**
+   * 串行执行队列操作。多个 worker 同时完成时，读-改-写必须排队，否则会互相
+   * 覆盖对方的改动，也会争抢同一个临时文件。
+   * @template T
+   * @param {() => Promise<T>} operation - 队列操作
+   * @returns {Promise<T>} 操作结果
+   */
+  function serialize(operation) {
+    const run = tail.then(operation, operation)
+    tail = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  return {
+    directory,
+    file,
+
+    /**
+     * 读出全部未投递的通知。
+     * @returns {Promise<object[]>} 未投递通知列表
+     */
+    listPending() {
+      return serialize(async () => (await read()).pending)
+    },
+
+    /**
+     * 追加一条待投递通知。
+     * @param {object} notification - 通知记录
+     * @returns {Promise<void>} 落盘完成
+     */
+    enqueue(notification) {
+      return serialize(async () => {
+        const queue = await read()
+        queue.pending.push(notification)
+        await write(queue)
+      })
+    },
+
+    /**
+     * 标记通知已投递并移出队列。
+     * @param {string} id - 通知 id
+     * @returns {Promise<void>} 落盘完成
+     */
+    markDelivered(id) {
+      return serialize(async () => {
+        const queue = await read()
+        queue.pending = queue.pending.filter((item) => item.id !== id)
+        await write(queue)
+      })
+    },
+
+    /**
+     * 记录一次投递失败，通知留在队列里等待补投。
+     * @param {string} id - 通知 id
+     * @param {string} reason - 失败原因
+     * @returns {Promise<void>} 落盘完成
+     */
+    markUndelivered(id, reason) {
+      return serialize(async () => {
+        const queue = await read()
+        const target = queue.pending.find((item) => item.id === id)
+        if (target === undefined) return
+        target.attempts = (target.attempts ?? 0) + 1
+        target.lastError = reason
+        await write(queue)
+      })
+    },
+  }
+}
