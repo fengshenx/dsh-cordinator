@@ -149,3 +149,87 @@ test('卡片数据投影到 presentationMeta，客户端据此重建看板', asy
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('查卡工具显式指定 archived 时返回归档卡，不被默认排除滤空', async () => {
+  const { home, tools } = await createTools()
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await tools.update_card.execute({ id: created.card.id, status: 'archived' }, exec)
+    const listed = await tools.list_cards.execute({ status: 'archived' }, exec)
+    assert.equal(listed.cards.length, 1)
+    assert.equal(listed.cards[0].status, 'archived')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('建卡工具拒绝缺 label 的链接条目', async () => {
+  const { home, tools } = await createTools()
+  try {
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', links: [{ url: 'https://example.test/mr/1' }] }, exec),
+      /links 条目缺 label/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('改卡工具拒绝空标题', async () => {
+  const { home, tools } = await createTools()
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await assert.rejects(
+      () => tools.update_card.execute({ id: created.card.id, title: '  ' }, exec),
+      /title 不能为空/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('建卡与改卡工具拒绝缺 sessionId 的槽位绑定', async () => {
+  const { home, tools } = await createTools()
+  try {
+    await assert.rejects(
+      () => tools.create_card.execute({ title: '任务', slots: { dev: {} } }, exec),
+      /槽位 dev 缺 sessionId/,
+    )
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await assert.rejects(
+      () => tools.update_card.execute({ id: created.card.id, slots: { review: { sessionId: '  ' } } }, exec),
+      /槽位 review 缺 sessionId/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('改卡工具拒绝非整数的 expectedRevision', async () => {
+  const { home, tools } = await createTools()
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    await assert.rejects(
+      () => tools.update_card.execute({ id: created.card.id, title: '新标题', expectedRevision: '0' }, exec),
+      /expectedRevision 必须是整数/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('只带 id 的改卡不递增版本，不作废他人持有的 expectedRevision', async () => {
+  const { home, tools } = await createTools()
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    const updated = await tools.update_card.execute({ id: created.card.id }, exec)
+    assert.equal(updated.card.revision, 0)
+    const after = await tools.update_card.execute(
+      { id: created.card.id, title: '新标题', expectedRevision: 0 },
+      exec,
+    )
+    assert.equal(after.card.revision, 1)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})

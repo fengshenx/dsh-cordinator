@@ -7,7 +7,7 @@
  * 三条领域规则来自 Telov 的任务看板，迁移时必须保持：
  *
  * - **编号不复用**：卡片编号全局递增，归档或删除都不回收，用户可用 `@#n` 引用。
- * - **乐观并发**：更新必须带 `expectedRevision`，版本不符即冲突，不落盘。
+ * - **乐观并发**：带 `expectedRevision` 时校验版本，版本不符即冲突，不落盘。
  * - **archived 是终态**：归档后不可再改；`active ⇄ done` 可逆。
  *
  * 落盘位置在 dsh home 下的自有目录，不占用 session 事件流——仓外插件不得新增
@@ -42,7 +42,15 @@ async function readStore(file, onCorrupt) {
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.cards)) {
       throw new Error('卡片库结构非法：缺少 cards 数组')
     }
-    const counter = Number.isInteger(parsed.counter) && parsed.counter >= 0 ? parsed.counter : 0
+    const counter = Math.max(
+      Number.isInteger(parsed.counter) && parsed.counter >= 0 ? parsed.counter : 0,
+      // counter 可能丢失或被外部改写而小于存量卡片的最大编号；此时必须以存量
+      // 编号为准，否则新卡会与存量卡重号，违反「编号不复用」。
+      parsed.cards.reduce(
+        (highest, card) => (Number.isInteger(card?.number) && card.number > highest ? card.number : highest),
+        0,
+      ),
+    )
     return { version: STORE_VERSION, counter, cards: parsed.cards }
   } catch (error) {
     const backup = `${file}.corrupt-${Date.now()}`
@@ -199,6 +207,9 @@ export function createCardStore({ home, logger = () => {} } = {}) {
           if (status === 'done') next.doneAt = now
           if (status === 'active') delete next.doneAt
         }
+        // 内容没有实质变化时不 bump revision、不落盘：零字段调用不是内容更新，
+        // 无谓的版本递增会作废其他会话持有的 expectedRevision，人为制造冲突。
+        if (isSameContent(card, next)) return card
         next.revision = current + 1
         next.updatedAt = now
         store.cards[store.cards.indexOf(card)] = next
@@ -229,6 +240,18 @@ export function createCardStore({ home, logger = () => {} } = {}) {
       return status === undefined ? cards : cards.filter((card) => card.status === status)
     },
   }
+}
+
+/**
+ * 判断两次更新之间卡片内容是否相同。版本与时间戳不参与比较。
+ * @param {object} current - 更新前的卡片
+ * @param {object} next - 待落盘的卡片
+ * @returns {boolean} 内容是否相同
+ */
+function isSameContent(current, next) {
+  const { revision: _currentRevision, updatedAt: _currentUpdatedAt, ...currentRest } = current
+  const { revision: _nextRevision, updatedAt: _nextUpdatedAt, ...nextRest } = next
+  return JSON.stringify(currentRest) === JSON.stringify(nextRest)
 }
 
 /**
