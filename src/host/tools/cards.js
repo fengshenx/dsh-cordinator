@@ -106,16 +106,56 @@ function cardSchema() {
 
 /**
  * 规范化链接条目，补齐条目 id。
+ *
+ * 工具是手写的 ToolDefinition，宿主只校验输出 schema，入参 schema 里的
+ * `required` 在运行时不生效——链接条目的 label 缺了就会以 `undefined` 落盘，
+ * 序列化后静默丢字段。因此这里显式校验形状。
+ *
  * @param {object[]} links - 原始链接条目
  * @returns {object[]} 规范化后的链接条目
  */
 function normalizeLinks(links) {
-  return links.map((link) => ({
-    id: typeof link.id === 'string' && link.id !== '' ? link.id : randomUUID(),
-    label: link.label,
-    ...link.url === undefined ? {} : { url: link.url },
-    ...link.purpose === undefined ? {} : { purpose: link.purpose },
-  }))
+  if (!Array.isArray(links)) {
+    throw new Error('卡片工具: links 必须是数组')
+  }
+  return links.map((link) => {
+    if (link === null || typeof link !== 'object' || Array.isArray(link)) {
+      throw new Error('卡片工具: links 条目必须是对象')
+    }
+    if (typeof link.label !== 'string' || link.label.trim() === '') {
+      throw new Error('卡片工具: links 条目缺 label')
+    }
+    return {
+      id: typeof link.id === 'string' && link.id !== '' ? link.id : randomUUID(),
+      label: link.label,
+      ...link.url === undefined ? {} : { url: link.url },
+      ...link.purpose === undefined ? {} : { purpose: link.purpose },
+    }
+  })
+}
+
+/**
+ * 校验槽位绑定结构。
+ *
+ * 每个槽位项必须带非空的 `sessionId`——否则槽位看起来绑上了，实际没有对应
+ * 会话，后续按槽位找执行者会拿到空值。
+ *
+ * @param {object} slots - 原始槽位绑定
+ * @returns {object} 校验通过的槽位绑定
+ */
+function normalizeSlots(slots) {
+  if (slots === null || typeof slots !== 'object' || Array.isArray(slots)) {
+    throw new Error('卡片工具: slots 必须是对象')
+  }
+  for (const [name, binding] of Object.entries(slots)) {
+    if (binding === null || typeof binding !== 'object' || Array.isArray(binding)) {
+      throw new Error(`卡片工具: 槽位 ${name} 必须是对象`)
+    }
+    if (typeof binding.sessionId !== 'string' || binding.sessionId.trim() === '') {
+      throw new Error(`卡片工具: 槽位 ${name} 缺 sessionId`)
+    }
+  }
+  return slots
 }
 
 /**
@@ -192,7 +232,7 @@ export function createCreateCardTool({ store }) {
         title: input.title.trim(),
         ...input.spec === undefined ? {} : { spec: input.spec },
         ...input.links === undefined ? {} : { links: normalizeLinks(input.links) },
-        ...input.slots === undefined ? {} : { slots: input.slots },
+        ...input.slots === undefined ? {} : { slots: normalizeSlots(input.slots) },
         ...input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint },
         updatedBy: exec.agent?.id,
       })
@@ -258,6 +298,14 @@ export function createUpdateCardTool({ store }) {
       if (typeof input.id !== 'string' || input.id.trim() === '') {
         throw new Error('update_card: id 不能为空')
       }
+      // 入参 schema 里的 required 与类型在运行时不生效（手写 ToolDefinition，
+      // 宿主只校验输出 schema），因此这里逐项校验裸字段。
+      if (input.expectedRevision !== undefined && !Number.isInteger(input.expectedRevision)) {
+        throw new Error('update_card: expectedRevision 必须是整数')
+      }
+      if (input.title !== undefined && (typeof input.title !== 'string' || input.title.trim() === '')) {
+        throw new Error('update_card: title 不能为空')
+      }
       const card = await store.update({
         id: input.id.trim(),
         ...input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision },
@@ -265,7 +313,7 @@ export function createUpdateCardTool({ store }) {
         ...input.spec === undefined ? {} : { spec: input.spec },
         ...input.status === undefined ? {} : { status: input.status },
         ...input.links === undefined ? {} : { links: normalizeLinks(input.links) },
-        ...input.slots === undefined ? {} : { slots: input.slots },
+        ...input.slots === undefined ? {} : { slots: normalizeSlots(input.slots) },
         ...input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint },
         ...input.sortOrder === undefined ? {} : { sortOrder: input.sortOrder },
         updatedBy: exec.agent?.id,
@@ -285,14 +333,14 @@ export function createListCardsTool({ store }) {
   return {
     name: 'list_cards',
     description:
-      '列出任务看板卡片，按编号升序。默认只返回未归档的卡片；需要看归档卡时传 includeArchived。',
+      '列出任务看板卡片，按编号升序。默认只返回未归档的卡片；需要看归档卡时传 includeArchived，或用 status 指定 archived。',
     parameters: {
       type: 'object',
       properties: {
         status: {
           type: 'string',
           enum: ['active', 'done', 'archived'],
-          description: '只返回该状态的卡片。不传则返回全部未归档卡片。',
+          description: '只返回该状态的卡片。显式指定 archived 时直接返回归档卡，无需再传 includeArchived。不传则返回全部未归档卡片。',
         },
         includeArchived: {
           type: 'boolean',
@@ -324,9 +372,13 @@ export function createListCardsTool({ store }) {
       const all = await store.list(
         input.status === undefined ? {} : { status: input.status },
       )
-      const cards = input.includeArchived === true
+      // 显式指定 status 时以它为准：再套默认的归档排除，会让 status='archived'
+      // 恒返回空，把「查不到」呈现成「没有归档卡」，误导后续决策。
+      const cards = input.status !== undefined
         ? all
-        : all.filter((card) => card.status !== 'archived')
+        : input.includeArchived === true
+          ? all
+          : all.filter((card) => card.status !== 'archived')
       return { cards }
     },
   }

@@ -143,3 +143,44 @@ test('并发建卡不丢卡、编号不重复', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('counter 丢失或落后时以存量卡片的最大编号续号，不重号', async () => {
+  const { store, home } = await createStore()
+  try {
+    await store.create({ title: '一' })
+    await store.create({ title: '二' })
+    const raw = JSON.parse(await readFile(store.file, 'utf8'))
+    delete raw.counter
+    await writeFile(store.file, JSON.stringify(raw), 'utf8')
+    const third = await store.create({ title: '三' })
+    assert.equal(third.number, 3)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('零字段更新不递增版本，也不刷新更新时间与落盘', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '任务' })
+    const before = await readFile(store.file, 'utf8')
+    const same = await store.update({ id: card.id })
+    assert.equal(same.revision, 0)
+    assert.equal(same.updatedAt, card.updatedAt)
+    assert.equal(await readFile(store.file, 'utf8'), before)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('状态没变不算内容更新，不递增版本', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '任务' })
+    const same = await store.update({ id: card.id, status: 'active' })
+    assert.equal(same.revision, 0)
+    assert.equal(same.updatedAt, card.updatedAt)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
