@@ -10,6 +10,7 @@
 
 import { createElement, useEffect, useState } from 'react'
 import { collectCards, loadHistory } from './board-projection.js'
+import { ProjectSwitcher } from './project-switcher-ui.js'
 
 /**
  * 状态徽标配色。
@@ -38,9 +39,28 @@ function statusLabel(status) {
  * @param {object} props - slot 注入的运行时属性
  * @param {string} props.sessionId - 面板所属会话
  * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
+ * @param {() => object | undefined} props.getUiWorkspace - 取导航服务的延迟取值器
  * @returns {object} React 元素
  */
 export function BoardBody(props) {
+  const { sessionId, getSessions, getUiWorkspace } = props
+  return createElement(
+    'div',
+    { style: { display: 'flex', flexDirection: 'column' } },
+    createElement(ProjectSwitcher, { sessionId, getSessions, getUiWorkspace }),
+    createElement(BoardCards, { sessionId, getSessions }),
+  )
+}
+
+/**
+ * 看板卡片区。
+ *
+ * @param {object} props - slot 注入的运行时属性
+ * @param {string} props.sessionId - 面板所属会话
+ * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
+ * @returns {object} React 元素
+ */
+function BoardCards(props) {
   const { sessionId, getSessions } = props
   const [cards, setCards] = useState([])
   const [error, setError] = useState(null)

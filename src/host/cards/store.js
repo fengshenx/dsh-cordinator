@@ -78,6 +78,15 @@ export function createCardStore({ home, logger = () => {} } = {}) {
   let tail = Promise.resolve()
 
   /**
+   * 会话 id 到槽位名的反查索引。
+   *
+   * 槽位绑定只存在于卡片库（异步落盘），而提示词组装是同步的——组装函数里
+   * `await` 不了。因此这里维护一份内存镜像。卡片库仍是真源，进程启动时用
+   * `loadSlotIndex` 重建。
+   */
+  const slotIndex = new Map()
+
+  /**
    * 原子写回卡片库。
    * @param {{ version: number, counter: number, cards: object[] }} store - 卡片库快照
    * @returns {Promise<void>} 写盘完成
@@ -112,6 +121,8 @@ export function createCardStore({ home, logger = () => {} } = {}) {
     directory,
     file,
 
+    slotIndex,
+
     /**
      * 建卡。编号在此分配，之后永不复用。
      * @param {object} input - 建卡输入
@@ -145,6 +156,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
         store.counter = card.number
         store.cards.push(card)
         await writeStore(store)
+        rebuildSlotIndex(store.cards, slotIndex)
         return card
       })
     },
@@ -214,6 +226,9 @@ export function createCardStore({ home, logger = () => {} } = {}) {
         next.updatedAt = now
         store.cards[store.cards.indexOf(card)] = next
         await writeStore(store)
+        // 改卡后必须同步索引：否则「槽位改绑后下一轮 turn 仍注入旧角色」，
+        // 恰好破坏「变更在下一轮生效」这条结构性保证。
+        rebuildSlotIndex(store.cards, slotIndex)
         return next
       })
     },
@@ -229,6 +244,19 @@ export function createCardStore({ home, logger = () => {} } = {}) {
     },
 
     /**
+     * 重建槽位反查索引。
+     *
+     * 进程启动时调用：内存索引是进程内的，崩溃后不会留下，索引必须从卡片库恢复。
+     *
+     * @returns {Promise<Map<string, string>>} 重建后的索引
+     */
+    async loadSlotIndex() {
+      const store = await readStore(file, recoverFromCorruption)
+      rebuildSlotIndex(store.cards, slotIndex)
+      return slotIndex
+    },
+
+    /**
      * 列出卡片，按编号升序。
      * @param {object} [filter] - 过滤条件
      * @param {string} [filter.status] - 只返回该状态的卡片
@@ -239,6 +267,31 @@ export function createCardStore({ home, logger = () => {} } = {}) {
       const cards = [...store.cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
       return status === undefined ? cards : cards.filter((card) => card.status === status)
     },
+  }
+}
+
+/**
+ * 按卡片库重建「会话 id → 槽位名」的反查索引。
+ *
+ * 一个会话可能同时被多张卡片绑到不同槽位上。按编号升序遍历、后者覆盖前者，
+ * 使编号更大的卡片（更新的意图）胜出，规则确定且与卡片新旧顺序一致。
+ *
+ * @param {object[]} cards - 卡片数组
+ * @param {Map<string, string>} target - 待写入的索引
+ * @returns {void}
+ */
+function rebuildSlotIndex(cards, target) {
+  target.clear()
+  const ordered = [...cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
+  for (const card of ordered) {
+    const slots = card?.slots
+    if (slots === null || typeof slots !== 'object' || Array.isArray(slots)) continue
+    for (const [name, binding] of Object.entries(slots)) {
+      if (binding === null || typeof binding !== 'object' || Array.isArray(binding)) continue
+      const sessionId = binding.sessionId
+      if (typeof sessionId !== 'string' || sessionId === '') continue
+      target.set(sessionId, name)
+    }
   }
 }
 
