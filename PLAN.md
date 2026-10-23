@@ -268,15 +268,11 @@ storage domain 需要 zod schema + `@deepseek-ai/dsh-storage-domain` peer 依赖
 
 信号灯（stale/停滞判定）在 Telov 是 renderer 纯投影（`board-projection.ts:189`），零存储，可整段直搬；dsh 侧同样不落盘——状态由会话活性实时投影。
 
-### 5.5 看板 UI
-
 源（可直抄，框架耦合低）：
 - `candyapp/apps/electron/src/renderer/components/board/`（1073 行）：`BoardTabContent.tsx` 257、`BoardCardItem.tsx` 297、`BoardCardDetailDialog.tsx` 285、`BoardLinksEditor.tsx` 154、`BoardSignalDot.tsx` 66
 - `candyapp/apps/electron/src/renderer/lib/board-projection.ts`（230 行，纯函数，仅依赖共享类型）
 
 需重写：Telov 用 Jotai + Electron IPC + `BrowserWindow` 广播；dsh 侧改为 session projection + `ctx.sidebarRightTabs.register` + `sidebar.right.pane.tab` slot。Telov 的 shadcn 风格 UI 组件在 `apps/electron/src/renderer/components/ui/`（**不在** `packages/ui/`），需按 dsh 的客户端组件体系重建或改用 dsh 现成组件。
-
-信号灯（stale/停滞判定）在 Telov 是 renderer 纯投影（`board-projection.ts:189`），零存储，可整段直搬。
 
 dsh 侧只需写一份 client 代码，web 与 desktop 共用（`publish.md`/`development.md` 的 client 共享结论）。
 
@@ -373,11 +369,11 @@ dsh 侧实现：
 | 并发改卡触发版本冲突 | 通过 | 带过期 `expectedRevision: 0` 调用 → 报错「卡片版本冲突：期望 0，当前 1；请重新读取卡片后判断」，且**未落盘**（revision 仍 1、title 未变） |
 | 查卡 | 通过 | `list_cards` 返回精简视图「共 1 张卡片：#1 实现派工（done）」给模型；归档卡默认排除，`includeArchived` 才返回 |
 | 客户端取数通道 | 通过 | 工具的 `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化；实测事件 `meta` 携带完整卡片对象，`content` 仍是给模型的精简文本 |
-| 右栏看板 Tab（client 侧） | **未完成** | tab 注册与 slot body 都在浏览器侧（`ctx.sidebarRightTabs` / `ctx.slots` 是 client 服务），需引入 tsdown 构建链产出 `lib/client.js` 并声明 `dsh.client`；另需解决「tab body 如何拿到会话的 tool-result 节点」——已确认 `ToolResultNode.meta` 携带卡片数据，但取用 API 待摸清 |
+| 右栏看板 Tab（client 侧） | 通过 | web profile 实测：boot manifest 含 `dsh-coordinator` 条目（71 条目），浏览器右栏出现「看板」Tab，点开显示空态文案；面板订阅本会话事件窗口重放卡片投影（`ctx.sessions.retain` → `binding.eventSource`），`tool/result` 事件的 `meta` 投影被还原为卡片 |
 | 信号灯投影 | **未完成** | 依赖看板 UI 一并落地（纯投影，不落盘） |
 | 槽位绑定到实际会话 | **未完成** | `slots` 字段与改卡通路已就绪；与「执行者名录」的绑定规则待 P3 角色槽位一并定 |
 
-**P2 结论**：host 侧（存储域、工具、协议层映射、数据通道）已闭环并实测通过；client 侧看板 UI 仍待实现，其构建链与状态取用是主要成本。
+**P2 结论**：host 侧（存储域、工具、协议层映射、数据通道）与 client 侧（Tab 注册、面板、事件重放）均已闭环并实测通过；信号灯投影与槽位绑定未做。client 侧踩到的两个硬约束记在 [docs/capability-gaps.md](docs/capability-gaps.md) 第 18–19 条：插件行名必须是纯包名（否则浏览器侧发现不到 client 半边）、client 产物得自己产出 closure-factory 封装。
 
 ### P3 · 项目作用域与角色槽位（5–8 人日）
 
