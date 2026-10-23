@@ -14,6 +14,30 @@ import { createElement, useEffect, useState } from 'react'
 const META_KIND = 'dsh-coordinator-cards'
 
 /**
+ * 补齐历史时最多翻的页数。每页按 Turn 对齐，最少 50 条事件；设上限是为了在
+ * `loadOlder` 失败（宿主只记日志不抛错）时不会无限循环。
+ */
+const MAX_HISTORY_PAGES = 20
+
+/**
+ * 逐页加载更早的历史，直到窗口没有更早记录。
+ *
+ * 事件窗口初始只装最近一页，早期建卡/改卡的投影不在其中——只重放窗口内的
+ * 投影会把「全量投影是权威快照」的前提打破：窗口内若有 `list_cards` 的全量
+ * 投影，它代表的是完整列表，却被窗口内的部分视图覆盖。
+ *
+ * @param {object} binding - 会话绑定
+ * @returns {Promise<boolean>} 是否已加载到最早的历史
+ */
+async function loadHistory(binding) {
+  for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
+    if (!binding.eventSource.getSnapshot().hasMore) return true
+    await binding.session.loadOlder()
+  }
+  return !binding.eventSource.getSnapshot().hasMore
+}
+
+/**
  * 重放事件窗口里的卡片投影。
  * @param {readonly object[]} entries - 会话事件窗口条目
  * @returns {object[]} 按编号升序排列的卡片
@@ -72,6 +96,7 @@ export function BoardBody(props) {
   const { sessionId, getSessions } = props
   const [cards, setCards] = useState([])
   const [error, setError] = useState(null)
+  const [history, setHistory] = useState('loading')
 
   useEffect(() => {
     const sessions = getSessions()
@@ -88,6 +113,11 @@ export function BoardBody(props) {
         const read = () => { setCards(collectCards(binding.eventSource.getSnapshot().entries)) }
         read()
         unsubscribe = binding.eventSource.subscribe(read)
+        return loadHistory(binding).then((complete) => {
+          if (cancelled) return
+          setHistory(complete ? 'complete' : 'partial')
+          read()
+        })
       })
       .catch((cause) => {
         if (!cancelled) setError(`读取会话失败：${cause instanceof Error ? cause.message : String(cause)}`)
@@ -103,6 +133,16 @@ export function BoardBody(props) {
     return createElement('div', { style: { padding: '12px', color: '#f85149', fontSize: '13px' } }, error)
   }
 
+  const notice = history === 'loading'
+    ? '正在加载更早的历史…'
+    : history === 'partial'
+      ? '仅显示已加载的历史片段，更早的记录未加载。'
+      : null
+
+  if (cards.length === 0 && history !== 'complete') {
+    return createElement('div', { style: { padding: '12px', color: '#8b949e', fontSize: '13px' } }, notice)
+  }
+
   if (cards.length === 0) {
     return createElement(
       'div',
@@ -116,6 +156,13 @@ export function BoardBody(props) {
   return createElement(
     'div',
     { style: { padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' } },
+    notice === null
+      ? null
+      : createElement(
+          'div',
+          { style: { fontSize: '12px', color: '#8b949e', padding: '0 2px' } },
+          notice,
+        ),
     cards.map((card) => createElement(
       'div',
       {
