@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+
+# client 构建产物（npm run build:client 生成，发布时由 prepublishOnly 重建）
+lib/
