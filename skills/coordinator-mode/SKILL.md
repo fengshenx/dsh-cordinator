@@ -63,6 +63,8 @@ whenToUse: 一个会话需要同时管理多个执行者、跨阶段推进并对
 
 ## 派工与接收
 
+派工用 `spawn_worker`：它立即返回子会话 id，worker 结束后自动唤醒你并附完成通知与产物摘要，同一轮可连派多个工。查执行者名录、传话与中止用宿主的 `list_agents`、`send_message`、`interrupt_agent`，`agent_id` 就是 worker 的子会话 id。卡片用 `create_card`、`update_card`、`list_cards`，改卡带 `expectedRevision` 做乐观并发。完整对应见 [协调者动作与工具](playbooks/program.md#协调者动作与工具)。
+
 派工确保原简报、后续指令、实际产物与版本均可沿指针完整恢复，不依赖「done」摘要继承变更。按 [协调者传话纪律](playbooks/program.md#输出与传话纪律)保留边界与验收，已落盘正文不抄入派单。按宿主与任务权限使用 worker；现有 owner 与 worktree 状态能可信恢复时续跑，新上下文更合适时新派，不能丢原约束。停止/恢复遵守用户指令与宿主契约；能力不可用明确 limitation，不声称多模型独立评估。
 
 完成事件后先读实际产物、diff、head 和验证。worker PASS 不等于行为验收、审查或 CI 通过。执行用户要求的审查时，给另一执行者精确 base/head、意图与不变量；协调者核实、去重、裁决后回派。补提交重验受影响证据，无 blocker 且建议已处置才呈报，不以轮数判断收敛。
