@@ -177,6 +177,44 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **事件窗口是分页的**：初始只装最近一页，`SessionEventWindow.hasMore` 标志更早历史未加载。面板必须驱动 `SessionFace.loadOlder()` 逐页加载到没有更早历史再重放投影，否则早期建卡/改卡不在窗口内；更糟的是窗口内若恰有 `list_cards` 的全量投影，它本应是完整列表，却被当成窗口内的部分视图看待，破坏「全量投影是权威快照」的前提。`loadOlder` 失败时宿主只记日志不抛错，故翻页设了上限（20 页），到顶则标注「仅显示已加载的历史片段」。
 
+### 21. `ctx.sessions.list()` 只返回 live session——项目列表会随重启漂移
+
+**实测**：`ctx.sessions.list()` 的注释明写「All live sessions, in creation order」（`packages/core/session/src/index.ts:1359`），只含进程内活着的会话。持久化语料在 `ctx.sessionQuery.listSessions()`（`packages/session-query/session-query/src/index.ts:174`），它合并持久化记录与 live session、live 优先（`packages/session-query/session-query/src/corpus.ts:62`），每条带 `header.cwd`。
+
+**影响**：宿主侧的项目列表不能用 `ctx.sessions.list()`——进程重启后，未加载的历史会话不在其中，昨天还在的项目今天会从列表消失。本 bundle 改用 `ctx.get('sessionQuery')` 惰性获取，缺失时降级为只列 live session 并在工具输出里标明列表不完整。
+
+### 22. 持久化会话头里没有标题与更新时间
+
+**实测**：`SessionHeader` 只有 `version`、`id`、`createdAt`、`cwd`、`parentSession`、`isSeeded`、`origin`、`delegationDepth`、`agentPreset`（`packages/core/session/src/types.ts:95-138`），没有 `title` 与 `updatedAt`——那是客户端投影（`SessionSummary`）才有的字段。
+
+**影响**：宿主侧从持久化语料挑「该目录的协调者会话」时，只能按 `createdAt` 与 live 优先排序，取不到「最近更新」；客户端侧用 `ctx.sessions.list` 的 `SessionSummary` 才能按 `updatedAt` 排。
+
+### 23. 客户端构建产物不能用 `node:` 内置模块
+
+**实测**：`build/client.mjs` 的 esbuild 配置是浏览器平台，引入 `node:path` 直接报 `Could not resolve "node:path"`。client 半边跑在浏览器进程里，没有 Node 内置模块。
+
+**影响**：路径末段名称这类小工具在 client 侧得自己实现（`src/client/project-switcher.js` 的 `basenameOf`），且要同时认 `/` 与 `\` 两种分隔符——宿主可能在 Windows 上把工作目录写成反斜杠形式。
+
+---
+
+### 24. 系统提示词消息是会话级固定的——动态内容必须走运行时上下文
+
+**Telov 现状**：角色槽位正文作为 role_context 随每轮 turn 构造注入，读的是当轮的文件内容，改完文件下一轮即生效。
+
+**dsh 实测**：`systemPrompt.section()` 注册的段进的是**系统提示词消息**，而那条消息只在请求序列重启时重新投影（`packages/core/agent-loop/src/agent.ts:407-425` 的 `systemPrompt.project`；`startsSeries` 为假时不追加新消息）。会话建立后再注册进去的段，在后续请求的系统提示词里始终不出现——注册成功、不报错、静默失效。
+
+**替代通道**：运行时上下文（`assembly.contexts`）没有这个限制，provider 每轮组装时重新求值（`packages/core/system-prompt/src/index.ts:582-602` 的 `refreshContext`），快照有变化才作为一条 user 消息追加（`packages/core/agent-loop/src/runtime-context.ts:152-163`）。宿主自己的 `working-directory` 上下文就是这么做的（`packages/session/working-directory/src/index.ts:97`）。
+
+**附加约束**：上下文必须**注册成 provider**，不能只在组装事件（`system-prompt/assemble` waterfall）里临时追加——`refreshContext` 按注册表重新求值，注册表里没有的临时项在运行时被抑制时会被丢弃（`packages/core/system-prompt/src/index.ts:591`）。
+
+**影响**：任何「随时间变化、但要进模型视野」的内容（角色、租户配置、能力开关）都得走运行时上下文，不能走 section。
+
+### 25. `systemPrompt` 不声明在 inject 里就拿不到——即使只是要注册 provider
+
+**dsh 实测**：`ctx.on('system-prompt/assemble', ...)` 这类绑定在服务上的事件，在插件未声明 `systemPrompt` 依赖时不触发；声明后即触发。同一段注册代码在「声明」与「不声明」两种 `inject` 下行为不同，且不报错——只是注入内容不出现。
+
+**影响**：`systemPrompt` 需与其他核心服务一样进 `inject`。它在全部官方 bundle 都有（base 挂载、`packages/bundle/base/cordis.patch.yml:505`；sdk-minimal 自带一行；headless 在 base 之上覆盖 config），声明为必需依赖是安全的——与 `sessionController`、`workspaceRegistry` 那类「只在部分 bundle 存在、声明会让插件挂起」的服务不同。
+
 ---
 
 ## 四、工具级（已验证可用，无缺口）
@@ -196,6 +234,10 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 客户端取数通道 | 通过 | `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化，实测携带完整卡片对象 |
 | 右栏看板 client 半边 | 通过 | web profile boot manifest 含本包条目（71 条目）；浏览器右栏出现「看板」Tab 并显示卡片；插件行名须为纯包名（见第 18 条） |
 | 面板读会话事件 | 通过 | `ctx.sessions.retain` → `binding.eventSource` → 筛 `tool/result` 事件取 `meta`（见第 20 条） |
+| 项目列表（host 侧） | 通过 | `list_projects` 按持久化会话语料的 `header.cwd` 聚合（见第 21 条）；跨进程重启不漂移 |
+| 解析目标项目（host 侧） | 通过 | `switch_project` 返回目标目录约定的协调者会话；目录无会话时如实说明需新建 |
+| 项目切换（client 侧） | 通过 | web profile 实测：右栏项目切换器列出全部有会话的目录、当前项目标注「当前」；点击后主视图切到该目录的协调者会话 |
+| 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |
 
 ---
 
@@ -205,5 +247,5 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 - **真实模型下的协议遵循**：本轮用 mock 触发的工具调用验证了工具通路，未验证模型在真实推理下是否按协议层派工。
 - **web 组合下的唤醒**：P1 的完整链路在 sdk profile 验证；web profile 的组合更接近真实使用，但其会话由 UI 创建，尚未用同一套探针跑通。
 - **`list_agents` 能否列出本 bundle 派出的 worker**：源码路径一致（同一 `ctx.subagents` 与 catalog 投影），但未跑实测。
-- **看板的信号灯与槽位绑定**：纯投影与槽位绑定规则尚未实现（P2 剩余项），依赖看板 UI 落地后一并做。
+- **看板的信号灯**：信号灯纯投影尚未实现（P2 剩余项）。槽位绑定已在 P3 接上——卡片 `slots` 字段的反查索引与 `SLOTS.md` 正文注入均已落地并实测，信号灯仍待做。
 
