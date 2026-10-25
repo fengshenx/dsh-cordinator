@@ -215,23 +215,38 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：`systemPrompt` 需与其他核心服务一样进 `inject`。它在全部官方 bundle 都有（base 挂载、`packages/bundle/base/cordis.patch.yml:505`；sdk-minimal 自带一行；headless 在 base 之上覆盖 config），声明为必需依赖是安全的——与 `sessionController`、`workspaceRegistry` 那类「只在部分 bundle 存在、声明会让插件挂起」的服务不同。
 
-### 26. `connection.rpc.handle` 对仓外插件不可用——第三方要自建 Web 路由
+### 26. `connection.rpc.handle` 对仓外插件不可用——但 Typert 的 SRC 通道可用
 
 **Telov 现状**：渲染进程的 IPC 通道是宿主提供的固定接口，插件只要拿到通道句柄就能调宿主。
 
 **dsh 实测**：`connection` 服务提供 `rpc.handle(channel, handler)` 与 `rpc.fetch.register(route)`，但它们把路由注册到**读取 connection 的那个作用域**上（`packages/client/connection/src/rpc-host.ts:253-277` 的 `owner.webServer.register(route)`）。作用域属性访问要求该服务在作用域链上可注入，第三方 bundle 读到的 connection 服务副本带着「读取者作用域」——而 `webServer` 只挂在 web-app bundle 上，读取者作用域拿不到它的 inject 声明，注册必抛 `cannot get property "webServer" without inject`。dsh 内部也没有任何 `handle` 的使用者：官方 gateway 走的是 `rpc.intercept('/api', …)`，而 `/api` 每条通道只允许一个拦截器，第三方插不进去。
 
-**替代通道**：直接用宿主公开的 `webServer.register({kind:'prefix', path, handler})`（`packages/host/webserver/src/index.ts:444-456`）。前缀路由按最长前缀匹配（`:654-663`），会优先于 SPA 的 resource 回退；resource 只答 GET/HEAD，POST 会被回退吞成 405——所以自定义通道必须自己注册 prefix 路由，且要自己做鉴权。
+**可走的路：Typert 的 SRC 通道**。宿主 gateway 在 strict 生成描述符缺失时走 SRC 回退（`packages/api/gateway/src/index.ts:868-879` 的 `resolveDescriptor` → `resolveSrcDescriptor`），它按服务原型上的方法标记与实例上的服务绑定还原调用描述符，参数名从方法源码的形参解析。标记契约是**稳定字符串 + 版本化描述符**（协议包 `@deepseek-ai/dsh-typert-protocol` 把标记写在原型属性 `@deepseek-ai/dsh-typert-protocol/remote-methods` 上，值为 `{version:1, methods:[{method, invocation:{kind:'direct'}}]}`），宿主读标记时**不校验来源包的版本**——第三方手写同样的形状即可，不必安装 dsh 内部包。
 
-**影响**：第三方 bundle 的「浏览器侧 → 宿主侧」调用要么自建 Web 路由（要自己处理同源校验与错误形状），要么改走 Typert 远程调用（要装 dsh 内部包，违反零依赖原则）。本仓取前者，见[项目作用域与角色槽位](.agents/notes/2026-10-23-项目作用域与角色槽位.md)。
+**要满足的条件**（缺一即失败）：
 
-### 27. 左栏没有与工作区并列的区块槽——第三方只能挂 footer
+- 服务必须以 Cordis 服务身份注册（`ctx.provide(key, instance)` 会把 `ctx.reflect.props[key]` 记为 `{type:'service'}`，SRC 回退按这个标记遍历）；
+- 实例上要有 `typertRemote` 绑定，字段为 `{service, serviceKey, namespace}`，其中 `service` 必须指向实例本身（宿主拿它与调用时取到的实例比对）；
+- 原型上要有方法标记，方法名与实例方法名逐字一致；
+- 方法的形参名就是 wire 字段名，宿主按源码解析形参，客户端必须传同名字段，多一个少一个都会被 `gateway/arguments-invalid` 拒掉；
+- 客户端侧 `$mount` 的贡献里每个入参都要带 strict codec（`requireStrictInputs` 会拒收没有 strict codec 的描述符），宿主侧的 SRC 描述符则一律 `src-json`。
+
+**影响**：浏览器侧 → 宿主侧的调用不必自建 Web 路由（那条路要自己处理同源校验与错误形状，鉴权弱于官方 `/api`），也不必装 dsh 内部包（装它会被宿主的 peer/engines 校验卡住）。本仓取 Typert SRC 通道，见[项目作用域与角色槽位](.agents/notes/2026-10-23-项目作用域与角色槽位.md)。代价是手写的协议形状与宿主版本耦合——宿主改标记契约时本仓要同步改。
+
+### 27. 左栏没有与工作区并列的区块槽——第三方只能靠 DOM 注入取位
 
 **Telov 现状**：左栏是三个并列区块（项目类目 → 置顶区 → 工作区类目），项目区目是独立的一等公民。
 
-**dsh 实测**：左栏正文区只有**一个** `sidebar.workspaces` 槽（single，已被宿主的 `WorkspaceBrowser` 占），slot 机制没有 decorator/HOC 或包装能力（`packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx` 与 `deriveGroups` 都未导出，无法复用渲染逻辑）。左栏可用的 list 槽只有两个：`sidebar.panellist`（occupant 只放 glyph，须与 `main` 同 id 成对注册）与 `sidebar.footer.action`（occupant 可渲染任意内容，位置在工作区下方、设置按钮上方，`packages/client/ui-sidebar/src/client/SidebarRoot.tsx:405-412`）。
+**dsh 实测**：左栏正文区只有**一个** `sidebar.workspaces` 槽（single，已被宿主的 `WorkspaceBrowser` 占；重复注册抛 `single slot "sidebar.workspaces" already has a registration`，`packages/client/ui-slots/src/index.ts:1220-1222`），slot 机制没有 decorator/HOC 或包装能力（`packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx` 与 `deriveGroups` 都未导出，无法复用渲染逻辑）。左栏可用的 list 槽只有两个：`sidebar.panellist`（occupant 只放 glyph，须与 `main` 同 id 成对注册）与 `sidebar.footer.action`（occupant 可渲染任意内容，位置在工作区下方、设置按钮上方，`packages/client/ui-sidebar/src/client/SidebarRoot.tsx:405-412`）。
 
-**影响**：第三方无法在左栏插入与工作区并列的区块。footer 是唯一能让列表真在左栏的落点，代价是位置在工作区下方。
+**可行的取位办法**：左栏的 DOM 结构是「面板列表 `nav` → 工作区滚动区 → 底部区」（同文件 `:395-412`）。footer occupant 里放一个锚点，向上找到第一个「直接子元素含 `nav`」的祖先作为左栏根，在 `nav` 之后插一个容器，用 React portal 把内容渲染进去，位置就是「自动化任务之下、工作区之上」。宿主结构变了导致找不到锚点时，内容退回原槽渲染，功能不受影响——降级路径必须留着。
+
+### 28. Typert 远程方法的名字要避开官方命名空间服务的保留字
+
+**dsh 实测**：客户端挂载贡献时，官方命名空间服务逐个检查方法名（`packages/api/gateway/src/client/index.ts` 的 `RemoteNamespaceService.assertMethodAvailable`）：撞上命名空间服务自身的字段（`ctx`、`name`、`methods`、`namespace` 等）或 Cordis 服务原型的成员即拒收整个命名空间，报 `client api: method "projects/remove" conflicts with its namespace service`。`remove` 正是 Cordis 服务原型上的成员。
+
+**影响**：第三方远程方法要挑业务前缀足够远的名字（本仓把 `remove` 改成 `unregister`），否则整个命名空间挂不上，表现为界面上一片「通道未就绪」而不是某个方法缺失。
+
 
 ---
 
@@ -254,7 +269,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 面板读会话事件 | 通过 | `ctx.sessions.retain` → `binding.eventSource` → 筛 `tool/result` 事件取 `meta`（见第 20 条） |
 | 项目注册表（host 侧） | 通过 | `add_project` 落盘 `projects.json` 并建协调者会话；`list_projects` 返回注册表条目并标注协调者是否存活（见第 26 条） |
 | 解析目标项目（host 侧） | 通过 | `switch_project` 按 id 或名字返回该项目的协调者会话；协调者会话已删时如实说明需换新协调者 |
-| 项目区块（client 侧） | 通过 | web profile 实测：左栏出现「项目（2）」区块并列出两个已注册项目（含目录路径）；`curl` 同源打通道返回 200、跨源返回 403 |
+| 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
 | 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |
 
 ---

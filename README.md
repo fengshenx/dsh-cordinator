@@ -18,12 +18,12 @@ DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent �
 | 卡片存储 | `src/host/cards/store.js` | 卡片落盘与领域规则：编号不复用、revision 乐观并发、归档终态、检查点由宿主补写 |
 | 项目工具 | `src/host/tools/projects.js` | `list_projects` / `add_project` / `switch_project` / `remove_project`：列项目、注册项目、切项目、注销项目 |
 | 项目存储与服务 | `src/host/projects/` | 项目注册表（`projects.json`）与项目服务：建项目连带建协调者会话并绑定，失败整体回滚 |
-| 项目通道 | `src/host/projects/rpc.js` | 浏览器侧 → 宿主侧的 `/coordinator` HTTP 通道（POST + JSON + 同源校验） |
+| 项目通道 | `src/host/projects/remote.js` | 浏览器侧 → 宿主侧的 Typert 远程通道（命名空间 `projects`，走官方 `/api` 共享通道） |
 | 角色槽位 | `src/host/slots/` | 读项目目录的 `SLOTS.md`，按卡片 `slots` 字段绑定到会话，作为运行时上下文注入 |
 | skill provider | `src/host/skills.js` | 把 bundle 内的 skill 注册进 `ctx.skills`，让模型能通过 dsh 的 `skill` 工具发现与加载 |
 | 右栏看板 Tab | `src/client/index.js` | 浏览器侧注册「看板」Tab 类型与面板主体 |
 | 看板面板 | `src/client/board.js` | 订阅本会话事件窗口，重放卡片投影还原看板 |
-| 左栏项目区块 | `src/client/project-panel.js` | 左栏底部「项目」区块：加项目、打开协调者会话、换新协调者、注销项目 |
+| 左栏项目区块 | `src/client/project-panel.js` | 左栏「项目」区块：在「自动化任务」之下、工作区之上（DOM 注入取位），加项目、打开协调者会话、换新协调者、注销项目 |
 
 bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ctx`，不 peer 依赖任何 dsh 内部包——避免宿主解析失败导致整个 bundle 加载失败。
 
@@ -89,12 +89,12 @@ dsh plugin --profile dev add dsh-coordinator
 
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
 - **看板只覆盖当前会话**。卡片数据随会话事件持久化，看板重放本会话的投影——别的会话建的卡不会出现在这里。面板会主动加载该会话的完整历史（会话事件按页加载，最多翻 20 页；到顶会标注「仅显示已加载的历史片段」）。信号灯（停滞判定）尚未实现。
-- **项目区块在左栏底部，不在工作区上方**。dsh 的左栏正文区只有 `sidebar.workspaces` 一个槽且已被宿主占用，slot 机制没有包装能力，第三方无法插入并列区块——footer 是唯一落点。
+- **项目区块靠 DOM 注入取位**。dsh 的左栏正文区只有 `sidebar.workspaces` 一个槽且已被宿主占用，slot 机制没有包装能力，第三方插不进并列区块——本仓在左栏的「面板列表 nav」之后插容器并用 portal 渲染，位置是「自动化任务之下、工作区之上」；宿主结构变化导致找不到锚点时内容退回原槽，功能不受影响。
 - **项目协调者会话落 dsh 左栏的「未分组」桶**。dsh 的会话树按 workspace 归组，项目会话不被任何 workspace 认领；Telov 里项目会话从工作区列表双向排除，这里做不到。
 - **worker 会话在 dsh 左栏不可见**。worker 是 subagent 会话（`origin==='subagent'`），被左栏过滤。
 - **卡片编号是全局的**。卡片不按项目分区，编号跨项目不复用也不分区——将来若要求按项目编号，需迁移存量卡片。
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
-- **浏览器侧 → 宿主侧走自建 HTTP 通道**（`/coordinator`，POST + JSON + 同源校验）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 共享通道被官方 gateway 占用、且需装 dsh 内部包。自建通道的鉴权强度弱于官方 `/api`（只校验同源），本机进程可伪造 Origin 头调用它。
+- **浏览器侧 → 宿主侧走 Typert 远程通道**（命名空间 `projects`，经官方 `/api` 共享通道）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 又被官方 gateway 占用；Typert 的 SRC 回退通道允许第三方按协议形状注册服务，但代价是**手写的协议形状与宿主版本耦合**——本仓对齐宿主 `0.2.1-rc.2`（标记属性名、`version:1` 描述符、`typertRemote` 绑定字段、方法形参即 wire 字段名），宿主改契约时本仓要同步改。远程方法名还要避开官方命名空间服务的保留字（撞名会让整个命名空间挂不上）。
 
 ## 开发
 
