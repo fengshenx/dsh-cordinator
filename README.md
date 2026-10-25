@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent 编排协议层移植到 dsh：协议 skill、项目初始化工具、后台派工与完成唤醒、任务看板卡片，以及后续阶段的交付看板 UI。
 
-当前状态：**P2（骨架 + 协议层 + 初始化 + 派工唤醒 + 卡片存储与卡片工具 + 右栏看板 UI）**。信号灯投影与角色槽位待做。
+当前状态：**P3（骨架 + 协议层 + 初始化 + 派工唤醒 + 卡片存储与卡片工具 + 右栏看板 UI + 项目注册表与左栏项目区块 + 角色槽位注入）**。信号灯投影与卡片按项目分区待做。
 
 ## 组成
 
@@ -16,9 +16,14 @@ DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent �
 | 通知落盘队列 | `src/host/notification-store.js` | 完成通知先写盘再唤醒；投递失败留队，父会话重开时补投 |
 | 卡片工具 | `src/host/tools/cards.js` | `create_card` / `update_card` / `list_cards`：建卡、改卡、查卡 |
 | 卡片存储 | `src/host/cards/store.js` | 卡片落盘与领域规则：编号不复用、revision 乐观并发、归档终态、检查点由宿主补写 |
+| 项目工具 | `src/host/tools/projects.js` | `list_projects` / `add_project` / `switch_project` / `remove_project`：列项目、注册项目、切项目、注销项目 |
+| 项目存储与服务 | `src/host/projects/` | 项目注册表（`projects.json`）与项目服务：建项目连带建协调者会话并绑定，失败整体回滚 |
+| 项目通道 | `src/host/projects/rpc.js` | 浏览器侧 → 宿主侧的 `/coordinator` HTTP 通道（POST + JSON + 同源校验） |
+| 角色槽位 | `src/host/slots/` | 读项目目录的 `SLOTS.md`，按卡片 `slots` 字段绑定到会话，作为运行时上下文注入 |
 | skill provider | `src/host/skills.js` | 把 bundle 内的 skill 注册进 `ctx.skills`，让模型能通过 dsh 的 `skill` 工具发现与加载 |
 | 右栏看板 Tab | `src/client/index.js` | 浏览器侧注册「看板」Tab 类型与面板主体 |
 | 看板面板 | `src/client/board.js` | 订阅本会话事件窗口，重放卡片投影还原看板 |
+| 左栏项目区块 | `src/client/project-panel.js` | 左栏底部「项目」区块：加项目、打开协调者会话、换新协调者、注销项目 |
 
 bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ctx`，不 peer 依赖任何 dsh 内部包——避免宿主解析失败导致整个 bundle 加载失败。
 
@@ -33,6 +38,7 @@ bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ct
 | 读 worker 回报 | 完成通知 | 本 bundle 的唤醒器 |
 | 建卡 / 改卡 / 查卡 | `create_card` / `update_card` / `list_cards` | 本 bundle |
 | 写入仓库工程约定 | `init_project` | 本 bundle |
+| 列项目 / 注册项目 / 切项目 / 注销项目 | `list_projects` / `add_project` / `switch_project` / `remove_project` | 本 bundle |
 
 dsh 另有一套同名的同伴模型工具（`tool-agent-team`，experimental，base bundle 未启用），按 teammate 名字寻址，与本流程的子会话不是同一批，不要混用。
 
@@ -66,6 +72,8 @@ dsh plugin --profile dev add dsh-coordinator
 3. **派工**：调用 `spawn_worker`，参数 `task` 必填、`label` 可选。工具立即返回子会话 id；worker 结束后，协调者会被自动唤醒，收到一条「【worker 回报】」完成通知（任务、子会话、状态、产物摘要、下一步）。
 4. **记任务事实**：调用 `create_card` 建卡（`title` 必填），`update_card` 改卡（`id` 必填，改内容带 `expectedRevision` 做乐观并发），`list_cards` 查卡（默认不含归档卡）。卡片落盘在 `$DSH_HOME/dsh-coordinator/cards.json`，编号全局递增不复用。
 5. **看交付看板**：浏览器右栏打开「看板」Tab。卡片不另存一份——卡片工具把卡片结构投影到 `tool/result` 事件的 `meta` 上，与 session log 一起持久化；面板重放本会话的投影还原看板。因此**卡片要在同一个会话里产生**才会出现在该会话的看板上。
+6. **管理项目**：项目是显式注册的实体，不是目录。`add_project` 在目标目录里建好协调者会话并与项目绑定，`list_projects` 列出全部项目，`switch_project` 给出目标项目的协调者会话 id，`remove_project` 注销项目（协调者会话保留）。浏览器左栏底部有「项目」区块，可加项目、点项目名打开其协调者会话、换新协调者、注销项目。
+7. **配角色槽位**：在项目目录写 `SLOTS.md`，按 `## <槽位名>` 分节写角色的工作方法与人设；在卡片的 `slots` 字段把槽位名绑到会话 id，该会话每轮 turn 都会注入对应槽位正文，改动 `SLOTS.md` 在下一轮 turn 生效。槽位只贡献提示词文本，不授予工具权限。
 
 协议层也随 bundle 分发到 `skills/` 下；项目内若自行放置 `.agents/skills/coordinator-mode/`，项目副本优先（dsh 的 skill 发现按来源层级取优）。
 
@@ -81,9 +89,12 @@ dsh plugin --profile dev add dsh-coordinator
 
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
 - **看板只覆盖当前会话**。卡片数据随会话事件持久化，看板重放本会话的投影——别的会话建的卡不会出现在这里。面板会主动加载该会话的完整历史（会话事件按页加载，最多翻 20 页；到顶会标注「仅显示已加载的历史片段」）。信号灯（停滞判定）尚未实现。
-- **角色槽位尚未实现**（P3）。协议层现在用通用方法描述代替槽位指派。
-- **卡片编号是全局的**。P2 没有项目实体，编号跨项目不复用也不分区——将来若引入项目并要求按项目编号，需迁移存量卡片。
+- **项目区块在左栏底部，不在工作区上方**。dsh 的左栏正文区只有 `sidebar.workspaces` 一个槽且已被宿主占用，slot 机制没有包装能力，第三方无法插入并列区块——footer 是唯一落点。
+- **项目协调者会话落 dsh 左栏的「未分组」桶**。dsh 的会话树按 workspace 归组，项目会话不被任何 workspace 认领；Telov 里项目会话从工作区列表双向排除，这里做不到。
+- **worker 会话在 dsh 左栏不可见**。worker 是 subagent 会话（`origin==='subagent'`），被左栏过滤。
+- **卡片编号是全局的**。卡片不按项目分区，编号跨项目不复用也不分区——将来若要求按项目编号，需迁移存量卡片。
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
+- **浏览器侧 → 宿主侧走自建 HTTP 通道**（`/coordinator`，POST + JSON + 同源校验）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 共享通道被官方 gateway 占用、且需装 dsh 内部包。自建通道的鉴权强度弱于官方 `/api`（只校验同源），本机进程可伪造 Origin 头调用它。
 
 ## 开发
 
