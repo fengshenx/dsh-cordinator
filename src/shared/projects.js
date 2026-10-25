@@ -1,20 +1,34 @@
 /**
- * 项目数据的通道契约。
+ * 项目数据的 Typert 通道契约。
  *
- * 宿主侧与浏览器侧共用：通道路径、端点名、载荷形状。放在 `shared/` 是因为两端
- * 各跑各的进程，浏览器半边不能 import 宿主模块里的实现。
+ * 宿主侧与浏览器侧共用：服务键、线上命名空间、方法名与参数名。放在 `shared/`
+ * 是因为两端各跑各的进程，浏览器半边不能 import 宿主模块里的实现。
+ *
+ * 通道走 dsh 官方的 Typert 远程调用（`/api` 共享通道），与工作区控制器同构：
+ * 宿主侧把服务注册进 Cordis，浏览器侧把同一批方法挂到 `ctx.remote` 上。
  *
  * @module dsh-coordinator/shared/projects
  */
 
-/** 项目数据的自有 HTTP 通道路径前缀。 */
-export const PROJECT_RPC_PATH = '/coordinator'
+/** 宿主侧的 Cordis 服务键。 */
+export const PROJECT_REMOTE_SERVICE_KEY = 'dsh-coordinatorProjects'
 
-/** 通道上的端点名。 */
-export const PROJECT_ENDPOINTS = Object.freeze({
-  list: 'projects/list',
-  create: 'projects/create',
-  remove: 'projects/remove',
-  rename: 'projects/rename',
-  replaceCoordinator: 'projects/replace-coordinator',
+/** 线上命名空间，即 endpoint 的 `namespace/method` 前缀。 */
+export const PROJECT_REMOTE_NAMESPACE = 'projects'
+
+/**
+ * 每个远程方法的参数名。
+ *
+ * 参数名同时是宿主侧方法的形参与浏览器侧 descriptor 的 wire 字段名——Typert 的
+ * SRC 通道按宿主方法源码里的形参名建 wire 字段，两边必须逐字一致。
+ *
+ * 方法名要避开官方命名空间服务保留的字（`ctx`、`name`、`methods` 等，以及
+ * Cordis 服务原型的成员）：官方在挂载前会逐个检查，撞名即拒收整个命名空间。
+ */
+export const PROJECT_REMOTE_METHODS = Object.freeze({
+  list: Object.freeze([]),
+  create: Object.freeze(['directory', 'name']),
+  unregister: Object.freeze(['id']),
+  rename: Object.freeze(['id', 'name']),
+  replaceCoordinator: Object.freeze(['id']),
 })

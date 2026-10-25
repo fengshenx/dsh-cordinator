@@ -2,7 +2,7 @@
  * 左栏项目区块。
  *
  * 宿主侧的项目注册表是唯一真源，浏览器侧只做呈现与操作：列项目、加项目、打开
- * 项目的协调者会话、注销项目。
+ * 项目的协调者会话、改名、换新协调者、注销项目。
  *
  * **加项目**：选目录 → 起名 → 注册。注册时宿主会在该目录里建一个协调者会话并
  * 与项目绑定，所以「加完项目」就已经有一个可用的协调者会话在等用户。
@@ -10,25 +10,34 @@
  * **打开项目**：点项目名就打开它的协调者会话——项目的切换就是会话的切换，会话
  * 的工作目录在创建时定死。
  *
- * 窄侧栏（56px 导轨）放不下列表，改为一个入口按钮 + 浮层；宽侧栏直接内联列表。
+ * **位置**：宽侧栏里区块插在「自动化任务」面板行之下、工作区列表之上。左栏正文
+ * 区只有 `sidebar.workspaces` 一个槽且已被官方工作区浏览占用，slot 机制没有装饰
+ * 或包装能力，第三方无法在它旁边插入并列区块——所以这里按宿主左栏的结构，在
+ * 面板列表之后安一个容器，用 portal 把内容渲染进去。锚点找不到时内容退回底部
+ * 槽，不至于消失。
+ *
+ * 窄侧栏（56px 导轨）放不下列表，改为一个入口按钮 + 浮层。
  *
  * @module dsh-coordinator/client/project-panel
  */
 
-import { createElement, useCallback, useEffect, useState } from 'react'
-import { PROJECT_ENDPOINTS } from '../shared/projects.js'
+import { createElement, useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { ProjectSection } from './project-section.js'
+import { productIcon } from './icons.js'
 import { basenameOf, isProjectOpenable, validateProjectName } from './project-panel-logic.js'
+import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
 
 /**
  * 项目区块。
  * @param {object} props - slot 注入的运行时属性
  * @param {boolean} props.wide - 侧栏是否宽（false 为 56px 导轨）
- * @param {(endpoint: string, payload: object) => Promise<object>} props.callEndpoint - 调用宿主项目通道
+ * @param {(method: string, args: unknown[]) => Promise<unknown>} props.callRemote - 调用宿主远程方法
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务
  * @returns {object} React 元素
  */
 export function ProjectPanel(props) {
-  const { wide, callEndpoint, getUiWorkspace } = props
+  const { wide, callRemote, getUiWorkspace } = props
   const [projects, setProjects] = useState([])
   const [notice, setNotice] = useState('')
   const [draft, setDraft] = useState(null)
@@ -37,12 +46,12 @@ export function ProjectPanel(props) {
 
   const refresh = useCallback(async () => {
     try {
-      const value = await callEndpoint(PROJECT_ENDPOINTS.list, {})
-      setProjects(value.projects ?? [])
+      const value = await callRemote('list', [])
+      setProjects(Array.isArray(value) ? value : [])
     } catch (error) {
       setNotice(`读取项目失败：${error instanceof Error ? error.message : String(error)}`)
     }
-  }, [callEndpoint])
+  }, [callRemote])
 
   useEffect(() => {
     void refresh()
@@ -51,6 +60,14 @@ export function ProjectPanel(props) {
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [refresh])
+
+  // 通道挂好后补刷一次：挂载前那一次必然失败。挂载失败也要重渲染，错误原因
+  // 才出现在界面上。
+  const [, setChannelTick] = useState(0)
+  useEffect(() => onProjectRemoteReady(() => {
+    setChannelTick((tick) => tick + 1)
+    void refresh()
+  }), [refresh])
 
   const startAdd = useCallback(async () => {
     if (busy) return
@@ -82,10 +99,7 @@ export function ProjectPanel(props) {
     setBusy(true)
     setNotice('')
     try {
-      await callEndpoint(PROJECT_ENDPOINTS.create, {
-        directory: draft.directory,
-        name: draft.name,
-      })
+      await callRemote('create', [draft.directory, draft.name])
       setDraft(null)
       await refresh()
     } catch (error) {
@@ -93,7 +107,7 @@ export function ProjectPanel(props) {
     } finally {
       setBusy(false)
     }
-  }, [busy, callEndpoint, draft, refresh])
+  }, [busy, callRemote, draft, refresh])
 
   const openProject = useCallback((project) => {
     if (!isProjectOpenable(project)) {
@@ -108,298 +122,183 @@ export function ProjectPanel(props) {
     uiWorkspace.openSession(project.coordinatorSessionId)
   }, [getUiWorkspace])
 
+  const renameProject = useCallback(async (project, name) => {
+    if (busy) return
+    const check = validateProjectName(name)
+    if (!check.ok) {
+      setNotice(check.error)
+      return
+    }
+    setBusy(true)
+    setNotice('')
+    try {
+      await callRemote('rename', [project.id, name])
+      await refresh()
+    } catch (error) {
+      setNotice(`改名失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, callRemote, refresh])
+
   const replaceCoordinator = useCallback(async (project) => {
     if (busy) return
     setBusy(true)
     setNotice('')
     try {
-      await callEndpoint(PROJECT_ENDPOINTS.replaceCoordinator, { id: project.id })
+      await callRemote('replaceCoordinator', [project.id])
       await refresh()
     } catch (error) {
       setNotice(`换新协调者失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setBusy(false)
     }
-  }, [busy, callEndpoint, refresh])
+  }, [busy, callRemote, refresh])
 
   const removeProject = useCallback(async (project) => {
     if (busy) return
     setBusy(true)
     setNotice('')
     try {
-      await callEndpoint(PROJECT_ENDPOINTS.remove, { id: project.id })
+      await callRemote('unregister', [project.id])
       await refresh()
     } catch (error) {
       setNotice(`注销项目失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setBusy(false)
     }
-  }, [busy, callEndpoint, refresh])
+  }, [busy, callRemote, refresh])
 
-  const body = createElement(
-    ProjectList,
-    {
-      projects,
-      busy,
-      notice,
-      draft,
-      onAdd: () => { void startAdd() },
-      onConfirmAdd: () => { void confirmAdd() },
-      onCancelAdd: () => setDraft(null),
-      onDraftName: (name) => setDraft((current) => (current === null ? current : { ...current, name })),
-      onOpen: openProject,
-      onReplace: (project) => { void replaceCoordinator(project) },
-      onRemove: (project) => { void removeProject(project) },
-    },
-  )
+  const body = createElement(ProjectSection, {
+    projects,
+    busy,
+    notice: isProjectRemoteReady()
+      ? notice
+      : `项目通道未就绪。${projectRemoteError()}${notice}`,
+    draft,
+    onAdd: () => { void startAdd() },
+    onConfirmAdd: () => { void confirmAdd() },
+    onCancelAdd: () => setDraft(null),
+    onDraftName: (name) => setDraft((current) => (current === null ? current : { ...current, name })),
+    onOpen: openProject,
+    onRename: (project, name) => { void renameProject(project, name) },
+    onReplace: (project) => { void replaceCoordinator(project) },
+    onRemove: (project) => { void removeProject(project) },
+  })
 
-  if (wide) {
+  if (!wide) {
+    // 窄导轨放不下列表：图标入口 + 浮层。图标取工作区同款，工作区在导轨里也是
+    // 一列图标。
     return createElement(
       'div',
-      { style: { padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
-      body,
-    )
-  }
-
-  // 窄导轨放不下列表：入口按钮 + 浮层。
-  return createElement(
-    'div',
-    { style: { position: 'relative' } },
-    createElement(
-      'button',
-      {
-        type: 'button',
-        title: '项目',
-        onClick: () => setFloating((value) => !value),
-        style: {
-          width: '100%',
-          padding: '4px 0',
-          fontSize: '11px',
-          color: floating ? '#c9d1d9' : '#8b949e',
-          background: floating ? 'rgba(125, 133, 144, 0.12)' : 'transparent',
-          border: 'none',
-          borderRadius: '4px',
-          cursor: 'pointer',
-        },
-      },
-      '项目',
-    ),
-    floating
-      ? createElement(
-          'div',
-          {
-            style: {
-              position: 'fixed',
-              left: '60px',
-              bottom: '56px',
-              width: '240px',
-              maxHeight: '60vh',
-              overflowY: 'auto',
-              padding: '8px',
-              background: '#161b22',
-              border: '1px solid rgba(125, 133, 144, 0.35)',
-              borderRadius: '6px',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
-              zIndex: 40,
-            },
-          },
-          body,
-        )
-      : null,
-  )
-}
-
-/**
- * 项目列表。
- * @param {object} props - 组件属性
- * @returns {object} React 元素
- */
-function ProjectList(props) {
-  const {
-    projects, busy, notice, draft,
-    onAdd, onConfirmAdd, onCancelAdd, onDraftName,
-    onOpen, onReplace, onRemove,
-  } = props
-
-  return createElement(
-    'div',
-    { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
-    createElement(
-      'div',
-      { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-      createElement(
-        'span',
-        { style: { fontSize: '12px', color: '#8b949e', fontWeight: 600 } },
-        `项目（${projects.length}）`,
-      ),
+      { style: { position: 'relative' } },
       createElement(
         'button',
         {
           type: 'button',
-          title: '加项目：选一个目录',
-          disabled: busy,
-          onClick: onAdd,
+          title: '项目',
+          'aria-label': '项目',
+          onClick: () => setFloating((value) => !value),
           style: {
-            marginLeft: 'auto',
-            padding: '0 6px',
-            fontSize: '13px',
-            lineHeight: '18px',
-            color: '#8b949e',
-            background: 'transparent',
-            border: '1px solid rgba(125, 133, 144, 0.35)',
-            borderRadius: '4px',
-            cursor: busy ? 'default' : 'pointer',
+            width: '100%',
+            padding: '4px 0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: floating ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+            background: floating ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
+            border: 'none',
+            borderRadius: 'var(--dsw-radius-sm)',
+            cursor: 'pointer',
           },
         },
-        '+',
+        productIcon('workspace-tree-outline'),
       ),
-    ),
-    draft === null
-      ? null
-      : createElement(
-          'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: '4px', padding: '4px 0' } },
-          createElement(
+      floating
+        ? createElement(
             'div',
-            { style: { fontSize: '11px', color: '#8b949e', wordBreak: 'break-all' } },
-            draft.directory,
-          ),
-          createElement(
-            'input',
             {
-              type: 'text',
-              value: draft.name,
-              autoFocus: true,
-              onChange: (event) => onDraftName(event.target.value),
-              onKeyDown: (event) => {
-                if (event.key === 'Enter') onConfirmAdd()
-                if (event.key === 'Escape') onCancelAdd()
-              },
               style: {
-                padding: '2px 4px',
-                fontSize: '12px',
-                color: '#c9d1d9',
-                background: '#0d1117',
-                border: '1px solid rgba(125, 133, 144, 0.35)',
-                borderRadius: '4px',
+                position: 'fixed',
+                left: '60px',
+                bottom: '56px',
+                width: '240px',
+                maxHeight: '60vh',
+                overflowY: 'auto',
+                padding: '8px',
+                background: 'var(--dsw-specific-sidebar-fill)',
+                border: '1px solid var(--dsw-alias-border-l4)',
+                borderRadius: 'var(--dsw-radius-lg)',
+                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
+                zIndex: 40,
               },
             },
-          ),
-          createElement(
-            'div',
-            { style: { display: 'flex', gap: '4px' } },
-            createElement(
-              'button',
-              { type: 'button', disabled: busy, onClick: onConfirmAdd, style: miniButtonStyle },
-              '注册',
-            ),
-            createElement(
-              'button',
-              { type: 'button', onClick: onCancelAdd, style: miniButtonStyle },
-              '取消',
-            ),
-          ),
-        ),
-    projects.length === 0
-      ? createElement(
-          'div',
-          { style: { fontSize: '11px', color: '#8b949e', lineHeight: '1.5' } },
-          '还没有项目。加一个即在它的目录里建好协调者会话。',
-        )
-      : createElement(
-          'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-          projects.map((project) => createElement(ProjectRow, {
-            key: project.id,
-            project,
-            busy,
-            onOpen,
-            onReplace,
-            onRemove,
-          })),
-        ),
-    notice === ''
-      ? null
-      : createElement('div', { style: { fontSize: '11px', color: '#d29922', lineHeight: '1.5' } }, notice),
-  )
+            body,
+          )
+        : null,
+    )
+  }
+
+  return createElement(SidebarPlacement, null, body)
 }
 
 /**
- * 小按钮的统一样式。
- * @type {object}
+ * 找左栏根容器：向上找到第一个「直接子元素里有面板列表 nav」的祖先。
+ *
+ * 插槽 occupant 在宿主树里的层数随宿主版本变，固定层数会失配；「最近的、且直接
+ * 含有 nav 的祖先」这个判据在宿主改版时自然落空，退回原位渲染。
+ *
+ * @param {Element} anchor - 锚点元素
+ * @returns {Element | null} 左栏根容器
  */
-const miniButtonStyle = {
-  padding: '1px 6px',
-  fontSize: '11px',
-  color: '#8b949e',
-  background: 'transparent',
-  border: '1px solid rgba(125, 133, 144, 0.35)',
-  borderRadius: '4px',
-  cursor: 'pointer',
+function findSidebarRoot(anchor) {
+  let node = anchor.parentElement
+  while (node !== null) {
+    if (node.querySelector(':scope > nav') !== null) return node
+    node = node.parentElement
+  }
+  return null
 }
 
 /**
- * 一个项目行。
+ * 把区块安到左栏的面板列表之下、工作区列表之上。
+ *
+ * 宿主左栏的正文区只有一个 `sidebar.workspaces` 槽（已被官方工作区浏览占用），
+ * 第三方插件没有并列区块的注册位。宿主的面板列表是一个 `nav`，它的下一个兄弟
+ * 元素就是工作区所在的滚动区——在两者之间插一个容器即可得到想要的位置。宿主
+ * 改版导致找不到锚点时，内容退回原处渲染，功能不受影响。
+ *
  * @param {object} props - 组件属性
+ * @param {object} props.children - 区块内容
  * @returns {object} React 元素
  */
-function ProjectRow(props) {
-  const { project, busy, onOpen, onReplace, onRemove } = props
-  const openable = isProjectOpenable(project)
+function SidebarPlacement(props) {
+  const anchorRef = useRef(null)
+  const [container, setContainer] = useState(null)
+
+  useEffect(() => {
+    const anchor = anchorRef.current
+    if (anchor === null) return undefined
+    const root = findSidebarRoot(anchor)
+    if (root === null) return undefined
+    const nav = root.querySelector(':scope > nav')
+    if (nav === null) return undefined
+    const host = document.createElement('div')
+    host.setAttribute('data-dsh-coordinator-projects', '')
+    host.style.flex = 'none'
+    nav.insertAdjacentElement('afterend', host)
+    setContainer(host)
+    return () => {
+      host.remove()
+      setContainer(null)
+    }
+  }, [])
+
   return createElement(
     'div',
-    { style: { display: 'flex', alignItems: 'center', gap: '4px' } },
-    createElement(
-      'button',
-      {
-        type: 'button',
-        title: project.directory,
-        disabled: busy,
-        onClick: () => onOpen(project),
-        style: {
-          flex: '1 1 auto',
-          minWidth: 0,
-          textAlign: 'left',
-          padding: '3px 4px',
-          fontSize: '12px',
-          color: openable ? '#c9d1d9' : '#8b949e',
-          background: 'transparent',
-          border: 'none',
-          borderRadius: '4px',
-          cursor: busy ? 'default' : 'pointer',
-          overflow: 'hidden',
-        },
-      },
-      createElement(
-        'span',
-        { style: { fontWeight: 600, marginRight: '4px' } },
-        project.name,
-      ),
-      createElement(
-        'span',
-        {
-          style: {
-            fontSize: '10px',
-            opacity: 0.65,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          },
-        },
-        project.directory,
-      ),
-    ),
-    openable
-      ? null
-      : createElement(
-          'button',
-          { type: 'button', title: '换新协调者', disabled: busy, onClick: () => onReplace(project), style: miniButtonStyle },
-          '换协调者',
-        ),
-    createElement(
-      'button',
-      { type: 'button', title: '注销项目', disabled: busy, onClick: () => onRemove(project), style: miniButtonStyle },
-      '×',
-    ),
+    // 锚点自身不参与布局：内容移到宿主容器后，锚点只剩一个定位点；宿主结构变了
+    // 导致没移成时，内容就落回这个锚点里，仍然可见。
+    { ref: anchorRef, style: { display: 'contents' } },
+    container === null ? props.children : createPortal(props.children, container),
   )
 }

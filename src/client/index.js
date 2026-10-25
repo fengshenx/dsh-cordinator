@@ -5,8 +5,8 @@
  * 与操作。看板数据来自会话事件流里 `tool/result` 事件的 `meta`——卡片工具用
  * `output.presentationMeta` 投影的结构化卡片，与 session log 一起持久化。
  *
- * 项目数据走宿主自有的 HTTP 通道（`/coordinator`），浏览器侧没有文件系统，
- * 项目的真源在宿主侧。
+ * 项目数据走 dsh 官方的 Typert 远程通道（命名空间 `projects`，经 `/api` 共享
+ * 通道），浏览器侧没有文件系统，项目的真源在宿主侧。
  *
  * 客户端插件在浏览器进程运行，`ctx.sidebarRightTabs` 与 `ctx.slots` 都是
  * client 服务，宿主侧插件拿不到（见 docs/capability-gaps.md 第 15 条）。
@@ -16,7 +16,7 @@
 
 import { BoardBody } from './board.js'
 import { ProjectPanel } from './project-panel.js'
-import { callProjectRpc } from './project-rpc.js'
+import { callProjectRemote, mountProjectRemote, reportProjectRemoteError } from './project-remote.js'
 
 export const inject = ['slots', 'sidebarRightTabs', 'sessions']
 
@@ -67,8 +67,19 @@ export function apply(ctx) {
     order: 10,
     label: '项目',
     inject: () => ({
-      callEndpoint: (endpoint, payload) => callProjectRpc(endpoint, payload),
+      callRemote: (method, args) => callProjectRemote(ctx, method, args),
       getUiWorkspace: () => ctx.get('uiWorkspace'),
     }),
   }, ProjectPanel)), 'dsh-coordinator 左栏项目区块')
+
+  // 项目命名空间挂在官方 gateway client 的 `ctx.remote` 上。远程通道由官方
+  // bundle 提供，缺失时这个回调不执行（`ctx.inject` 单独起一个 fiber，不拖累本
+  // 插件），看板与左栏注册照常工作；面板此时显示「项目通道未就绪」。
+  ctx.inject(['remote'], function mountProjectChannel(remoteCtx) {
+    void mountProjectRemote(remoteCtx).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      reportProjectRemoteError(message)
+      remoteCtx.logger?.warn?.(`dsh-coordinator: 项目通道挂载失败：${message}`)
+    })
+  })
 }

@@ -1,0 +1,85 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import {
+  PROJECT_REMOTE_CONTRIBUTION,
+  callProjectRemote,
+  mountProjectRemote,
+} from '../src/client/project-remote.js'
+import {
+  PROJECT_REMOTE_METHODS,
+  PROJECT_REMOTE_NAMESPACE,
+  PROJECT_REMOTE_SERVICE_KEY,
+} from '../src/shared/projects.js'
+
+test('客户端贡献覆盖契约里的每个方法，wire 字段名与形参名一致', () => {
+  const descriptors = PROJECT_REMOTE_CONTRIBUTION.descriptors
+  assert.equal(PROJECT_REMOTE_CONTRIBUTION.package, 'dsh-coordinator')
+  assert.deepEqual(
+    descriptors.map((descriptor) => descriptor.method),
+    Object.keys(PROJECT_REMOTE_METHODS),
+  )
+  for (const descriptor of descriptors) {
+    assert.equal(descriptor.namespace, PROJECT_REMOTE_NAMESPACE)
+    assert.equal(descriptor.service, PROJECT_REMOTE_SERVICE_KEY)
+    assert.deepEqual(descriptor.invocation, { kind: 'direct' })
+    assert.deepEqual(
+      descriptor.parameters.map((parameter) => parameter.wire),
+      [...PROJECT_REMOTE_METHODS[descriptor.method]],
+    )
+  }
+})
+
+test('每个入参都有严格 codec：宿主拒绝没有严格 codec 的描述符', () => {
+  for (const descriptor of PROJECT_REMOTE_CONTRIBUTION.descriptors) {
+    for (const parameter of descriptor.parameters) {
+      assert.equal(parameter.codec.mode, 'strict')
+      assert.equal(parameter.codec.create().parse('值'), '值')
+      assert.throws(() => parameter.codec.create().parse(1), /期望字符串/)
+    }
+  }
+})
+
+test('挂载把贡献交给宿主远程服务', async () => {
+  const mounted = []
+  const ctx = {
+    get(key) {
+      return key === 'remote'
+        ? { $mount: async (contribution) => { mounted.push(contribution) } }
+        : undefined
+    },
+  }
+
+  await mountProjectRemote(ctx)
+  assert.equal(mounted.length, 1)
+  assert.equal(mounted[0], PROJECT_REMOTE_CONTRIBUTION)
+})
+
+test('宿主没有远程通道时报错', async () => {
+  await assert.rejects(() => mountProjectRemote({ get: () => undefined }), /宿主未提供远程调用通道/)
+})
+
+test('调用把成功结果原样返回', async () => {
+  const ctx = {
+    get(key) {
+      if (key !== 'remote.projects') return undefined
+      return { list: async () => ({ ok: true, value: [{ id: 'p1' }] }) }
+    },
+  }
+
+  assert.deepEqual(await callProjectRemote(ctx, 'list', []), [{ id: 'p1' }])
+})
+
+test('调用把业务失败变成异常', async () => {
+  const ctx = {
+    get(key) {
+      if (key !== 'remote.projects') return undefined
+      return { list: async () => ({ ok: false, error: { code: 'gateway/internal' } }) }
+    },
+  }
+
+  await assert.rejects(() => callProjectRemote(ctx, 'list', []), /gateway\/internal/)
+})
+
+test('通道没挂上时报项目通道不可用', async () => {
+  await assert.rejects(() => callProjectRemote({ get: () => undefined }, 'list', []), /项目通道不可用/)
+})

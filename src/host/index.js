@@ -3,7 +3,7 @@
  *
  * 贡献八件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
  * 派工完成后的自动唤醒、任务看板卡片存储与卡片工具、项目注册表与项目作用域工具、
- * 项目数据的浏览器通道，以及角色槽位到系统提示词的注入。
+ * 项目数据的 Typert 远程通道，以及角色槽位到系统提示词的注入。
  *
  * 客户端侧（交付看板 UI 与左栏项目区块）在 `src/client/`，跑在浏览器进程，与本
  * 模块不共处。
@@ -27,7 +27,7 @@ import { createNotificationStore, resolveDshHome } from './notification-store.js
 import { createCardStore } from './cards/store.js'
 import { createProjectStore } from './projects/store.js'
 import { createProjectService } from './projects/service.js'
-import { applyProjectRpc } from './projects/rpc.js'
+import { createProjectRemote } from './projects/remote.js'
 import { createDispatcher } from './dispatch.js'
 import { applyRoleContext } from './slots/index.js'
 
@@ -77,8 +77,9 @@ export function apply(ctx) {
   ctx.tools.register(createSwitchProjectTool({ service: projectService }))
   ctx.tools.register(createRemoveProjectTool({ service: projectService }))
 
-  // 浏览器侧要读项目、也要建项目，走宿主自有的 `/coordinator` HTTP 通道。
-  applyProjectRpc({ ctx, service: projectService, logger })
+  // 浏览器侧要读项目、也要建项目，走 dsh 官方的 Typert 远程调用（`/api`
+  // 共享通道），与工作区控制器同构。
+  createProjectRemote({ service: projectService, ctx })
 
   const store = createNotificationStore({ logger })
   const dispatcher = createDispatcher({
