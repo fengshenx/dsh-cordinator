@@ -50,6 +50,7 @@ export function buildNotificationText(record, outcome) {
  * @param {object} options.store - 通知落盘队列
  * @param {string} [options.provider] - subagent provider 名，默认 `spawn`
  * @param {number} [options.autoResumeLimit] - 连续自动续行上限
+ * @param {(parentSessionId: string) => string | undefined} [options.resolveWorkerCwd] - 取 worker 的工作目录
  * @param {(message: string) => void} [options.logger] - 日志输出
  * @returns {object} 派工器接口
  */
@@ -58,6 +59,7 @@ export function createDispatcher({
   store,
   provider = 'spawn',
   autoResumeLimit = DEFAULT_AUTO_RESUME_LIMIT,
+  resolveWorkerCwd,
   logger = () => {},
 }) {
   /** @type {Map<string, object>} 派工记录，key 为子会话 id */
@@ -176,10 +178,18 @@ export function createDispatcher({
     if (subagents === undefined) {
       throw new Error('dsh-coordinator: 当前组合未启用 subagents 服务，无法派工')
     }
+    // worker 的工作目录由项目决定：协调者不能指定 worker 跑在哪，也不该让
+    // worker 跑到项目外面去。项目目录是绝对路径，subagent 直接采用。
+    const cwd = resolveWorkerCwd?.(parent.id)
     const activation = await subagents.startActivation({
       provider,
       label,
-      request: { parent, prompt: [{ type: 'text', text: task }], signal },
+      request: {
+        parent,
+        prompt: [{ type: 'text', text: task }],
+        signal,
+        ...cwd === undefined ? {} : { cwd },
+      },
       signal,
       delivery: 'caller',
     })
