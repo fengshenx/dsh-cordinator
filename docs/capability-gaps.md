@@ -183,6 +183,14 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：任何「列表」都不能只用 `ctx.sessions.list()`——进程重启后，未加载的历史会话不在其中，昨天还在的条目今天会从列表消失。项目列表因此**不**从会话推导，而是显式注册表（`projects.json`），真源是注册表而不是会话语料。
 
+**但浏览器侧的 `ctx.sessions` 是另一个服务**（同名不同物，务必分清）：session-controller 的客户端服务用 `rootCtx.reflect.provide('sessions', …)` 注册（`packages/api/session-controller/src/client/sessions/service.ts:286`），它的 `list` 是快照存储而不是函数。快照 `getSnapshot()` 给出 `{ids, byId, phase}`，`byId` 每行带 `title` / `displayTitle` / `cwd` / `origin` / `running` / `blank` / `updatedAt`——**含全部持久会话，也含 `origin==='subagent'` 的 worker 会话**（官方左栏把后者过滤掉了，第三方读得到）。浏览器实测：225 个会话行全部带 `cwd`，其中 51 个是 subagent。快照由 host 的 `session/list` RPC 投影而来（`packages/api/session-controller/src/client/sessions/manager.ts:418-481` → `remote.session.list()`），加载前 `phase` 为 `pending`，取值要等它变 `ready`。
+
+### 21b. 目录归组要按 realpath 比对，字符串相等不够
+
+**实测**：同一物理目录在会话头里有两种写法——`/tmp/dsh-demo-project` 与 `/private/tmp/dsh-demo-project`（macOS 的 `/tmp` 是指向 `/private/tmp` 的符号链接）。项目记录里存的是用户给的原始路径，会话头里存的是宿主创建会话时的写法，两者字符串相等但物理目录相同。按字符串分组会把同一个项目拆成两组，且 worker 会话（由派工器注入项目目录）与协调者会话（由建项目时传入目录）常常分属两组。
+
+**应对**：宿主侧统一做 realpath 归一化再比对——官方 workspace 注册表就是这么做的（`packages/workspace/workspace/src/entity.ts:125` 的 `realpathNormalize`）。第三方没有理由发明另一套。
+
 ### 22. 持久化会话头里没有标题与更新时间
 
 **实测**：`SessionHeader` 只有 `version`、`id`、`createdAt`、`cwd`、`parentSession`、`isSeeded`、`origin`、`delegationDepth`、`agentPreset`（`packages/core/session/src/types.ts:95-138`），没有 `title` 与 `updatedAt`——那是客户端投影（`SessionSummary`）才有的字段。
