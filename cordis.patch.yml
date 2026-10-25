@@ -11,10 +11,12 @@
 # `sessionController` 不能声明：它只挂在 web-app bundle 上，声明成必需依赖会让
 # headless 等不含该服务的 profile 整个插件挂起。它改由 `ctx.get()` 惰性获取，
 # 缺失时唤醒能力降级而非失效。
+#
+# `sessionQuery` 同样走惰性获取：它由 sqlite 引擎提供，引擎可能被部署替换。
+#
+# 这里的 `inject` 列表**不写**：与 dsh 官方 bundle 一致，服务依赖由模块自己的
+# `export const inject` 声明。在 patch 里另写一份会与模块声明脱节——模块新增
+# 依赖时，patch 里的旧列表会让插件在访问新服务时抛「without inject」。
 - insert:
     - id: coordinator-host
       name: 'dsh-coordinator'
-      inject:
-        - skills
-        - tools
-        - subagents

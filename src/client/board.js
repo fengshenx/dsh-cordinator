@@ -42,6 +42,23 @@ function statusLabel(status) {
  */
 export function BoardBody(props) {
   const { sessionId, getSessions } = props
+  return createElement(
+    'div',
+    { style: { display: 'flex', flexDirection: 'column' } },
+    createElement(BoardCards, { sessionId, getSessions }),
+  )
+}
+
+/**
+ * 看板卡片区。
+ *
+ * @param {object} props - slot 注入的运行时属性
+ * @param {string} props.sessionId - 面板所属会话
+ * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
+ * @returns {object} React 元素
+ */
+function BoardCards(props) {
+  const { sessionId, getSessions } = props
   const [cards, setCards] = useState([])
   const [error, setError] = useState(null)
   const [history, setHistory] = useState('loading')
