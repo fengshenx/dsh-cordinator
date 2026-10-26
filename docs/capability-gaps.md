@@ -239,7 +239,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 - 方法的形参名就是 wire 字段名，宿主按源码解析形参，客户端必须传同名字段，多一个少一个都会被 `gateway/arguments-invalid` 拒掉；
 - 客户端侧 `$mount` 的贡献里每个入参都要带 strict codec（`requireStrictInputs` 会拒收没有 strict codec 的描述符），宿主侧的 SRC 描述符则一律 `src-json`。
 
-**影响**：浏览器侧 → 宿主侧的调用不必自建 Web 路由（那条路要自己处理同源校验与错误形状，鉴权弱于官方 `/api`），也不必装 dsh 内部包（装它会被宿主的 peer/engines 校验卡住）。本仓取 Typert SRC 通道，见[项目作用域与角色槽位](.agents/notes/2026-10-23-项目作用域与角色槽位.md)。代价是手写的协议形状与宿主版本耦合——宿主改标记契约时本仓要同步改。
+**影响**：浏览器侧 → 宿主侧的调用不必自建 Web 路由（那条路要自己处理同源校验与错误形状，鉴权弱于官方 `/api`），也不必装 dsh 内部包（装它会被宿主的 peer/engines 校验卡住）。本仓取 Typert SRC 通道，见[项目作用域与角色槽位](.agents/notes/2026-10-23-project-scope-and-role-slots.md)。代价是手写的协议形状与宿主版本耦合——宿主改标记契约时本仓要同步改。
 
 ### 27. 左栏没有与工作区并列的区块槽——第三方只能靠 DOM 注入取位
 

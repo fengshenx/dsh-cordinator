@@ -109,6 +109,17 @@ dsh plugin --profile dev add dsh-coordinator
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
 - **浏览器侧 → 宿主侧走 Typert 远程通道**（命名空间 `projects`，经官方 `/api` 共享通道）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 又被官方 gateway 占用；Typert 的 SRC 回退通道允许第三方按协议形状注册服务，但代价是**手写的协议形状与宿主版本耦合**——本仓对齐宿主 `0.2.1-rc.2`（标记属性名、`version:1` 描述符、`typertRemote` 绑定字段、方法形参即 wire 字段名），宿主改契约时本仓要同步改。远程方法名还要避开官方命名空间服务的保留字（撞名会让整个命名空间挂不上）。
 
+## Agent Notes
+
+设计决策与实测记录在 `.agents/notes/`。**文件名一律用英文**（`YYYY-MM-DD-<英文标题>.md`），正文中文。
+
+| 笔记 | 内容 |
+|---|---|
+| [派工与唤醒机制](.agents/notes/2026-10-23-dispatch-and-wakeup.md) | P1：子会话派工、完成通知落盘、父会话唤醒 |
+| [卡片存储与编号作用域](.agents/notes/2026-10-23-card-storage-and-numbering-scope.md) | P2：卡片落盘、编号不复用、乐观并发 |
+| [客户端半边的发现与构建约束](.agents/notes/2026-10-23-client-side-findings-and-build-constraints.md) | P2：浏览器侧可用的注入点与构建约束 |
+| [项目作用域与角色槽位](.agents/notes/2026-10-23-project-scope-and-role-slots.md) | P3：项目实体、协调者会话硬绑定、槽位注入 |
+
 ## 开发
 
 ```sh

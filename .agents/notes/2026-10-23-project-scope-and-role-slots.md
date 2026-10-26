@@ -15,7 +15,7 @@ dsh 侧最容易误认的是 `workspace` 家族——`ctx.workspaceRegistry`，�
 
 ## 决策
 
-**项目 = 显式注册的持久实体**，落盘在 `$DSH_HOME/dsh-coordinator/projects.json`（结构 `{version, projects[]}`，与卡片库同域）。字段与 Telov 对齐：`id` / `name` / `directory` / `coordinatorSessionId?` / `createdAt` / `updatedAt`。存储域自建而非用 dsh storage domain：后者要 zod schema 与 `@deepseek-ai/dsh-storage-domain` peer 依赖，仓外 bundle 带内部 peer 会周期性失效（`agent-team` 是活例，见[卡片存储与编号作用域](2026-10-23-卡片存储与编号作用域.md)）。原子写（tmp + rename）+ 全部读-改-写走同一条 promise 链串行化 + 库损坏时备份并写回空库。
+**项目 = 显式注册的持久实体**，落盘在 `$DSH_HOME/dsh-coordinator/projects.json`（结构 `{version, projects[]}`，与卡片库同域）。字段与 Telov 对齐：`id` / `name` / `directory` / `coordinatorSessionId?` / `createdAt` / `updatedAt`。存储域自建而非用 dsh storage domain：后者要 zod schema 与 `@deepseek-ai/dsh-storage-domain` peer 依赖，仓外 bundle 带内部 peer 会周期性失效（`agent-team` 是活例，见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。原子写（tmp + rename）+ 全部读-改-写走同一条 promise 链串行化 + 库损坏时备份并写回空库。
 
 **项目 ↔ 协调者会话硬绑定**。dsh 的 `SessionHeader` 是封闭字段、没有自由元数据槽（`packages/core/session/src/types.ts:95-138`），第三方无法给会话塞 `projectId`；`coordinatorSessionId` 指针因此存在**项目记录**里，这是绑定关系的唯一真源。`SessionHeader.cwd` 是 readonly 且创建时定死（`:106`），`session.create` 接受 `workspaceId` 或 `cwd` 二选一（`packages/api/session-controller/src/commands.ts:112-124`）——所以「切项目」在 dsh 里天然是「切到另一个 cwd 的会话」，与 Telov「切项目 = 切协调者会话」本就是同一件事。
 
@@ -73,7 +73,7 @@ Typert 侧的关键发现是：**宿主 gateway 在 strict 生成描述符缺失
 
 ## 边界
 
-- **卡片不按项目分区，编号仍全局递增**。按项目编号要迁移存量卡片的编号作用域（已在[卡片存储与编号作用域](2026-10-23-卡片存储与编号作用域.md)里记为已知代价），本轮不做，列 P4。因此跨项目的卡片在同一个库里混列，`@#n` 引用在跨项目场景下会歧义。
+- **卡片不按项目分区，编号仍全局递增**。按项目编号要迁移存量卡片的编号作用域（已在[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)里记为已知代价），本轮不做，列 P4。因此跨项目的卡片在同一个库里混列，`@#n` 引用在跨项目场景下会歧义。
 - **项目实体只有 name 与 directory 可变**。更新走字段白名单（`name` / `coordinatorSessionId`），目录在创建时定死——目录变了就等于换了一个项目，Telov 也是这个语义。
 - **点项目会把项目目录注册成 dsh 工作区**。官方 UI 只能打开归属工作区的会话，不注册就没有打开路径。插件注册的工作区从官方左栏的工作区树里隐藏（渲染层，官方数据不动）——工作区仍在宿主的数据里，用户可在 dsh 的工作区管理面板里看到并删除它。
 - **插件注册的工作区被隐藏后，官方 UI 里没法直接删它**。隐藏只发生在左栏的工作区树；删除入口因此放在项目自己的「更多」菜单里（「从 dsh 移除工作区」），走宿主 `workspaceRegistry.delete(id)`——它只删工作区注册，目录与全部会话日志都留着，协调者会话仍在，只是不再归属工作区；下次打开项目会重新注册并挂上。宿主侧的工作区注册表与本仓的项目注册表是两份数据，删除时两边同步清。
