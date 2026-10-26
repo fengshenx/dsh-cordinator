@@ -29,13 +29,22 @@ const STORE_VERSION = 1
 export const CARD_STATUSES = Object.freeze(['active', 'done', 'archived'])
 
 /**
+ * 落盘用的文件系统调用。
+ *
+ * 抽成可替换的依赖是为了让测试能构造确定的读写交错——索引重建与写卡同时发生时，
+ * 谁先谁后靠真实文件系统是排不出来的。
+ */
+const defaultIo = Object.freeze({ mkdir, readFile, rename, writeFile })
+
+/**
  * 读取卡片库；文件缺失返回空库。
  * @param {string} file - 卡片库文件路径
  * @param {() => Promise<void>} [onCorrupt] - 库损坏且已备份后的补救动作
+ * @param {object} [io] - 文件系统调用
  * @returns {Promise<{ version: number, counter: number, cards: object[] }>} 卡片库快照
  */
-async function readStore(file, onCorrupt) {
-  const raw = await readFile(file, 'utf8').catch(() => undefined)
+async function readStore(file, onCorrupt, io = defaultIo) {
+  const raw = await io.readFile(file, 'utf8').catch(() => undefined)
   if (raw === undefined) return { version: STORE_VERSION, counter: 0, cards: [] }
   try {
     const parsed = JSON.parse(raw)
@@ -67,9 +76,10 @@ async function readStore(file, onCorrupt) {
  * @param {object} options - 选项
  * @param {string} options.home - dsh home 目录
  * @param {(message: string) => void} [options.logger] - 日志输出
+ * @param {object} [options.io] - 文件系统调用（测试用）
  * @returns {object} 卡片存储接口
  */
-export function createCardStore({ home, logger = () => {} } = {}) {
+export function createCardStore({ home, logger = () => {}, io = defaultIo } = {}) {
   const directory = join(home, 'dsh-coordinator')
   const file = join(directory, 'cards.json')
   const temporary = join(directory, 'cards.json.tmp')
@@ -92,9 +102,9 @@ export function createCardStore({ home, logger = () => {} } = {}) {
    * @returns {Promise<void>} 写盘完成
    */
   async function writeStore(store) {
-    await mkdir(directory, { recursive: true })
-    await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
-    await rename(temporary, file)
+    await io.mkdir(directory, { recursive: true })
+    await io.writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
+    await io.rename(temporary, file)
   }
 
   /**
@@ -136,7 +146,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      */
     async create({ title, spec, links, slots, checkpoint, updatedBy }) {
       return serialize(async () => {
-        const store = await readStore(file, recoverFromCorruption)
+        const store = await readStore(file, recoverFromCorruption, io)
         const now = Date.now()
         const card = {
           id: randomUUID(),
@@ -189,7 +199,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
       updatedBy,
     }) {
       return serialize(async () => {
-        const store = await readStore(file, recoverFromCorruption)
+        const store = await readStore(file, recoverFromCorruption, io)
         const card = store.cards.find((item) => item.id === id)
         if (card === undefined) throw new Error(`卡片不存在：${id}`)
         const current = card.revision ?? 0
@@ -239,7 +249,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      * @returns {Promise<object | undefined>} 卡片，不存在时 undefined
      */
     async get(id) {
-      const store = await readStore(file, recoverFromCorruption)
+      const store = await readStore(file, recoverFromCorruption, io)
       return store.cards.find((item) => item.id === id)
     },
 
@@ -248,12 +258,17 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      *
      * 进程启动时调用：内存索引是进程内的，崩溃后不会留下，索引必须从卡片库恢复。
      *
+     * 必须排在写链上：读盘与重建之间若插进一次写卡，重建会用旧快照覆盖索引，
+     * 丢掉刚落盘的槽位绑定，直到下一次改卡才恢复。
+     *
      * @returns {Promise<Map<string, string>>} 重建后的索引
      */
     async loadSlotIndex() {
-      const store = await readStore(file, recoverFromCorruption)
-      rebuildSlotIndex(store.cards, slotIndex)
-      return slotIndex
+      return serialize(async () => {
+        const store = await readStore(file, recoverFromCorruption, io)
+        rebuildSlotIndex(store.cards, slotIndex)
+        return slotIndex
+      })
     },
 
     /**
@@ -263,7 +278,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      * @returns {Promise<object[]>} 卡片列表
      */
     async list({ status } = {}) {
-      const store = await readStore(file, recoverFromCorruption)
+      const store = await readStore(file, recoverFromCorruption, io)
       const cards = [...store.cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
       return status === undefined ? cards : cards.filter((card) => card.status === status)
     },
