@@ -1,8 +1,8 @@
 /**
  * 左栏「项目」区块的内容。
  *
- * 结构是**项目树**：项目行下面挂着该项目目录里的会话。项目的入口是协调者会话
- * （点项目名打开它），子会话列表展开才看——与 Telov 的侧栏项目类目同构。
+ * 结构是**项目树**：项目行下面挂着该项目目录里的会话。点项目行展开或收起子会话
+ * 列表；协调者会话的入口在行的「更多」菜单里（项目名不再承担两个动作）。
  *
  * 排版对齐宿主的工作区浏览：小节标题用同一套行高与三级标签色，项目行用工作区
  * 行的高度、内边距、圆角与 hover 反馈，图标直接引用宿主的全局 sprite。
@@ -37,6 +37,17 @@ const STYLE_TEXT = `
   flex: none;
   line-height: 20px;
   font-size: 14px;
+}
+.dsh-coordinator-project-header-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 .dsh-coordinator-project-header-actions {
   display: flex;
@@ -211,6 +222,7 @@ const STYLE_TEXT = `
 }
 .dsh-coordinator-session-tag {
   flex: none;
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   color: var(--dsw-alias-label-tertiary);
@@ -256,6 +268,7 @@ export function ProjectSection(props) {
     onOpen, onRename, onReplace, onRemove,
     sessionsByProject, sessionRows, expandedProjects,
     onToggleExpand, onOpenSession,
+    listExpanded, onToggleList,
   } = props
 
   useEffect(() => { ensureStyles() }, [])
@@ -266,7 +279,19 @@ export function ProjectSection(props) {
     createElement(
       'div',
       { className: 'dsh-coordinator-project-header' },
-      createElement('span', { className: 'dsh-coordinator-project-header-label' }, '项目'),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'dsh-coordinator-project-header-toggle',
+          'aria-expanded': listExpanded,
+          title: listExpanded ? '收起项目列表' : '展开项目列表',
+          onClick: onToggleList,
+        },
+        productIcon(listExpanded ? 'chevron-down-outline' : 'chevron-right-outline', { size: 14 }),
+        productIcon('folder-open-outline', { size: 14 }),
+        createElement('span', { className: 'dsh-coordinator-project-header-label' }, '项目'),
+      ),
       createElement(
         'div',
         { className: 'dsh-coordinator-project-header-actions' },
@@ -317,30 +342,32 @@ export function ProjectSection(props) {
         ),
       ),
     ),
-    projects.length === 0
-      ? createElement(
-          'div',
-          { className: 'dsh-coordinator-project-notice' },
-          '还没有项目。加一个即在它的目录里建好协调者会话。',
-        )
-      : createElement(
-          'div',
-          null,
-          projects.map((project) => createElement(ProjectRow, {
-            key: project.id,
-            project,
-            busy,
-            onOpen,
-            onRename,
-            onReplace,
-            onRemove,
-            sessions: sessionsByProject.get(project.id) ?? [],
-            sessionRows,
-            expanded: expandedProjects.has(project.id),
-            onToggleExpand,
-            onOpenSession,
-          })),
-        ),
+    listExpanded
+      ? (projects.length === 0
+          ? createElement(
+              'div',
+              { className: 'dsh-coordinator-project-notice' },
+              '还没有项目。加一个即在它的目录里建好协调者会话。',
+            )
+          : createElement(
+              'div',
+              null,
+              projects.map((project) => createElement(ProjectRow, {
+                key: project.id,
+                project,
+                busy,
+                onOpen,
+                onRename,
+                onReplace,
+                onRemove,
+                sessions: sessionsByProject.get(project.id) ?? [],
+                sessionRows,
+                expanded: expandedProjects.has(project.id),
+                onToggleExpand,
+                onOpenSession,
+              })),
+            ))
+      : null,
     notice === '' ? null : createElement(
       'div',
       { className: 'dsh-coordinator-project-notice' },
@@ -394,9 +421,10 @@ function ProjectRow(props) {
       {
         className: 'dsh-coordinator-project-row',
         'data-dead': openable ? undefined : 'true',
+        title: `${project.name} · ${project.directory}`,
         onClick: (event) => {
           if (event.target.closest('.dsh-coordinator-project-actions') !== null) return
-          onOpen(project)
+          onToggleExpand(project.id)
         },
       },
       createElement(
@@ -431,11 +459,6 @@ function ProjectRow(props) {
             project.name,
           ),
       createElement(
-        'span',
-        { className: 'dsh-coordinator-project-meta' },
-        project.directory,
-      ),
-      createElement(
         'div',
         { className: 'dsh-coordinator-project-actions' },
         openable
@@ -466,6 +489,17 @@ function ProjectRow(props) {
           ? createElement(
               'div',
               { className: 'dsh-coordinator-project-menu', onClick: (event) => event.stopPropagation() },
+              openable
+                ? createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dsh-coordinator-project-menu-item',
+                      onClick: () => { setMenuOpen(false); onOpen(project) },
+                    },
+                    '打开协调者会话',
+                  )
+                : null,
               createElement(
                 'button',
                 {
@@ -534,7 +568,7 @@ function SessionRow(props) {
     },
     row.running
       ? createElement('span', { className: 'dsh-coordinator-session-spinner' })
-      : null,
+      : productIcon('new-chat-outline', { size: 14 }),
     createElement(
       'span',
       { className: 'dsh-coordinator-session-title' },

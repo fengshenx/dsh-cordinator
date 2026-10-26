@@ -10,8 +10,9 @@
  * **打开项目**：点项目名就打开它的协调者会话——项目的切换就是会话的切换，会话
  * 的工作目录在创建时定死。
  *
- * **项目树**：项目行展开后是该项目目录下的会话（协调者不在其中，项目名就是它的
- * 入口）。会话归属由宿主按目录判定——浏览器侧没有文件系统，做不了路径归一。
+ * **项目树**：点项目行展开或收起该项目目录下的会话（协调者不在其中，它的入口在
+ * 行的「更多」菜单里）。会话归属由宿主按目录判定——浏览器侧没有文件系统，做不了
+ * 路径归一。
  *
  * **与官方工作区树并行**：项目下的会话不在官方工作区树里重复出现。官方没有
  * 「按项目排除会话」的扩展点，这层排除走渲染层（见 `workspace-exclusion.js`）。
@@ -57,6 +58,8 @@ export function ProjectPanel(props) {
   const [sessionRows, setSessionRows] = useState({})
   /** 展开了子会话列表的项目 id。 */
   const [expandedProjects, setExpandedProjects] = useState(() => new Set())
+  /** 整个项目列表是否展开（区块标题可折叠）。 */
+  const [listExpanded, setListExpanded] = useState(true)
 
   const refresh = useCallback(async () => {
     // 通道还没挂好时不发请求：报错只会写一条看不懂的「通道不可用」，
@@ -268,6 +271,8 @@ export function ProjectPanel(props) {
     sessionsByProject,
     sessionRows,
     expandedProjects,
+    listExpanded,
+    onToggleList: () => setListExpanded((value) => !value),
     onToggleExpand: (projectId) => setExpandedProjects((current) => {
       const next = new Set(current)
       if (next.has(projectId)) next.delete(projectId)
