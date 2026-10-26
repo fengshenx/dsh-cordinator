@@ -74,3 +74,30 @@ export function selectProjectSessionRows({ sessionIds, sessionRows, coordinatorS
   }
   return rows
 }
+
+/**
+ * 打开项目的协调者会话。
+ *
+ * 官方 UI 只能打开归属工作区的会话（宿主建会话时传 `cwd` 的话不归属任何工作
+ * 区），因此先让宿主把协调者会话挂到项目目录对应的工作区，挂不上就把原因报给
+ * 用户，不静默失败。
+ *
+ * @param {object} options - 选项
+ * @param {object} options.project - 项目
+ * @param {(method: string, args: unknown[]) => Promise<unknown>} options.callRemote - 调用宿主远程方法
+ * @param {(sessionId: string) => void} options.openSession - 打开会话
+ * @returns {Promise<{ok: boolean, message?: string}>} 打开结果
+ */
+export async function openCoordinatorSession({ project, callRemote, openSession }) {
+  try {
+    const result = await callRemote('attachCoordinator', [project.id])
+    if (result?.attached !== true) {
+      return { ok: false, message: result?.reason ?? '协调者会话挂到工作区失败。' }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: `协调者会话挂到工作区失败：${message}` }
+  }
+  openSession(project.coordinatorSessionId)
+  return { ok: true }
+}

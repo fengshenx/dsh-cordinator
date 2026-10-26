@@ -18,6 +18,9 @@ import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { createCanonicalizer, groupSessionsByProject } from './session-index.js'
 
+/** 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。 */
+const canonicalize = createCanonicalizer(realpath)
+
 /** 项目名的长度上限，与 Telov 一致。 */
 const MAX_NAME_LENGTH = 200
 
@@ -98,7 +101,6 @@ export function createProjectService({
   const coordinatorIndex = new Map()
 
   // 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。
-  const canonicalize = createCanonicalizer(realpath)
 
   /**
    * 撤销一个刚建成的协调者会话。
@@ -179,7 +181,10 @@ export function createProjectService({
     },
 
     /**
-     * 列项目，并标注协调者会话是否仍在。
+     * 列项目，并标注协调者会话是否仍在、是否已挂到工作区。
+     *
+     * `coordinatorAttached` 决定浏览器侧能不能把协调者会话打开成主区域：只有
+     * 归属工作区的会话才能被官方 UI 打开（见 `resolveWorkspaceIdForDirectory`）。
      *
      * @returns {Promise<object[]>} 项目列表
      */
@@ -188,7 +193,45 @@ export function createProjectService({
       return Promise.all(projects.map(async (project) => ({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
       })))
+    },
+
+    /**
+     * 确保协调者会话挂在项目目录对应的工作区上。
+     *
+     * 官方 UI 只能打开归属工作区的会话（宿主 `session.create` 传 `cwd` 建出的
+     * 会话不归属任何工作区，见 `resolveWorkspaceIdForDirectory`）。目录还不是
+     * 工作区时这里顺带注册一个——注册是幂等的，宿主侧已有同名工作区就直接复用。
+     *
+     * @param {string} id - 项目 id
+     * @returns {Promise<{attached: boolean, workspaceId?: string, reason?: string}>} 挂载结果
+     */
+    async attachCoordinator(id) {
+      const project = await store.get(id)
+      if (project === undefined) throw new Error('项目不存在')
+      const registry = ctx.get('workspaceRegistry')
+      if (registry === undefined || typeof registry.list !== 'function') {
+        return { attached: false, reason: '当前宿主没有工作区服务，无法把协调者会话挂到工作区。' }
+      }
+      const canonical = await canonicalize(project.directory)
+      let workspace = registry.list().find((item) => item.path === canonical)
+      if (workspace === undefined) {
+        if (typeof registry.create !== 'function') {
+          return { attached: false, reason: '当前宿主的工作区服务不支持注册目录。' }
+        }
+        workspace = await registry.create(canonical, canonical.split(/[\\/]/).pop() ?? canonical)
+      }
+      if ((workspace.sessionIds ?? []).includes(project.coordinatorSessionId)) {
+        return { attached: true, workspaceId: workspace.id }
+      }
+      try {
+        await workspace.attachSession(project.coordinatorSessionId)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return { attached: false, reason: `协调者会话挂到工作区失败：${message}` }
+      }
+      return { attached: true, workspaceId: workspace.id }
     },
 
     /**
@@ -225,7 +268,11 @@ export function createProjectService({
     async get(id) {
       const project = await store.get(id)
       if (project === undefined) return undefined
-      return { ...project, coordinatorAlive: await coordinatorExists(project.coordinatorSessionId) }
+      return {
+        ...project,
+        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
+      }
     },
 
     /**
@@ -240,7 +287,11 @@ export function createProjectService({
     async getByCoordinator(sessionId) {
       const project = await store.getByCoordinator(sessionId)
       if (project === undefined) return undefined
-      return { ...project, coordinatorAlive: await coordinatorExists(project.coordinatorSessionId) }
+      return {
+        ...project,
+        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
+      }
     },
 
     /**
@@ -296,12 +347,53 @@ export function createProjectService({
 }
 
 /**
+ * 解析项目目录对应的工作区；目录还没有工作区就注册一个。
+ *
+ * dsh 的会话只有挂到工作区上，UI 才能把它显示到主区域——宿主 `session.create`
+ * 传 `cwd` 建出来的会话不属于任何工作区（`packages/api/session-controller/src/commands.ts`
+ * 的 create 只在传 `workspaceId` 时 attach），于是官方 UI 没有任何路径能打开它。
+ * 因此建协调者会话前先确保目录已注册为工作区；注册是幂等的，目录已是工作区时
+ * 直接复用。
+ *
+ * @param {object} ctx - Cordis 上下文
+ * @param {string} directory - 项目目录绝对路径
+ * @param {(path: string) => Promise<string>} canonicalize - realpath 归一
+ * @returns {Promise<string | undefined>} 工作区 id；宿主没有工作区服务时 undefined
+ */
+export async function resolveWorkspaceIdForDirectory(ctx, directory, canonicalize) {
+  const registry = ctx.get('workspaceRegistry')
+  if (registry === undefined || typeof registry.list !== 'function') return undefined
+  const canonical = await canonicalize(directory)
+  const existing = registry.list().find((workspace) => workspace.path === canonical)
+  if (existing !== undefined) return existing.id
+  if (typeof registry.create !== 'function') return undefined
+  const created = await registry.create(canonical, canonical.split(/[\\/]/).pop() ?? canonical)
+  return created?.id
+}
+
+/**
+ * 判断会话是否已挂到某个工作区。
+ *
+ * @param {object} ctx - Cordis 上下文
+ * @param {string} sessionId - 会话 id
+ * @returns {boolean} 已挂到工作区时 true
+ */
+export function isSessionAttachedToWorkspace(ctx, sessionId) {
+  const registry = ctx.get('workspaceRegistry')
+  if (registry === undefined || typeof registry.list !== 'function') return false
+  return registry.list().some((workspace) => (workspace.sessionIds ?? []).includes(sessionId))
+}
+
+/**
  * 用宿主服务建一个协调者会话。
  *
  * 优先走 `sessionController`（官方完整路径：建 agent、带上默认模型），它只挂在
  * web-app bundle 上；缺失时退回 `agents` 注册表直接建 agent——`agents` 由 base
  * bundle 提供，所有 profile 都有。两个服务都走惰性获取：它们不在本插件的
  * `inject` 列表里，声明成必需依赖会让不含该服务的 profile 整个插件挂起。
+ *
+ * 走 `sessionController` 时优先按工作区建（见 `resolveWorkspaceIdForDirectory`）：
+ * 只有归属工作区的会话才能被 UI 打开成主区域。
  *
  * @param {object} ctx - Cordis 上下文
  * @param {string} directory - 项目目录绝对路径
@@ -310,7 +402,10 @@ export function createProjectService({
 export async function createCoordinatorSessionWithCtx(ctx, directory) {
   const controller = ctx.get('sessionController')
   if (controller !== undefined && typeof controller.create === 'function') {
-    const created = await controller.create({ cwd: directory })
+    const workspaceId = await resolveWorkspaceIdForDirectory(ctx, directory, canonicalize)
+    const created = await controller.create(workspaceId === undefined
+      ? { cwd: directory }
+      : { workspaceId })
     return created.sessionId
   }
   const agents = ctx.get('agents')

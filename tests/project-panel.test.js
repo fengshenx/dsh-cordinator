@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   basenameOf,
   isProjectOpenable,
+  openCoordinatorSession,
   selectProjectSessionRows,
   validateProjectName,
 } from '../src/client/project-panel-logic.js'
@@ -55,4 +56,46 @@ test('会话列表还没同步到时先略过该会话', () => {
 
 test('没有会话时列表为空', () => {
   assert.deepEqual(selectProjectSessionRows({ sessionIds: [], sessionRows: {} }), [])
+})
+
+test('打开协调者会先让宿主把会话挂到工作区', async () => {
+  const calls = []
+  const opened = []
+  const result = await openCoordinatorSession({
+    project: { id: 'p-1', coordinatorSessionId: 'session-1' },
+    callRemote: async (method, args) => {
+      calls.push([method, args])
+      return { attached: true, workspaceId: 'ws-1' }
+    },
+    openSession: (sessionId) => opened.push(sessionId),
+  })
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls, [['attachCoordinator', ['p-1']]])
+  assert.deepEqual(opened, ['session-1'])
+})
+
+test('挂不上工作区时不打开会话并报出原因', async () => {
+  const opened = []
+  const result = await openCoordinatorSession({
+    project: { id: 'p-1', coordinatorSessionId: 'session-1' },
+    callRemote: async () => ({ attached: false, reason: '当前宿主没有工作区服务' }),
+    openSession: (sessionId) => opened.push(sessionId),
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.message, '当前宿主没有工作区服务')
+  assert.deepEqual(opened, [])
+})
+
+test('远程调用抛错时不打开会话并报出原因', async () => {
+  const opened = []
+  const result = await openCoordinatorSession({
+    project: { id: 'p-1', coordinatorSessionId: 'session-1' },
+    callRemote: async () => {
+      throw new Error('通道断开')
+    },
+    openSession: (sessionId) => opened.push(sessionId),
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /通道断开/)
+  assert.deepEqual(opened, [])
 })

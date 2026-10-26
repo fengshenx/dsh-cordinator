@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, mkdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createProjectStore } from '../src/host/projects/store.js'
-import { createProjectService } from '../src/host/projects/service.js'
+import {
+  createCoordinatorSessionWithCtx,
+  createProjectService,
+  isSessionAttachedToWorkspace,
+  resolveWorkspaceIdForDirectory,
+} from '../src/host/projects/service.js'
 
 /**
  * 造一套临时 home 与项目目录。
@@ -245,4 +250,235 @@ test('注销项目保留协调者会话', async () => {
   const removed = await service.remove(project.id)
   assert.equal(removed.coordinatorSessionId, 'session-1')
   assert.deepEqual(await service.list(), [])
+})
+
+/**
+ * 造一个假的宿主工作区注册表。
+ *
+ * @param {object} [options] - 选项
+ * @param {object[]} [options.workspaces] - 已有工作区
+ * @param {string} [options.createFails] - 注册目录时的报错信息
+ * @returns {object} 注册表与调用记录
+ */
+function createWorkspaceRegistry({ workspaces = [], createFails } = {}) {
+  const created = []
+  const attached = []
+  const registry = {
+    list: () => workspaces,
+    create: async (path, title) => {
+      if (createFails !== undefined) throw new Error(createFails)
+      const workspace = {
+        id: `ws-${created.length + 1}`,
+        path,
+        title,
+        sessionIds: [],
+        attachSession: async (sessionId) => {
+          attached.push({ workspaceId: workspace.id, sessionId })
+          workspace.sessionIds.push(sessionId)
+        },
+      }
+      workspaces.push(workspace)
+      created.push({ path, title })
+      return workspace
+    },
+  }
+  registry.created = created
+  registry.attached = attached
+  return registry
+}
+
+test('attachCoordinator 把协调者会话挂到项目目录的工作区', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.attachCoordinator(project.id)
+  assert.equal(result.attached, true)
+  assert.equal(result.workspaceId, 'ws-1')
+  assert.equal(registry.created.length, 1)
+  assert.equal(registry.created[0].title, join(workspace).split(/[\\/]/).pop())
+  assert.deepEqual(registry.attached, [{ workspaceId: 'ws-1', sessionId: 'session-1' }])
+})
+
+test('attachCoordinator 复用已存在的工作区，不重复注册', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const existing = {
+    id: 'ws-existing',
+    path: await realpath(workspace),
+    title: '已有',
+    sessionIds: [],
+    attachSession: async () => {},
+  }
+  const registry = createWorkspaceRegistry({ workspaces: [existing] })
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.attachCoordinator(project.id)
+  assert.equal(result.attached, true)
+  assert.equal(result.workspaceId, 'ws-existing')
+  assert.equal(registry.created.length, 0)
+})
+
+test('attachCoordinator 对已挂载的会话是幂等的', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await service.attachCoordinator(project.id)
+  await service.attachCoordinator(project.id)
+  assert.equal(registry.attached.length, 1)
+})
+
+test('attachCoordinator 在宿主没有工作区服务时不报错', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = createProjectService({
+    store,
+    ctx: createContext(),
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.attachCoordinator(project.id)
+  assert.equal(result.attached, false)
+  assert.match(result.reason, /工作区/)
+})
+
+test('attachCoordinator 挂载失败时返回原因而不抛出', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  registry.create = async () => ({
+    id: 'ws-1',
+    path: workspace,
+    title: 'alpha',
+    sessionIds: [],
+    attachSession: async () => {
+      throw new Error('会话目录与工作区不一致')
+    },
+  })
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.attachCoordinator(project.id)
+  assert.equal(result.attached, false)
+  assert.match(result.reason, /会话目录与工作区不一致/)
+})
+
+test('项目列表标注协调者会话是否已挂到工作区', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  assert.equal((await service.list())[0].coordinatorAttached, false)
+  await service.attachCoordinator(project.id)
+  assert.equal((await service.list())[0].coordinatorAttached, true)
+  assert.equal((await service.get(project.id)).coordinatorAttached, true)
+})
+
+test('resolveWorkspaceIdForDirectory 复用路径相同的工作区', async () => {
+  const registry = createWorkspaceRegistry({
+    workspaces: [{ id: 'ws-existing', path: '/tmp/demo', title: 'demo', sessionIds: [] }],
+  })
+  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
+  const id = await resolveWorkspaceIdForDirectory(ctx, '/tmp/demo', async (dir) => dir)
+  assert.equal(id, 'ws-existing')
+  assert.equal(registry.created.length, 0)
+})
+
+test('resolveWorkspaceIdForDirectory 没有工作区服务时返回 undefined', async () => {
+  const id = await resolveWorkspaceIdForDirectory(createContext(), '/tmp/demo', async (dir) => dir)
+  assert.equal(id, undefined)
+})
+
+test('resolveWorkspaceIdForDirectory 注册目录并返回新工作区 id', async () => {
+  const registry = createWorkspaceRegistry()
+  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
+  const id = await resolveWorkspaceIdForDirectory(ctx, '/tmp/demo', async (dir) => dir)
+  assert.equal(id, 'ws-1')
+  assert.deepEqual(registry.created, [{ path: '/tmp/demo', title: 'demo' }])
+})
+
+test('isSessionAttachedToWorkspace 判定会话归属', async () => {
+  const registry = createWorkspaceRegistry({
+    workspaces: [{ id: 'ws-1', path: '/tmp/demo', title: 'demo', sessionIds: ['session-a'] }],
+  })
+  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
+  assert.equal(isSessionAttachedToWorkspace(ctx, 'session-a'), true)
+  assert.equal(isSessionAttachedToWorkspace(ctx, 'session-b'), false)
+  assert.equal(isSessionAttachedToWorkspace(createContext(), 'session-a'), false)
+})
+
+test('建协调者会话时传 workspaceId 而不是 cwd', async () => {
+  const registry = createWorkspaceRegistry()
+  const calls = []
+  const ctx = {
+    get: (key) => {
+      if (key === 'workspaceRegistry') return registry
+      if (key === 'sessionController') {
+        return {
+          create: async (options) => {
+            calls.push(options)
+            return { sessionId: 'session-1' }
+          },
+        }
+      }
+      return undefined
+    },
+  }
+  const sessionId = await createCoordinatorSessionWithCtx(ctx, '/tmp/demo')
+  assert.equal(sessionId, 'session-1')
+  assert.deepEqual(calls, [{ workspaceId: 'ws-1' }])
+})
+
+test('宿主没有工作区服务时建协调者会话退回 cwd', async () => {
+  const calls = []
+  const ctx = {
+    get: (key) => {
+      if (key === 'sessionController') {
+        return {
+          create: async (options) => {
+            calls.push(options)
+            return { sessionId: 'session-1' }
+          },
+        }
+      }
+      return undefined
+    },
+  }
+  await createCoordinatorSessionWithCtx(ctx, '/tmp/demo')
+  assert.deepEqual(calls, [{ cwd: '/tmp/demo' }])
 })

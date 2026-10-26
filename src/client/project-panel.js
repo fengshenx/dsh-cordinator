@@ -32,7 +32,12 @@ import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
-import { basenameOf, isProjectOpenable, validateProjectName } from './project-panel-logic.js'
+import {
+  basenameOf,
+  isProjectOpenable,
+  openCoordinatorSession,
+  validateProjectName,
+} from './project-panel-logic.js'
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
 import { createWorkspaceExclusion } from './workspace-exclusion.js'
 
@@ -193,7 +198,7 @@ export function ProjectPanel(props) {
     }
   }, [busy, callRemote, draft, refresh])
 
-  const openProject = useCallback((project) => {
+  const openProject = useCallback(async (project) => {
     if (!isProjectOpenable(project)) {
       setNotice(`项目「${project.name}」的协调者会话已被删除，请换新协调者。`)
       return
@@ -203,8 +208,14 @@ export function ProjectPanel(props) {
       setNotice('导航服务不可用：无法打开会话。')
       return
     }
-    uiWorkspace.openSession(project.coordinatorSessionId)
-  }, [getUiWorkspace])
+    // 只有归属工作区的会话能被官方 UI 打开成主区域，先确保它挂上了。
+    const result = await openCoordinatorSession({
+      project,
+      callRemote,
+      openSession: (sessionId) => uiWorkspace.openSession(sessionId),
+    })
+    if (result.ok !== true) setNotice(result.message)
+  }, [callRemote, getUiWorkspace])
 
   const renameProject = useCallback(async (project, name) => {
     if (busy) return
