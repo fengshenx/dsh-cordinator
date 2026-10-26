@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   basenameOf,
   buildProjectMenuItems,
+  describeWorkspaceRemoval,
   isProjectOpenable,
   openCoordinatorSession,
   selectProjectSessionRows,
@@ -121,6 +122,23 @@ test('移除工作区与注销项目是两条不同的入口', () => {
   assert.equal(remove.danger, true)
 })
 
+test('移除工作区的说明讲清会话会保留', () => {
+  const text = describeWorkspaceRemoval({ name: 'demo' })
+  assert.match(text, /demo/)
+  assert.match(text, /会话记录都会保留/)
+  assert.match(text, /协调者会话仍在/)
+})
+
+test('菜单里的移除入口只发请求，不直接执行', () => {
+  const asked = []
+  const items = buildProjectMenuItems({ id: 'p1', workspaceId: 'ws-1' }, {
+    ...menuHandlers(),
+    onRequestRemoveWorkspace: (project) => asked.push(project.id),
+  })
+  items.find((item) => item.id === 'remove-workspace').onSelect()
+  assert.deepEqual(asked, ['p1'])
+})
+
 /**
  * 菜单项只需要处理函数存在，测试里不关心它做了什么。
  * @returns {object} 菜单处理函数
@@ -133,6 +151,6 @@ function menuHandlers() {
     onRename: noop,
     onReplace: noop,
     onRemove: noop,
-    onRemoveWorkspace: noop,
+    onRequestRemoveWorkspace: noop,
   }
 }

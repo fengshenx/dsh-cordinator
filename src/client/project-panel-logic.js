@@ -94,6 +94,8 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
     if (result?.attached !== true) {
       return { ok: false, message: result?.reason ?? '协调者会话挂到工作区失败。' }
     }
+    openSession(project.coordinatorSessionId)
+    return { ok: true }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return { ok: false, message: `协调者会话挂到工作区失败：${message}` }
@@ -109,7 +111,7 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
  * 「从 dsh 移除工作区」这个入口；没有就没有，免得点了只得到一句「没有工作区」。
  *
  * @param {object} project - 项目
- * @param {{open: boolean, onOpen: Function, onRename: Function, onReplace: Function, onRemove: Function, onRemoveWorkspace: Function}} handlers - 各项的处理函数
+ * @param {{open: boolean, onOpen: Function, onRename: Function, onReplace: Function, onRemove: Function, onRequestRemoveWorkspace: Function}} handlers - 各项的处理函数
  * @returns {object[]} 菜单条目
  */
 export function buildProjectMenuItems(project, handlers) {
@@ -120,8 +122,21 @@ export function buildProjectMenuItems(project, handlers) {
   items.push({ id: 'rename', label: '重命名', icon: 'edit-outline', onSelect: () => handlers.onRename(project) })
   items.push({ id: 'replace', label: '换新协调者', icon: 'refresh-outline', onSelect: () => handlers.onReplace(project) })
   if (typeof project.workspaceId === 'string' && project.workspaceId !== '') {
-    items.push({ id: 'remove-workspace', label: '从 dsh 移除工作区', icon: 'close-outline', onSelect: () => handlers.onRemoveWorkspace(project) })
+    items.push({ id: 'remove-workspace', label: '从 dsh 移除工作区', icon: 'close-outline', onSelect: () => handlers.onRequestRemoveWorkspace(project) })
   }
   items.push({ id: 'remove', label: '注销项目', icon: 'trash-outline', danger: true, onSelect: () => handlers.onRemove(project) })
   return items
+}
+
+/**
+ * 说清「移除工作区」会发生什么。
+ *
+ * 宿主的工作区删除只删注册，目录与全部会话日志都留着，协调者会话仍在——用户
+ * 最担心的是「会话被删了」，这句必须把这点讲明白。
+ *
+ * @param {object} project - 项目
+ * @returns {string} 确认弹窗的说明文字
+ */
+export function describeWorkspaceRemoval(project) {
+  return `将把项目「${project.name}」的工作区从 dsh 里移除。文件夹与全部会话记录都会保留，协调者会话仍在；下次打开这个项目会重新挂上。`
 }

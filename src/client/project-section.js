@@ -337,7 +337,7 @@ export function ProjectSection(props) {
   const {
     projects, busy, notice, draft,
     onAdd, onConfirmAdd, onCancelAdd, onDraftName,
-    onOpen, onRename, onReplace, onRemove, onRemoveWorkspace,
+    onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
     sessionsByProject, sessionRows, expandedProjects,
     onToggleExpand, onOpenSession,
     listExpanded, onToggleList,
@@ -447,7 +447,7 @@ export function ProjectSection(props) {
                 onRename,
                 onReplace,
                 onRemove,
-                onRemoveWorkspace,
+                onRequestRemoveWorkspace,
                 sessions: sessionsByProject.get(project.id) ?? [],
                 sessionRows,
                 expanded: expandedProjects.has(project.id),
@@ -467,15 +467,15 @@ export function ProjectSection(props) {
 /**
  * 一个项目行：行首目录图标、项目名，悬停整行时行首换成展开箭头、右端露出操作按钮。
  *
- * 点行（或点行首图标）折叠/展开该项目下的会话列表。协调者不在列表里——它的入口
- * 在行的「更多」菜单里，重复列出会让入口含糊。
+ * 点行打开该项目的协调者会话；点行首槽位折叠/展开该项目下的会话列表。协调者不在
+ * 子会话列表里——它的入口就是这一行，重复列出会让入口含糊。
  *
  * @param {object} props - 组件属性
  * @returns {object} React 元素
  */
 function ProjectRow(props) {
   const {
-    project, busy, onOpen, onRename, onReplace, onRemove, onRemoveWorkspace,
+    project, busy, onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
     sessions, sessionRows, expanded, onToggleExpand, onOpenSession,
   } = props
   const [menuOpen, setMenuOpen] = useState(false)
@@ -489,8 +489,14 @@ function ProjectRow(props) {
   useEffect(() => {
     if (!menuOpen) return undefined
     const onDismiss = () => setMenuOpen(false)
+    // Escape 关闭与官方菜单一致（宿主 Menu.tsx 也是 outside click / Escape）。
+    const onKeyDown = (event) => { if (event.key === 'Escape') onDismiss() }
     window.addEventListener('click', onDismiss)
-    return () => window.removeEventListener('click', onDismiss)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('click', onDismiss)
+      window.removeEventListener('keydown', onKeyDown)
+    }
   }, [menuOpen])
 
   const commitRename = () => {
@@ -510,7 +516,7 @@ function ProjectRow(props) {
     onRename: () => setRenaming(true),
     onReplace,
     onRemove,
-    onRemoveWorkspace,
+    onRequestRemoveWorkspace,
   })
 
   return createElement(

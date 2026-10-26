@@ -28,7 +28,7 @@
  * @module dsh-coordinator/client/project-panel
  */
 
-import { createElement, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement, Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
@@ -40,6 +40,8 @@ import {
 } from './project-panel-logic.js'
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
 import { createWorkspaceExclusion } from './workspace-exclusion.js'
+import { ConfirmDialog } from './confirm-dialog.js'
+import { describeWorkspaceRemoval } from './project-panel-logic.js'
 import { createWorkspaceHiding } from './workspace-hiding.js'
 
 /**
@@ -66,6 +68,9 @@ export function ProjectPanel(props) {
   const [expandedProjects, setExpandedProjects] = useState(() => new Set())
   /** 整个项目列表是否展开（区块标题可折叠）。 */
   const [listExpanded, setListExpanded] = useState(true)
+  /** 待确认移除工作区的项目；null 表示没有待确认的移除。 */
+  const [pendingRemoval, setPendingRemoval] = useState(null)
+  const [removalError, setRemovalError] = useState('')
 
   const refresh = useCallback(async () => {
     // 通道还没挂好时不发请求：报错只会写一条看不懂的「通道不可用」，
@@ -259,24 +264,35 @@ export function ProjectPanel(props) {
     }
   }, [busy, callRemote, refresh])
 
-  const removeWorkspace = useCallback(async (project) => {
-    if (busy) return
+  const requestRemoveWorkspace = useCallback((project) => {
+    setRemovalError('')
+    setPendingRemoval(project)
+  }, [])
+
+  const cancelRemoveWorkspace = useCallback(() => {
+    setRemovalError('')
+    setPendingRemoval(null)
+  }, [])
+
+  const removeWorkspace = useCallback(async () => {
+    if (busy || pendingRemoval === null) return
+    const project = pendingRemoval
     setBusy(true)
-    setNotice('')
     try {
       const result = await callRemote('removeWorkspace', [project.id])
       if (result?.removed !== true) {
-        setNotice(result?.reason ?? '移除工作区失败。')
+        setRemovalError(result?.reason ?? '移除工作区失败。')
         return
       }
       setNotice(`已从 dsh 移除项目「${project.name}」的工作区。协调者会话保留，下次打开项目会重新挂上。`)
+      setPendingRemoval(null)
       await refresh()
     } catch (error) {
-      setNotice(`移除工作区失败：${error instanceof Error ? error.message : String(error)}`)
+      setRemovalError(`移除工作区失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setBusy(false)
     }
-  }, [busy, callRemote, refresh])
+  }, [busy, callRemote, pendingRemoval, refresh])
 
   const removeProject = useCallback(async (project) => {
     if (busy) return
@@ -307,7 +323,7 @@ export function ProjectPanel(props) {
     onRename: (project, name) => { void renameProject(project, name) },
     onReplace: (project) => { void replaceCoordinator(project) },
     onRemove: (project) => { void removeProject(project) },
-    onRemoveWorkspace: (project) => { void removeWorkspace(project) },
+    onRequestRemoveWorkspace: requestRemoveWorkspace,
     sessionsByProject,
     sessionRows,
     expandedProjects,
@@ -327,6 +343,21 @@ export function ProjectPanel(props) {
       }
       uiWorkspace.openSession(sessionId)
     },
+  })
+
+  // 弹窗自己 portal 到 body，但必须挂在不会被浮层收起卸载的位置：窄栏下浮层
+  // 收起时它的子树整个卸载，放在浮层里会让确认框跟着消失。
+  const dialog = createElement(ConfirmDialog, {
+    open: pendingRemoval !== null,
+    title: '从 dsh 移除工作区',
+    description: pendingRemoval === null ? '' : describeWorkspaceRemoval(pendingRemoval),
+    confirmLabel: '移除工作区',
+    cancelLabel: '取消',
+    danger: true,
+    busy,
+    error: removalError,
+    onConfirm: () => { void removeWorkspace() },
+    onCancel: cancelRemoveWorkspace,
   })
 
   if (!wide) {
@@ -379,10 +410,11 @@ export function ProjectPanel(props) {
             body,
           )
         : null,
+      dialog,
     )
   }
 
-  return createElement(SidebarPlacement, null, body)
+  return createElement(Fragment, null, createElement(SidebarPlacement, null, body), dialog)
 }
 
 /**
