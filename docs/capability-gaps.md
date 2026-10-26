@@ -273,6 +273,12 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：本仓的「就绪」通知只在挂载那一刻发一次。面板若在挂载完成之后才订阅（例如 React 首次挂载晚于插件 apply），就永远收不到那次通知——表现是「项目列表能出来，但另一个方法一直报通道不可用」，因为两者订阅时机不同。订阅时就必须判一次当前状态，已就绪则补一次通知。
 
+### 31. web 端没有运行时图标 sprite——第三方 bundle 的 `<use>` 引用必然落空
+
+**dsh 实测**：图标有两套渲染路径：源码里 `ui-primitives` 的 `Icon` 组件用 `<use href="#dsw-icon-<字形>-<字重>">` 指向文档级 sprite（`packages/client/ui-primitives/src/icons/index.tsx:18-24`），`ui-theme` 在 apply 时装 sprite（`packages/client/ui-theme/src/client/index.ts:602` → `icon-sprite.ts` 的 `installIconSprite`，把 symbol 挂进 `document.body`）。但 **web 端产物里 sprite 不存在**：探针实测运行时 DOM 里 `symbol` 数为 0、`[data-dsh-icon-sprite]` 不存在，宿主自己的图标全是内联 path（构建期就把 sprite 展开进了各组件产物）。
+
+**影响**：第三方 bundle 是运行时才渲染的，拿不到那份构建期产物，`<use href="#dsw-icon-…">` 一律引用不到——图标尺寸为 0×0，**完全不可见且不报错**。第三方要出图标只能自带路径数据（本仓内联宿主 `artwork.ts` 的 regular 字重路径），代价是与宿主图标数据耦合。
+
 
 ---
 
@@ -298,6 +304,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
 | 项目树（client 侧） | 通过 | 项目行可展开，列出该项目目录下的会话（协调者不在其中，worker 会话带执行者标记）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
+| 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
 | 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |
 
 ---
