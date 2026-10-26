@@ -4,3 +4,6 @@ node_modules/
 
 # client 构建产物（npm run build:client 生成，发布时由 prepublishOnly 重建）
 lib/
+
+# 并行开发用的 worktree（git worktree add 建在本仓内）
+.worktrees/
