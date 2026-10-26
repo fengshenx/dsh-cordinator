@@ -69,6 +69,7 @@ export function apply(ctx) {
     inject: () => ({
       callRemote: (method, args) => callProjectRemote(ctx, method, args),
       getUiWorkspace: () => ctx.get('uiWorkspace'),
+      getSessions: () => ctx.sessions,
     }),
   }, ProjectPanel)), 'dsh-coordinator 左栏项目区块')
 

@@ -51,3 +51,26 @@ export function isProjectOpenable(project) {
   }
   return project.coordinatorAlive !== false
 }
+
+/**
+ * 挑出项目下要列出的会话行。
+ *
+ * 协调者不在其中——项目名就是它的入口，重复列出会让「点项目名打开协调者」这条
+ * 路径变得含糊。宿主侧暂时取不到的会话行（会话刚建、列表还没同步）直接略过。
+ *
+ * @param {object} options - 选项
+ * @param {string[]} options.sessionIds - 该项目的会话 id 列表
+ * @param {Record<string, object>} options.sessionRows - 会话 id 到会话行
+ * @param {string | undefined} options.coordinatorSessionId - 协调者会话 id
+ * @returns {object[]} 要渲染的会话行
+ */
+export function selectProjectSessionRows({ sessionIds, sessionRows, coordinatorSessionId }) {
+  const rows = []
+  for (const sessionId of sessionIds ?? []) {
+    if (sessionId === coordinatorSessionId) continue
+    const row = sessionRows?.[sessionId]
+    if (row === undefined) continue
+    rows.push(row)
+  }
+  return rows
+}

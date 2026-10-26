@@ -100,11 +100,16 @@ export function reportProjectRemoteError(message) {
 
 /**
  * 订阅通道就绪事件。
+ *
+ * 通道可能在这行代码之前就挂好了——那种情况下订阅者会错过那次通知，
+ * 而通知只有一次，不补一次就再也拿不到。
+ *
  * @param {() => void} listener - 回调
  * @returns {() => void} 退订函数
  */
 export function onProjectRemoteReady(listener) {
   readyListeners.add(listener)
+  if (ready) queueMicrotask(listener)
   return () => readyListeners.delete(listener)
 }
 

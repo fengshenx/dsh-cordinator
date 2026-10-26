@@ -1,6 +1,9 @@
 /**
  * 左栏「项目」区块的内容。
  *
+ * 结构是**项目树**：项目行下面挂着该项目目录里的会话。项目的入口是协调者会话
+ * （点项目名打开它），子会话列表展开才看——与 Telov 的侧栏项目类目同构。
+ *
  * 排版对齐宿主的工作区浏览：小节标题用同一套行高与三级标签色，项目行用工作区
  * 行的高度、内边距、圆角与 hover 反馈，图标直接引用宿主的全局 sprite。
  *
@@ -9,7 +12,7 @@
 
 import { createElement, useEffect, useState } from 'react'
 import { productIcon } from './icons.js'
-import { isProjectOpenable } from './project-panel-logic.js'
+import { isProjectOpenable, selectProjectSessionRows } from './project-panel-logic.js'
 
 const STYLE_ID = 'dsh-coordinator-project-section'
 
@@ -153,6 +156,78 @@ const STYLE_TEXT = `
   line-height: 17px;
   color: var(--dsw-alias-label-secondary);
 }
+.dsh-coordinator-project-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: -4px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .dsh-coordinator-project-toggle:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+    color: var(--dsw-alias-label-secondary);
+  }
+}
+.dsh-coordinator-project-sessions {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 4px 20px;
+}
+.dsh-coordinator-session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 4px;
+  box-sizing: border-box;
+  border-radius: var(--dsw-radius-md);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+@media (hover: hover) {
+  .dsh-coordinator-session-row:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+.dsh-coordinator-session-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+}
+.dsh-coordinator-session-tag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-coordinator-session-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--dsw-alias-label-tertiary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: dsh-coordinator-spin 0.8s linear infinite;
+}
+@keyframes dsh-coordinator-spin {
+  to { transform: rotate(360deg); }
+}
 `
 
 /**
@@ -179,6 +254,8 @@ export function ProjectSection(props) {
     projects, busy, notice, draft,
     onAdd, onConfirmAdd, onCancelAdd, onDraftName,
     onOpen, onRename, onReplace, onRemove,
+    sessionsByProject, sessionRows, expandedProjects,
+    onToggleExpand, onOpenSession,
   } = props
 
   useEffect(() => { ensureStyles() }, [])
@@ -257,6 +334,11 @@ export function ProjectSection(props) {
             onRename,
             onReplace,
             onRemove,
+            sessions: sessionsByProject.get(project.id) ?? [],
+            sessionRows,
+            expanded: expandedProjects.has(project.id),
+            onToggleExpand,
+            onOpenSession,
           })),
         ),
     notice === '' ? null : createElement(
@@ -268,12 +350,19 @@ export function ProjectSection(props) {
 }
 
 /**
- * 一个项目行：图标、项目名、目录，悬停时露出操作按钮。
+ * 一个项目行：展开箭头、项目名、目录，悬停时露出操作按钮。
+ *
+ * 展开后是该项目目录下的会话列表。协调者不在列表里——项目名本身就是它的入口，
+ * 重复列出会让「点项目名打开协调者」这条路径变得含糊。
+ *
  * @param {object} props - 组件属性
  * @returns {object} React 元素
  */
 function ProjectRow(props) {
-  const { project, busy, onOpen, onRename, onReplace, onRemove } = props
+  const {
+    project, busy, onOpen, onRename, onReplace, onRemove,
+    sessions, sessionRows, expanded, onToggleExpand, onOpenSession,
+  } = props
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState(project.name)
@@ -291,102 +380,172 @@ function ProjectRow(props) {
     if (name !== project.name) onRename(project, name)
   }
 
+  const childSessions = selectProjectSessionRows({
+    sessionIds: sessions,
+    sessionRows,
+    coordinatorSessionId: project.coordinatorSessionId,
+  })
+
   return createElement(
     'div',
-    {
-      className: 'dsh-coordinator-project-row',
-      'data-dead': openable ? undefined : 'true',
-      onClick: (event) => {
-        if (event.target.closest('.dsh-coordinator-project-actions') !== null) return
-        onOpen(project)
-      },
-    },
-    productIcon('folder-close'),
-    renaming
-      ? createElement('input', {
-          type: 'text',
-          className: 'dsh-coordinator-project-rename',
-          value: name,
-          autoFocus: true,
-          onClick: (event) => event.stopPropagation(),
-          onChange: (event) => setName(event.target.value),
-          onBlur: commitRename,
-          onKeyDown: (event) => {
-            if (event.key === 'Enter') commitRename()
-            if (event.key === 'Escape') { setName(project.name); setRenaming(false) }
-          },
-        })
-      : createElement(
-          'span',
-          { className: 'dsh-coordinator-project-title' },
-          project.name,
-        ),
-    createElement(
-      'span',
-      { className: 'dsh-coordinator-project-meta' },
-      project.directory,
-    ),
+    null,
     createElement(
       'div',
-      { className: 'dsh-coordinator-project-actions' },
-      openable
-        ? null
-        : createElement(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-coordinator-project-icon-button',
-              title: '换新协调者',
-              disabled: busy,
-              onClick: (event) => { event.stopPropagation(); onReplace(project) },
-            },
-            productIcon('refresh-outline'),
-          ),
+      {
+        className: 'dsh-coordinator-project-row',
+        'data-dead': openable ? undefined : 'true',
+        onClick: (event) => {
+          if (event.target.closest('.dsh-coordinator-project-actions') !== null) return
+          onOpen(project)
+        },
+      },
       createElement(
         'button',
         {
           type: 'button',
-          className: 'dsh-coordinator-project-icon-button',
-          title: '更多',
-          disabled: busy,
-          onClick: (event) => { event.stopPropagation(); setMenuOpen((value) => !value) },
+          className: 'dsh-coordinator-project-toggle',
+          title: expanded ? '收起会话' : '展开会话',
+          'aria-label': expanded ? '收起会话' : '展开会话',
+          onClick: (event) => { event.stopPropagation(); onToggleExpand(project.id) },
         },
-        productIcon('ellipsis-outline'),
+        productIcon(expanded ? 'chevron-down-outline' : 'chevron-right-outline', { size: 14 }),
       ),
-      menuOpen
-        ? createElement(
-            'div',
-            { className: 'dsh-coordinator-project-menu', onClick: (event) => event.stopPropagation() },
-            createElement(
+      productIcon('folder-close'),
+      renaming
+        ? createElement('input', {
+            type: 'text',
+            className: 'dsh-coordinator-project-rename',
+            value: name,
+            autoFocus: true,
+            onClick: (event) => event.stopPropagation(),
+            onChange: (event) => setName(event.target.value),
+            onBlur: commitRename,
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') commitRename()
+              if (event.key === 'Escape') { setName(project.name); setRenaming(false) }
+            },
+          })
+        : createElement(
+            'span',
+            { className: 'dsh-coordinator-project-title' },
+            project.name,
+          ),
+      createElement(
+        'span',
+        { className: 'dsh-coordinator-project-meta' },
+        project.directory,
+      ),
+      createElement(
+        'div',
+        { className: 'dsh-coordinator-project-actions' },
+        openable
+          ? null
+          : createElement(
               'button',
               {
                 type: 'button',
-                className: 'dsh-coordinator-project-menu-item',
-                onClick: () => { setMenuOpen(false); setRenaming(true) },
+                className: 'dsh-coordinator-project-icon-button',
+                title: '换新协调者',
+                disabled: busy,
+                onClick: (event) => { event.stopPropagation(); onReplace(project) },
               },
-              '重命名',
+              productIcon('refresh-outline'),
             ),
-            createElement(
-              'button',
-              {
-                type: 'button',
-                className: 'dsh-coordinator-project-menu-item',
-                onClick: () => { setMenuOpen(false); onReplace(project) },
-              },
-              '换新协调者',
-            ),
-            createElement(
-              'button',
-              {
-                type: 'button',
-                className: 'dsh-coordinator-project-menu-item',
-                'data-danger': 'true',
-                onClick: () => { setMenuOpen(false); onRemove(project) },
-              },
-              '注销项目',
-            ),
-          )
-        : null,
+        createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'dsh-coordinator-project-icon-button',
+            title: '更多',
+            disabled: busy,
+            onClick: (event) => { event.stopPropagation(); setMenuOpen((value) => !value) },
+          },
+          productIcon('ellipsis-outline'),
+        ),
+        menuOpen
+          ? createElement(
+              'div',
+              { className: 'dsh-coordinator-project-menu', onClick: (event) => event.stopPropagation() },
+              createElement(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsh-coordinator-project-menu-item',
+                  onClick: () => { setMenuOpen(false); setRenaming(true) },
+                },
+                '重命名',
+              ),
+              createElement(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsh-coordinator-project-menu-item',
+                  onClick: () => { setMenuOpen(false); onReplace(project) },
+                },
+                '换新协调者',
+              ),
+              createElement(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsh-coordinator-project-menu-item',
+                  'data-danger': 'true',
+                  onClick: () => { setMenuOpen(false); onRemove(project) },
+                },
+                '注销项目',
+              ),
+            )
+          : null,
+      ),
     ),
+    expanded
+      ? createElement(
+          'div',
+          { className: 'dsh-coordinator-project-sessions' },
+          childSessions.length === 0
+            ? createElement(
+                'div',
+                { className: 'dsh-coordinator-project-notice' },
+                '该项目下还没有会话。',
+              )
+            : childSessions.map((row) => createElement(SessionRow, {
+                key: row.id,
+                row,
+                onOpenSession,
+              })),
+        )
+      : null,
+  )
+}
+
+/**
+ * 项目下的一个会话行。
+ * @param {object} props - 组件属性
+ * @returns {object} React 元素
+ */
+function SessionRow(props) {
+  const { row, onOpenSession } = props
+  return createElement(
+    'div',
+    {
+      className: 'dsh-coordinator-session-row',
+      onClick: () => onOpenSession(row.id),
+      title: row.displayTitle ?? row.title ?? row.id,
+    },
+    row.running
+      ? createElement('span', { className: 'dsh-coordinator-session-spinner' })
+      : null,
+    createElement(
+      'span',
+      { className: 'dsh-coordinator-session-title' },
+      row.title ?? row.displayTitle ?? row.id,
+    ),
+    row.origin === 'subagent'
+      ? createElement(
+          'span',
+          { className: 'dsh-coordinator-session-tag', title: '执行者会话' },
+          productIcon('users-outline', { size: 12 }),
+        )
+      : null,
   )
 }

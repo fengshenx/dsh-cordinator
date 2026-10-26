@@ -14,8 +14,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
+import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
+import { createCanonicalizer, groupSessionsByProject } from './session-index.js'
 
 /** 项目名的长度上限，与 Telov 一致。 */
 const MAX_NAME_LENGTH = 200
@@ -95,6 +96,9 @@ export function createProjectService({
    * 哪个项目」。卡片库用的是同一手法：落盘是真源，内存镜像是读路径。
    */
   const coordinatorIndex = new Map()
+
+  // 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。
+  const canonicalize = createCanonicalizer(realpath)
 
   /**
    * 撤销一个刚建成的协调者会话。
@@ -185,6 +189,32 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
       })))
+    },
+
+    /**
+     * 列项目下的会话。
+     *
+     * 判据是会话跑的目录：worker 会话与协调者会话都跑在项目目录里，用户在该目录
+     * 手动开的会话也算。子目录里开的会话不算——那属于另一个目录。
+     *
+     * `sessionQuery` 缺失时返回空映射：会话索引是增强能力，缺了不该让项目列表
+     * 整体不可用。
+     *
+     * @returns {Promise<{projectId: string, sessionIds: string[]}[]>} 每个项目的会话 id 列表
+     */
+    async sessionsByProject() {
+      const query = ctx.get('sessionQuery')
+      if (query === undefined || typeof query.listSessions !== 'function') return []
+      const projects = await store.list()
+      const records = await query.listSessions()
+      const sessions = records
+        .map((record) => ({
+          id: record?.header?.id,
+          cwd: record?.header?.cwd,
+        }))
+        .filter((session) => typeof session.id === 'string' && session.id !== '')
+      const grouped = await groupSessionsByProject({ projects, sessions, canonicalize })
+      return [...grouped.entries()].map(([projectId, sessionIds]) => ({ projectId, sessionIds }))
     },
 
     /**

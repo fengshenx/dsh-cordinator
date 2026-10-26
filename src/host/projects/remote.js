@@ -110,6 +110,14 @@ export function createProjectRemote({ service, ctx }) {
     async replaceCoordinator(id) {
       return this.projects.replaceCoordinator(id)
     }
+
+    /**
+     * 列项目下的会话。
+     * @returns {Promise<{projectId: string, sessionIds: string[]}[]>} 每个项目的会话 id 列表
+     */
+    async sessionsByProject() {
+      return this.projects.sessionsByProject()
+    }
   }
 
   Object.defineProperty(ProjectRemote.prototype, REMOTE_METHOD_DESCRIPTOR, {

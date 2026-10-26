@@ -10,6 +10,12 @@
  * **打开项目**：点项目名就打开它的协调者会话——项目的切换就是会话的切换，会话
  * 的工作目录在创建时定死。
  *
+ * **项目树**：项目行展开后是该项目目录下的会话（协调者不在其中，项目名就是它的
+ * 入口）。会话归属由宿主按目录判定——浏览器侧没有文件系统，做不了路径归一。
+ *
+ * **与官方工作区树并行**：项目下的会话不在官方工作区树里重复出现。官方没有
+ * 「按项目排除会话」的扩展点，这层排除走渲染层（见 `workspace-exclusion.js`）。
+ *
  * **位置**：宽侧栏里区块插在「自动化任务」面板行之下、工作区列表之上。左栏正文
  * 区只有 `sidebar.workspaces` 一个槽且已被官方工作区浏览占用，slot 机制没有装饰
  * 或包装能力，第三方无法在它旁边插入并列区块——所以这里按宿主左栏的结构，在
@@ -27,6 +33,7 @@ import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import { basenameOf, isProjectOpenable, validateProjectName } from './project-panel-logic.js'
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
+import { createWorkspaceExclusion } from './workspace-exclusion.js'
 
 /**
  * 项目区块。
@@ -34,17 +41,27 @@ import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from '
  * @param {boolean} props.wide - 侧栏是否宽（false 为 56px 导轨）
  * @param {(method: string, args: unknown[]) => Promise<unknown>} props.callRemote - 调用宿主远程方法
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务
+ * @param {() => object | undefined} props.getSessions - 取会话服务
  * @returns {object} React 元素
  */
 export function ProjectPanel(props) {
-  const { wide, callRemote, getUiWorkspace } = props
+  const { wide, callRemote, getUiWorkspace, getSessions } = props
   const [projects, setProjects] = useState([])
   const [notice, setNotice] = useState('')
   const [draft, setDraft] = useState(null)
   const [busy, setBusy] = useState(false)
   const [floating, setFloating] = useState(false)
+  /** 项目 id 到该项目的会话 id 列表。 */
+  const [sessionsByProject, setSessionsByProject] = useState(() => new Map())
+  /** 会话 id 到会话行（标题、运行状态、来源）。 */
+  const [sessionRows, setSessionRows] = useState({})
+  /** 展开了子会话列表的项目 id。 */
+  const [expandedProjects, setExpandedProjects] = useState(() => new Set())
 
   const refresh = useCallback(async () => {
+    // 通道还没挂好时不发请求：报错只会写一条看不懂的「通道不可用」，
+    // 通道就绪后会自动补刷。
+    if (!isProjectRemoteReady()) return
     try {
       const value = await callRemote('list', [])
       setProjects(Array.isArray(value) ? value : [])
@@ -53,13 +70,35 @@ export function ProjectPanel(props) {
     }
   }, [callRemote])
 
+  /**
+   * 重读项目下的会话归属。
+   *
+   * 归属判据在宿主侧——浏览器没有文件系统，做不了路径归一，这里只取结果。
+   * @returns {Promise<void>} 完成
+   */
+  const refreshSessionIndex = useCallback(async () => {
+    if (!isProjectRemoteReady()) return
+    try {
+      const value = await callRemote('sessionsByProject', [])
+      const grouped = new Map()
+      for (const entry of Array.isArray(value) ? value : []) {
+        if (typeof entry?.projectId !== 'string') continue
+        grouped.set(entry.projectId, Array.isArray(entry.sessionIds) ? entry.sessionIds : [])
+      }
+      setSessionsByProject(grouped)
+    } catch (error) {
+      setNotice(`读取项目会话失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }, [callRemote])
+
   useEffect(() => {
     void refresh()
+    void refreshSessionIndex()
     // 窗口重新获得焦点时刷新：项目也可能在另一个窗口里被增删。
-    const onFocus = () => { void refresh() }
+    const onFocus = () => { void refresh(); void refreshSessionIndex() }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [refresh])
+  }, [refresh, refreshSessionIndex])
 
   // 通道挂好后补刷一次：挂载前那一次必然失败。挂载失败也要重渲染，错误原因
   // 才出现在界面上。
@@ -67,7 +106,49 @@ export function ProjectPanel(props) {
   useEffect(() => onProjectRemoteReady(() => {
     setChannelTick((tick) => tick + 1)
     void refresh()
-  }), [refresh])
+    void refreshSessionIndex()
+  }), [refresh, refreshSessionIndex])
+
+  // 订阅会话列表：标题与运行状态随会话变化，归属也会因新会话而变。
+  useEffect(() => {
+    const sessions = getSessions?.()
+    if (sessions?.list?.subscribe === undefined) return undefined
+    let pending = null
+    const sync = () => {
+      const snapshot = sessions.list.getSnapshot()
+      const rows = {}
+      for (const [id, row] of Object.entries(snapshot.byId ?? {})) {
+        rows[id] = {
+          id,
+          title: row.title,
+          displayTitle: row.displayTitle,
+          running: row.running,
+          origin: row.origin,
+        }
+      }
+      setSessionRows(rows)
+      // 归属重算要过宿主，合并到一次延迟刷新里，避免每条事件都打一次远程调用。
+      if (pending !== null) clearTimeout(pending)
+      pending = setTimeout(() => { pending = null; void refreshSessionIndex() }, 1000)
+    }
+    sync()
+    const unsubscribe = sessions.list.subscribe(sync)
+    return () => {
+      unsubscribe()
+      if (pending !== null) clearTimeout(pending)
+    }
+  }, [getSessions, refreshSessionIndex])
+
+  // 项目下的会话不在官方工作区树里重复出现。
+  useEffect(() => {
+    const exclusion = createWorkspaceExclusion()
+    const excluded = new Set()
+    for (const sessionIds of sessionsByProject.values()) {
+      for (const sessionId of sessionIds) excluded.add(sessionId)
+    }
+    exclusion.update(excluded)
+    return () => exclusion.dispose()
+  }, [sessionsByProject])
 
   const startAdd = useCallback(async () => {
     if (busy) return
@@ -184,6 +265,23 @@ export function ProjectPanel(props) {
     onRename: (project, name) => { void renameProject(project, name) },
     onReplace: (project) => { void replaceCoordinator(project) },
     onRemove: (project) => { void removeProject(project) },
+    sessionsByProject,
+    sessionRows,
+    expandedProjects,
+    onToggleExpand: (projectId) => setExpandedProjects((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
+      return next
+    }),
+    onOpenSession: (sessionId) => {
+      const uiWorkspace = getUiWorkspace?.()
+      if (uiWorkspace === undefined) {
+        setNotice('导航服务不可用：无法打开会话。')
+        return
+      }
+      uiWorkspace.openSession(sessionId)
+    },
   })
 
   if (!wide) {

@@ -31,4 +31,5 @@ export const PROJECT_REMOTE_METHODS = Object.freeze({
   unregister: Object.freeze(['id']),
   rename: Object.freeze(['id', 'name']),
   replaceCoordinator: Object.freeze(['id']),
+  sessionsByProject: Object.freeze([]),
 })

@@ -4,6 +4,7 @@ import {
   PROJECT_REMOTE_CONTRIBUTION,
   callProjectRemote,
   mountProjectRemote,
+  onProjectRemoteReady,
 } from '../src/client/project-remote.js'
 import {
   PROJECT_REMOTE_METHODS,
@@ -82,4 +83,22 @@ test('调用把业务失败变成异常', async () => {
 
 test('通道没挂上时报项目通道不可用', async () => {
   await assert.rejects(() => callProjectRemote({ get: () => undefined }, 'list', []), /项目通道不可用/)
+})
+
+test('通道已挂好时订阅就绪事件会立刻补一次通知', async () => {
+  const ctx = {
+    get(key) {
+      return key === 'remote'
+        ? { $mount: async () => {} }
+        : undefined
+    },
+  }
+  await mountProjectRemote(ctx)
+
+  let notified = 0
+  const unsubscribe = onProjectRemoteReady(() => { notified += 1 })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(notified, 1)
+
+  unsubscribe()
 })

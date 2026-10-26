@@ -54,6 +54,10 @@ function fakeService() {
       calls.push(['replaceCoordinator', id])
       return { id, name: 'demo', directory: '/tmp/demo', coordinatorSessionId: 's4' }
     },
+    async sessionsByProject() {
+      calls.push(['sessionsByProject'])
+      return [{ projectId: 'p1', sessionIds: ['s1', 's5'] }]
+    },
   }
 }
 
@@ -116,6 +120,9 @@ test('方法把调用转给项目服务', async () => {
   assert.deepEqual(await remote.replaceCoordinator('p1'), {
     id: 'p1', name: 'demo', directory: '/tmp/demo', coordinatorSessionId: 's4',
   })
+  assert.deepEqual(await remote.sessionsByProject(), [
+    { projectId: 'p1', sessionIds: ['s1', 's5'] },
+  ])
 })
 
 test('注销项目返回布尔结果，不返回可能缺失的项目对象', async () => {
