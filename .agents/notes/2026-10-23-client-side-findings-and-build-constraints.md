@@ -1,6 +1,6 @@
 # 客户端半边的发现与构建约束
 
-**状态**：implemented（P2，2026-10-23）
+**状态**：implemented（P2，2026-10-23；2026-10-26 补记并行开发的 worktree 约定）
 **范围**：`cordis.patch.yml`、`index.js`、`src/client/`、`build/client.mjs`、`package.json`
 
 ## 背景
@@ -23,6 +23,8 @@ dsh 的 bundle 有两半：host 半边跑在 Node 进程，client 半边跑在�
 
 **面板用 `React.createElement` 写，不引 JSX**。少一层构建配置，且产物是单文件 closure-factory，JSX 转换的运行时开销没有必要。
 
+**并行开发的 worktree 建在仓内 `.worktrees/`**。主 checkout 保持干净，改动全部落在 worktree 里；多个任务并行时各占一个目录（`git worktree add .worktrees/<任务名> -b feature/<任务名>`）。目录名用复数 `.worktrees/`——单数 `.worktree/` 容易被当成单个任务的目录。该目录已进 `.gitignore`：否则 worktree 里的文件会被主 checkout 当成仓内未跟踪文件，`git status` 一直脏。
+
 ## 边界
 
 - **看板只覆盖当前会话**。卡片随会话事件持久化，面板重放本会话的投影——别的会话建的卡不会出现在这里。这是「卡片与 session log 一起存」的必然结果，不是缺陷。
@@ -30,6 +32,8 @@ dsh 的 bundle 有两半：host 半边跑在 Node 进程，client 半边跑在�
 - **翻页有上限**。历史超过 20 页时看板只显示已加载部分，并在面板顶部标注——此时「全量投影」的权威性仍然只覆盖已加载窗口。
 - **注册必须放进 `ctx.effect`**。注册表把 effect 挂到调用方 fiber 上，在别的插件的 apply 里直接注册会让浏览器启动静默卡住。
 - **`ctx.sessions` 在 apply 期可能未就绪**，因此注入面板的是延迟取值器 `() => ctx.sessions`，不是当时的快照。
+- **worktree 不要再往里套 worktree**。`.worktrees/` 在仓内，worktree 里再 `git worktree add .worktrees/<x>` 会递归嵌套，git 会拒绝或产生怪路径。新任务一律从主 checkout 建。
+- **profile 的 link 指向 worktree 目录**。开发时 `~/.dsh/profiles/<name>/package.json` 把 `dsh-coordinator` link 到 worktree 路径（`link:/…/dsh-coordinator/.worktrees/<任务名>`）；worktree 删掉后 profile 就断了，要改回主 checkout 的路径。
 
 ## 证据
 

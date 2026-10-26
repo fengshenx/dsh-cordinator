@@ -1,0 +1,82 @@
+/**
+ * 项目下的会话索引：把会话按项目目录归组。
+ *
+ * 归组的判据是**目录**，不是会话与项目的显式指针——worker 会话、用户在项目目录里
+ * 手动开的会话都没有任何项目字段，只有 `SessionHeader.cwd` 能说明它跑在哪。
+ *
+ * **目录必须按 realpath 归一后再比**。同一物理目录在会话头里有多种写法：macOS 的
+ * `/tmp` 是指向 `/private/tmp` 的符号链接，项目记录里存的是用户给的原始路径，会话
+ * 头里存的是宿主创建会话时的写法，两者字符串不等但目录相同。按字符串比会把同一个
+ * 项目拆成两组，worker 会话与协调者会话分家。官方 workspace 注册表也是这么做的
+ * （`realpathNormalize`），第三方没有理由发明另一套。
+ *
+ * @module dsh-coordinator/host/projects/session-index
+ */
+
+/**
+ * 创建路径归一器：realpath 解析 + 进程内缓存。
+ *
+ * 缓存的是「原始路径 → 归一路径」，因为会话头里的 cwd 高度重复（同一目录的多个
+ * 会话共用一个字符串），而归一结果对同一进程内不变。解析失败（目录已删）时回落
+ * 解析后的绝对路径——此时会话就是「孤儿会话」，不归属任何项目，但也不能因此
+ * 让整个聚合失败。
+ *
+ * @param {(path: string) => Promise<string>} realpath - realpath 实现
+ * @returns {(path: string) => Promise<string>} 归一器
+ */
+export function createCanonicalizer(realpath) {
+  /** @type {Map<string, string>} 原始路径到归一路径 */
+  const cache = new Map()
+  return async (path) => {
+    const cached = cache.get(path)
+    if (cached !== undefined) return cached
+    let canonical
+    try {
+      canonical = await realpath(path)
+    } catch {
+      canonical = path
+    }
+    cache.set(path, canonical)
+    return canonical
+  }
+}
+
+/**
+ * 按项目目录给会话归组。
+ *
+ * 纯函数：路径归一由调用方注入，便于测试。
+ *
+ * @param {object} options - 选项
+ * @param {object[]} options.projects - 项目记录，每条至少有 `id` 与 `directory`
+ * @param {object[]} options.sessions - 会话摘要，每条至少有 `id` 与 `cwd`
+ * @param {(path: string) => Promise<string>} options.canonicalize - 路径归一器
+ * @returns {Promise<Map<string, string[]>>} 项目 id 到会话 id 列表；没有会话的项目不在映射里
+ */
+export async function groupSessionsByProject({ projects, sessions, canonicalize }) {
+  /** @type {Map<string, string>} 归一后的项目目录到项目 id */
+  const projectIdByDirectory = new Map()
+  for (const project of projects) {
+    const canonical = await canonicalize(project.directory)
+    // 两个项目指向同一目录时，先注册的那个保留归属——项目是显式注册实体，重叠是
+    // 用户的误操作，不该让后注册的项目悄悄接管前者的会话。
+    if (!projectIdByDirectory.has(canonical)) {
+      projectIdByDirectory.set(canonical, project.id)
+    }
+  }
+
+  /** @type {Map<string, string[]>} 项目 id 到会话 id 列表 */
+  const grouped = new Map()
+  for (const session of sessions) {
+    if (typeof session.cwd !== 'string' || session.cwd === '') continue
+    const canonical = await canonicalize(session.cwd)
+    const projectId = projectIdByDirectory.get(canonical)
+    if (projectId === undefined) continue
+    const bucket = grouped.get(projectId)
+    if (bucket === undefined) {
+      grouped.set(projectId, [session.id])
+      continue
+    }
+    bucket.push(session.id)
+  }
+  return grouped
+}

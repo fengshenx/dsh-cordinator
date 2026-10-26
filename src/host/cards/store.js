@@ -29,13 +29,22 @@ const STORE_VERSION = 1
 export const CARD_STATUSES = Object.freeze(['active', 'done', 'archived'])
 
 /**
+ * 落盘用的文件系统调用。
+ *
+ * 抽成可替换的依赖是为了让测试能构造确定的读写交错——索引重建与写卡同时发生时，
+ * 谁先谁后靠真实文件系统是排不出来的。
+ */
+const defaultIo = Object.freeze({ mkdir, readFile, rename, writeFile })
+
+/**
  * 读取卡片库；文件缺失返回空库。
  * @param {string} file - 卡片库文件路径
  * @param {() => Promise<void>} [onCorrupt] - 库损坏且已备份后的补救动作
+ * @param {object} [io] - 文件系统调用
  * @returns {Promise<{ version: number, counter: number, cards: object[] }>} 卡片库快照
  */
-async function readStore(file, onCorrupt) {
-  const raw = await readFile(file, 'utf8').catch(() => undefined)
+async function readStore(file, onCorrupt, io = defaultIo) {
+  const raw = await io.readFile(file, 'utf8').catch(() => undefined)
   if (raw === undefined) return { version: STORE_VERSION, counter: 0, cards: [] }
   try {
     const parsed = JSON.parse(raw)
@@ -67,9 +76,10 @@ async function readStore(file, onCorrupt) {
  * @param {object} options - 选项
  * @param {string} options.home - dsh home 目录
  * @param {(message: string) => void} [options.logger] - 日志输出
+ * @param {object} [options.io] - 文件系统调用（测试用）
  * @returns {object} 卡片存储接口
  */
-export function createCardStore({ home, logger = () => {} } = {}) {
+export function createCardStore({ home, logger = () => {}, io = defaultIo } = {}) {
   const directory = join(home, 'dsh-coordinator')
   const file = join(directory, 'cards.json')
   const temporary = join(directory, 'cards.json.tmp')
@@ -78,14 +88,23 @@ export function createCardStore({ home, logger = () => {} } = {}) {
   let tail = Promise.resolve()
 
   /**
+   * 会话 id 到槽位名的反查索引。
+   *
+   * 槽位绑定只存在于卡片库（异步落盘），而提示词组装是同步的——组装函数里
+   * `await` 不了。因此这里维护一份内存镜像。卡片库仍是真源，进程启动时用
+   * `loadSlotIndex` 重建。
+   */
+  const slotIndex = new Map()
+
+  /**
    * 原子写回卡片库。
    * @param {{ version: number, counter: number, cards: object[] }} store - 卡片库快照
    * @returns {Promise<void>} 写盘完成
    */
   async function writeStore(store) {
-    await mkdir(directory, { recursive: true })
-    await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
-    await rename(temporary, file)
+    await io.mkdir(directory, { recursive: true })
+    await io.writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
+    await io.rename(temporary, file)
   }
 
   /**
@@ -112,6 +131,8 @@ export function createCardStore({ home, logger = () => {} } = {}) {
     directory,
     file,
 
+    slotIndex,
+
     /**
      * 建卡。编号在此分配，之后永不复用。
      * @param {object} input - 建卡输入
@@ -125,7 +146,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      */
     async create({ title, spec, links, slots, checkpoint, updatedBy }) {
       return serialize(async () => {
-        const store = await readStore(file, recoverFromCorruption)
+        const store = await readStore(file, recoverFromCorruption, io)
         const now = Date.now()
         const card = {
           id: randomUUID(),
@@ -145,6 +166,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
         store.counter = card.number
         store.cards.push(card)
         await writeStore(store)
+        rebuildSlotIndex(store.cards, slotIndex)
         return card
       })
     },
@@ -177,7 +199,7 @@ export function createCardStore({ home, logger = () => {} } = {}) {
       updatedBy,
     }) {
       return serialize(async () => {
-        const store = await readStore(file, recoverFromCorruption)
+        const store = await readStore(file, recoverFromCorruption, io)
         const card = store.cards.find((item) => item.id === id)
         if (card === undefined) throw new Error(`卡片不存在：${id}`)
         const current = card.revision ?? 0
@@ -214,6 +236,9 @@ export function createCardStore({ home, logger = () => {} } = {}) {
         next.updatedAt = now
         store.cards[store.cards.indexOf(card)] = next
         await writeStore(store)
+        // 改卡后必须同步索引：否则「槽位改绑后下一轮 turn 仍注入旧角色」，
+        // 恰好破坏「变更在下一轮生效」这条结构性保证。
+        rebuildSlotIndex(store.cards, slotIndex)
         return next
       })
     },
@@ -224,8 +249,26 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      * @returns {Promise<object | undefined>} 卡片，不存在时 undefined
      */
     async get(id) {
-      const store = await readStore(file, recoverFromCorruption)
+      const store = await readStore(file, recoverFromCorruption, io)
       return store.cards.find((item) => item.id === id)
+    },
+
+    /**
+     * 重建槽位反查索引。
+     *
+     * 进程启动时调用：内存索引是进程内的，崩溃后不会留下，索引必须从卡片库恢复。
+     *
+     * 必须排在写链上：读盘与重建之间若插进一次写卡，重建会用旧快照覆盖索引，
+     * 丢掉刚落盘的槽位绑定，直到下一次改卡才恢复。
+     *
+     * @returns {Promise<Map<string, string>>} 重建后的索引
+     */
+    async loadSlotIndex() {
+      return serialize(async () => {
+        const store = await readStore(file, recoverFromCorruption, io)
+        rebuildSlotIndex(store.cards, slotIndex)
+        return slotIndex
+      })
     },
 
     /**
@@ -235,10 +278,35 @@ export function createCardStore({ home, logger = () => {} } = {}) {
      * @returns {Promise<object[]>} 卡片列表
      */
     async list({ status } = {}) {
-      const store = await readStore(file, recoverFromCorruption)
+      const store = await readStore(file, recoverFromCorruption, io)
       const cards = [...store.cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
       return status === undefined ? cards : cards.filter((card) => card.status === status)
     },
+  }
+}
+
+/**
+ * 按卡片库重建「会话 id → 槽位名」的反查索引。
+ *
+ * 一个会话可能同时被多张卡片绑到不同槽位上。按编号升序遍历、后者覆盖前者，
+ * 使编号更大的卡片（更新的意图）胜出，规则确定且与卡片新旧顺序一致。
+ *
+ * @param {object[]} cards - 卡片数组
+ * @param {Map<string, string>} target - 待写入的索引
+ * @returns {void}
+ */
+function rebuildSlotIndex(cards, target) {
+  target.clear()
+  const ordered = [...cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
+  for (const card of ordered) {
+    const slots = card?.slots
+    if (slots === null || typeof slots !== 'object' || Array.isArray(slots)) continue
+    for (const [name, binding] of Object.entries(slots)) {
+      if (binding === null || typeof binding !== 'object' || Array.isArray(binding)) continue
+      const sessionId = binding.sessionId
+      if (typeof sessionId !== 'string' || sessionId === '') continue
+      target.set(sessionId, name)
+    }
   }
 }
 

@@ -13,6 +13,8 @@ dsh 有两个现成方向：team 任务板（覆盖任务 + 依赖 + owner + CAS
 
 **自建落盘，不用 storage domain**。`defineDomain` 要求 zod schema 且存储域服务是 `@deepseek-ai/dsh-storage-domain` peer 依赖，dsh 按 peer 版本与宿主严格校验——依赖内部包的 bundle 会周期性失效（`agent-team` 是活例）。自建与通知队列同构：原子写（tmp + rename）+ 全部读-改-写走同一条 promise 链串行化。
 
+**槽位索引的重建也排在同一条写链上**。槽位反查索引是进程内的内存镜像（卡片库才是真源），进程启动时用 `loadSlotIndex()` 从卡片库重建。重建若不排队，就会与并发的建卡/改卡交错：重建读到旧快照、其间落盘完成，重建再把旧快照写回索引，丢掉刚落盘的槽位绑定，直到下一次改卡才恢复。写链已串行化，重建排进同一条链即可消除这一整类时序论证。
+
 **编号全局递增，不按项目**。P2 没有项目实体（项目作用域推迟到 P3），按项目编号会让「先建实体再发卡」成为前置依赖，而卡片工具本身不依赖项目。全局 `counter` 字段持久化，归档与删除都不回收编号。
 
 **`expectedRevision` 可选，但冲突时拒绝落盘**。协议层要求「改内容带 revision，槽位指派不带」，两者共用一个更新入口，所以校验做成「带了才校验」。
@@ -30,6 +32,6 @@ dsh 有两个现成方向：team 任务板（覆盖任务 + 依赖 + owner + CAS
 
 ## 证据
 
-49 例单测全绿（编号不复用、revision 递增、archived 终态、done⇄active 的 doneAt、检查点宿主补写、库损坏备份并写回空库、并发建卡不重号）。
+49 例单测全绿（编号不复用、revision 递增、archived 终态、done⇄active 的 doneAt、检查点宿主补写、库损坏备份并写回空库、并发建卡不重号）。槽位索引另有独立用例，含「启动重建与写卡交错时不丢最新槽位绑定」——用可控的文件系统把第一次读卡住，排出「重建读到旧快照、其间落盘完成」的确定顺序；去掉写链排队该用例即失败。
 
 sdk profile（dsh 0.2.1-rc.2）+ dsh 自带 mock LLM server 实测：模型工具列表含 `create_card`/`update_card`/`list_cards`；建卡落盘 `#1`、`revision: 0`；改卡后 `revision: 0 → 1`、`status: done` 且 `doneAt` 已记、`checkpoint.updatedBy` 被补成调用方会话 id；带过期 `expectedRevision` 调用报「卡片版本冲突：期望 0，当前 1」且未落盘；`tool/result` 事件的 `meta` 携带完整卡片对象。

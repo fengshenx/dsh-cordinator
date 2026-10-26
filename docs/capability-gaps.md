@@ -177,6 +177,129 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **事件窗口是分页的**：初始只装最近一页，`SessionEventWindow.hasMore` 标志更早历史未加载。面板必须驱动 `SessionFace.loadOlder()` 逐页加载到没有更早历史再重放投影，否则早期建卡/改卡不在窗口内；更糟的是窗口内若恰有 `list_cards` 的全量投影，它本应是完整列表，却被当成窗口内的部分视图看待，破坏「全量投影是权威快照」的前提。`loadOlder` 失败时宿主只记日志不抛错，故翻页设了上限（20 页），到顶则标注「仅显示已加载的历史片段」。
 
+### 21. `ctx.sessions.list()` 只返回 live session——从会话推导的列表会随重启漂移
+
+**实测**：`ctx.sessions.list()` 的注释明写「All live sessions, in creation order」（`packages/core/session/src/index.ts:1359`），只含进程内活着的会话。持久化语料在 `ctx.sessionQuery.listSessions()`（`packages/session-query/session-query/src/index.ts:174`），它合并持久化记录与 live session、live 优先（`packages/session-query/session-query/src/corpus.ts:62`），每条带 `header.cwd`。
+
+**影响**：任何「列表」都不能只用 `ctx.sessions.list()`——进程重启后，未加载的历史会话不在其中，昨天还在的条目今天会从列表消失。项目列表因此**不**从会话推导，而是显式注册表（`projects.json`），真源是注册表而不是会话语料。
+
+**但浏览器侧的 `ctx.sessions` 是另一个服务**（同名不同物，务必分清）：session-controller 的客户端服务用 `rootCtx.reflect.provide('sessions', …)` 注册（`packages/api/session-controller/src/client/sessions/service.ts:286`），它的 `list` 是快照存储而不是函数。快照 `getSnapshot()` 给出 `{ids, byId, phase}`，`byId` 每行带 `title` / `displayTitle` / `cwd` / `origin` / `running` / `blank` / `updatedAt`——**含全部持久会话，也含 `origin==='subagent'` 的 worker 会话**（官方左栏把后者过滤掉了，第三方读得到）。浏览器实测：225 个会话行全部带 `cwd`，其中 51 个是 subagent。快照由 host 的 `session/list` RPC 投影而来（`packages/api/session-controller/src/client/sessions/manager.ts:418-481` → `remote.session.list()`），加载前 `phase` 为 `pending`，取值要等它变 `ready`。
+
+### 21b. 目录归组要按 realpath 比对，字符串相等不够
+
+**实测**：同一物理目录在会话头里有两种写法——`/tmp/dsh-demo-project` 与 `/private/tmp/dsh-demo-project`（macOS 的 `/tmp` 是指向 `/private/tmp` 的符号链接）。项目记录里存的是用户给的原始路径，会话头里存的是宿主创建会话时的写法，两者字符串相等但物理目录相同。按字符串分组会把同一个项目拆成两组，且 worker 会话（由派工器注入项目目录）与协调者会话（由建项目时传入目录）常常分属两组。
+
+**应对**：宿主侧统一做 realpath 归一化再比对——官方 workspace 注册表就是这么做的（`packages/workspace/workspace/src/entity.ts:125` 的 `realpathNormalize`）。第三方没有理由发明另一套。
+
+### 22. 持久化会话头里没有标题与更新时间
+
+**实测**：`SessionHeader` 只有 `version`、`id`、`createdAt`、`cwd`、`parentSession`、`isSeeded`、`origin`、`delegationDepth`、`agentPreset`（`packages/core/session/src/types.ts:95-138`），没有 `title` 与 `updatedAt`——那是客户端投影（`SessionSummary`）才有的字段。
+
+**影响**：宿主侧从持久化语料挑会话时，只能按 `createdAt` 与 live 优先排序，取不到「最近更新」；客户端侧用 `ctx.sessions.list` 的 `SessionSummary` 才能按 `updatedAt` 排。项目名存在项目记录里，不依赖会话头。
+
+### 23. 客户端构建产物不能用 `node:` 内置模块
+
+**实测**：`build/client.mjs` 的 esbuild 配置是浏览器平台，引入 `node:path` 直接报 `Could not resolve "node:path"`。client 半边跑在浏览器进程里，没有 Node 内置模块。
+
+**影响**：路径末段名称这类小工具在 client 侧得自己实现（`src/client/project-switcher.js` 的 `basenameOf`），且要同时认 `/` 与 `\` 两种分隔符——宿主可能在 Windows 上把工作目录写成反斜杠形式。
+
+---
+
+### 24. 系统提示词消息是会话级固定的——动态内容必须走运行时上下文
+
+**Telov 现状**：角色槽位正文作为 role_context 随每轮 turn 构造注入，读的是当轮的文件内容，改完文件下一轮即生效。
+
+**dsh 实测**：`systemPrompt.section()` 注册的段进的是**系统提示词消息**，而那条消息只在请求序列重启时重新投影（`packages/core/agent-loop/src/agent.ts:407-425` 的 `systemPrompt.project`；`startsSeries` 为假时不追加新消息）。会话建立后再注册进去的段，在后续请求的系统提示词里始终不出现——注册成功、不报错、静默失效。
+
+**替代通道**：运行时上下文（`assembly.contexts`）没有这个限制，provider 每轮组装时重新求值（`packages/core/system-prompt/src/index.ts:582-602` 的 `refreshContext`），快照有变化才作为一条 user 消息追加（`packages/core/agent-loop/src/runtime-context.ts:152-163`）。宿主自己的 `working-directory` 上下文就是这么做的（`packages/session/working-directory/src/index.ts:97`）。
+
+**附加约束**：上下文必须**注册成 provider**，不能只在组装事件（`system-prompt/assemble` waterfall）里临时追加——`refreshContext` 按注册表重新求值，注册表里没有的临时项在运行时被抑制时会被丢弃（`packages/core/system-prompt/src/index.ts:591`）。
+
+**影响**：任何「随时间变化、但要进模型视野」的内容（角色、租户配置、能力开关）都得走运行时上下文，不能走 section。
+
+### 25. `systemPrompt` 不声明在 inject 里就拿不到——即使只是要注册 provider
+
+**dsh 实测**：`ctx.on('system-prompt/assemble', ...)` 这类绑定在服务上的事件，在插件未声明 `systemPrompt` 依赖时不触发；声明后即触发。同一段注册代码在「声明」与「不声明」两种 `inject` 下行为不同，且不报错——只是注入内容不出现。
+
+**影响**：`systemPrompt` 需与其他核心服务一样进 `inject`。它在全部官方 bundle 都有（base 挂载、`packages/bundle/base/cordis.patch.yml:505`；sdk-minimal 自带一行；headless 在 base 之上覆盖 config），声明为必需依赖是安全的——与 `sessionController`、`workspaceRegistry` 那类「只在部分 bundle 存在、声明会让插件挂起」的服务不同。
+
+### 26. `connection.rpc.handle` 对仓外插件不可用——但 Typert 的 SRC 通道可用
+
+**Telov 现状**：渲染进程的 IPC 通道是宿主提供的固定接口，插件只要拿到通道句柄就能调宿主。
+
+**dsh 实测**：`connection` 服务提供 `rpc.handle(channel, handler)` 与 `rpc.fetch.register(route)`，但它们把路由注册到**读取 connection 的那个作用域**上（`packages/client/connection/src/rpc-host.ts:253-277` 的 `owner.webServer.register(route)`）。作用域属性访问要求该服务在作用域链上可注入，第三方 bundle 读到的 connection 服务副本带着「读取者作用域」——而 `webServer` 只挂在 web-app bundle 上，读取者作用域拿不到它的 inject 声明，注册必抛 `cannot get property "webServer" without inject`。dsh 内部也没有任何 `handle` 的使用者：官方 gateway 走的是 `rpc.intercept('/api', …)`，而 `/api` 每条通道只允许一个拦截器，第三方插不进去。
+
+**可走的路：Typert 的 SRC 通道**。宿主 gateway 在 strict 生成描述符缺失时走 SRC 回退（`packages/api/gateway/src/index.ts:868-879` 的 `resolveDescriptor` → `resolveSrcDescriptor`），它按服务原型上的方法标记与实例上的服务绑定还原调用描述符，参数名从方法源码的形参解析。标记契约是**稳定字符串 + 版本化描述符**（协议包 `@deepseek-ai/dsh-typert-protocol` 把标记写在原型属性 `@deepseek-ai/dsh-typert-protocol/remote-methods` 上，值为 `{version:1, methods:[{method, invocation:{kind:'direct'}}]}`），宿主读标记时**不校验来源包的版本**——第三方手写同样的形状即可，不必安装 dsh 内部包。
+
+**要满足的条件**（缺一即失败）：
+
+- 服务必须以 Cordis 服务身份注册（`ctx.provide(key, instance)` 会把 `ctx.reflect.props[key]` 记为 `{type:'service'}`，SRC 回退按这个标记遍历）；
+- 实例上要有 `typertRemote` 绑定，字段为 `{service, serviceKey, namespace}`，其中 `service` 必须指向实例本身（宿主拿它与调用时取到的实例比对）；
+- 原型上要有方法标记，方法名与实例方法名逐字一致；
+- 方法的形参名就是 wire 字段名，宿主按源码解析形参，客户端必须传同名字段，多一个少一个都会被 `gateway/arguments-invalid` 拒掉；
+- 客户端侧 `$mount` 的贡献里每个入参都要带 strict codec（`requireStrictInputs` 会拒收没有 strict codec 的描述符），宿主侧的 SRC 描述符则一律 `src-json`。
+
+**影响**：浏览器侧 → 宿主侧的调用不必自建 Web 路由（那条路要自己处理同源校验与错误形状，鉴权弱于官方 `/api`），也不必装 dsh 内部包（装它会被宿主的 peer/engines 校验卡住）。本仓取 Typert SRC 通道，见[项目作用域与角色槽位](.agents/notes/2026-10-23-project-scope-and-role-slots.md)。代价是手写的协议形状与宿主版本耦合——宿主改标记契约时本仓要同步改。
+
+### 27. 左栏没有与工作区并列的区块槽——第三方只能靠 DOM 注入取位
+
+**Telov 现状**：左栏是三个并列区块（项目类目 → 置顶区 → 工作区类目），项目区目是独立的一等公民。
+
+**dsh 实测**：左栏正文区只有**一个** `sidebar.workspaces` 槽（single，已被宿主的 `WorkspaceBrowser` 占；重复注册抛 `single slot "sidebar.workspaces" already has a registration`，`packages/client/ui-slots/src/index.ts:1220-1222`），slot 机制没有 decorator/HOC 或包装能力（`packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx` 与 `deriveGroups` 都未导出，无法复用渲染逻辑）。左栏可用的 list 槽只有两个：`sidebar.panellist`（occupant 只放 glyph，须与 `main` 同 id 成对注册）与 `sidebar.footer.action`（occupant 可渲染任意内容，位置在工作区下方、设置按钮上方，`packages/client/ui-sidebar/src/client/SidebarRoot.tsx:405-412`）。
+
+**可行的取位办法**：左栏的 DOM 结构是「面板列表 `nav` → 工作区滚动区 → 底部区」（同文件 `:395-412`）。footer occupant 里放一个锚点，向上找到第一个「直接子元素含 `nav`」的祖先作为左栏根，在 `nav` 之后插一个容器，用 React portal 把内容渲染进去，位置就是「自动化任务之下、工作区之上」。宿主结构变了导致找不到锚点时，内容退回原槽渲染，功能不受影响——降级路径必须留着。
+
+### 28. Typert 远程方法的名字要避开官方命名空间服务的保留字
+
+**dsh 实测**：客户端挂载贡献时，官方命名空间服务逐个检查方法名（`packages/api/gateway/src/client/index.ts` 的 `RemoteNamespaceService.assertMethodAvailable`）：撞上命名空间服务自身的字段（`ctx`、`name`、`methods`、`namespace` 等）或 Cordis 服务原型的成员即拒收整个命名空间，报 `client api: method "projects/remove" conflicts with its namespace service`。`remove` 正是 Cordis 服务原型上的成员。
+
+**影响**：第三方远程方法要挑业务前缀足够远的名字（本仓把 `remove` 改成 `unregister`），否则整个命名空间挂不上，表现为界面上一片「通道未就绪」而不是某个方法缺失。
+
+### 29. 官方只有工作区树，没有项目树；「按项目排除会话」也没有扩展点
+
+**Telov 现状**：项目区目与工作区区目是左栏里两个并列的区块，同一个会话只出现在项目下。
+
+**dsh 实测**：官方左栏只有一棵按工作区分组的会话树，没有「项目」这个维度；`sidebar.workspaces` 槽是 single 且已被官方的 `WorkspaceBrowser` 占用，第三方既换不掉渲染也拿不到分组逻辑（见第 27 条）。官方会话行带 `data-row-key="session:<id>"`（`packages/client/ui-workspace/src/client/rows/Rows.tsx:666`），但没有「按外部集合排除行」的接口。
+
+**唯一能用的官方接口是归档**：`workspaceRegistry.archiveSession` 会把会话从**所有**分组面里摘掉（`packages/workspace/workspace/src/index.ts:344-392`）。但归档是用户可见的持久状态——会话会出现在官方的归档视图里，注销项目时得逐个反归档，用户自己归档过的会话更不能被反归档。借用它做「排除」会把两件事搅在一起。
+
+**可行的办法**：本仓自建项目树（一个项目 = 一个目录，项目下挂该目录的会话），与官方工作区树**并行**；重复出现的部分走**渲染层**排除——认 `data-row-key` 的会话 id，命中排除集的行加一个类，由样式表隐藏，官方数据层不动。排除集由宿主按目录判定后经远程方法下发：浏览器没有文件系统，做不了路径归一（见第 21b 条）。
+
+**代价**（都记在 note 里）：官方分组行上的会话计数仍包含被隐藏的会话，数字与可见行数对不上；被隐藏的行仍在 DOM 里，官方搜索等按数据层工作的功能仍能命中它们。
+
+### 30. Typert 的「通道就绪」通知只发一次，订阅晚于挂载就收不到
+
+**dsh 实测**：客户端的命名空间服务在 `$mount` 完成之后才注册（服务键 `remote.<namespace>`），挂载完成前的调用拿不到命名空间，抛的是「通道不可用」而不是「方法不存在」。
+
+**影响**：本仓的「就绪」通知只在挂载那一刻发一次。面板若在挂载完成之后才订阅（例如 React 首次挂载晚于插件 apply），就永远收不到那次通知——表现是「项目列表能出来，但另一个方法一直报通道不可用」，因为两者订阅时机不同。订阅时就必须判一次当前状态，已就绪则补一次通知。
+
+### 31. web 端没有运行时图标 sprite——第三方 bundle 的 `<use>` 引用必然落空
+
+**dsh 实测**：图标有两套渲染路径：源码里 `ui-primitives` 的 `Icon` 组件用 `<use href="#dsw-icon-<字形>-<字重>">` 指向文档级 sprite（`packages/client/ui-primitives/src/icons/index.tsx:18-24`），`ui-theme` 在 apply 时装 sprite（`packages/client/ui-theme/src/client/index.ts:602` → `icon-sprite.ts` 的 `installIconSprite`，把 symbol 挂进 `document.body`）。但 **web 端产物里 sprite 不存在**：探针实测运行时 DOM 里 `symbol` 数为 0、`[data-dsh-icon-sprite]` 不存在，宿主自己的图标全是内联 path（构建期就把 sprite 展开进了各组件产物）。
+
+**影响**：第三方 bundle 是运行时才渲染的，拿不到那份构建期产物，`<use href="#dsw-icon-…">` 一律引用不到——图标尺寸为 0×0，**完全不可见且不报错**。第三方要出图标只能自带路径数据（本仓内联宿主 `artwork.ts` 的 regular 字重路径），代价是与宿主图标数据耦合。
+
+### 32. 会话不归属工作区，官方 UI 就打不开它
+
+**dsh 实测**：`session.create` 只在传 `workspaceId` 时才会把会话挂进工作区（`packages/api/session-controller/src/commands.ts:105-145` 里的 `workspace.attachSession(sessionId)`）；传 `cwd` 建出的会话**不归属任何工作区**。工作区实体的 `attachSession(sessionId)` 会校验会话头 cwd 与工作区 path 一致（`packages/workspace/workspace/src/entity.ts:102-130`），`WorkspaceRegistry.create(path, title?)` 是幂等的（`packages/workspace/workspace/src/index.ts:170-240`）。
+
+**影响**：第三方自建的会话（协调者会话就是这类）在官方 UI 里没有位置——调用 `uiWorkspace.openSession(sessionId)` 后主区域仍停在欢迎页，官方工作区树里也找不到它。要让会话能被官方 UI 打开，必须把它挂进工作区；目录还不是工作区时得先注册一个（副作用：用户的工作区列表里会多出该项目目录）。
+
+### 33. 官方工作区没有「隐藏」位——第三方注册的工作区只能从渲染层藏
+
+**dsh 实测**：工作区记录是封闭 schema（`packages/workspace/workspace/src/spec.ts` 的 `workspaceRecord`：只有 `path` / `title` / `sessionIds` / `createdAt` / `updatedAt`），没有备注、标签或可见性字段；归档只作用于会话（`workspaceDomainState.archivedSessionIds`），工作区级别没有归档。工作区实体的公开接口（`packages/workspace/workspace/src/types.ts`）也只有 `setTitle` / `attachSession` / `insertSessionBefore` / `detachSession` / `status`，没有隐藏或删除可见性的方法。
+
+**影响**：第三方为了让自己建的会话能被官方 UI 打开（见第 32 条）不得不注册工作区，那个工作区就会出现在官方左栏的工作区树里，而官方没有「按外部集合隐藏分组」的扩展点。可行的只有两条路：**归属**记在第三方自己的注册表里（第三方知道哪些工作区是自己建的，宿主的封闭 schema 不必改），**隐藏**走渲染层（官方工作区分组行带 `data-row-key="workspace:<id>"`，命中集合的行由样式表隐藏）。代价是隐藏只在左栏成立——欢迎页的工作区选择器与工作区管理面板仍列着它；官方的工作区控制器不走 `/api` 通道（`/api/workspaces/list` 与 `/api/workspaces/rename` 均 404），第三方只能经 `workspaceRegistry` 服务改它，删除入口因此放在第三方自己的项目菜单里，并配二次确认弹窗——弹窗不能复用官方 `Modal` 组件（第三方 bundle 不得 import 宿主 UI 包），只能照 `packages/client/ui-primitives/src/Modal.tsx` 复制改写。
+
+### 34. 空会话一律渲染欢迎页——没有「标记会话非空」的入口
+
+**dsh 实测**：主区域的形态由 `conversationPhase(session, conversation)` 决定（`packages/client/ui-conversation/src/client/contract/snapshot.ts:26-33`）：会话为空时返回 `'blank'`，`ConversationMainPanel` 据此渲染居中的大标题与居中输入框（`packages/client/ui-conversation/src/client/skeleton/ConversationMainPanel.tsx:33-52`，形态同时写进主区域的 `data-phase` 属性）。会话「空」的真源是宿主投影 `sessionListMetadata.blank`，而它只被 `turn/start` 事件翻成 false（`packages/api/session-controller/src/list.ts:47-58`）；宿主没有提供「把会话标记为非空」的命令，客户端的 `promptAttempted` 是纯内存态（`packages/client/ui-conversation/src/client/session.ts:313` 的 `onEngaged` 只在本地 `prompt()` 成功后触发），刷新即失。
+
+**影响**：第三方建的会话（协调者会话就是这类）打开后**默认是欢迎页**。绕开的路径逐条被排除：客户端伪提交会留下假的「用户已发送」态且刷新即失；零消息空轮次不可达（`agent-loop` 的 `turn()` 同步执行 `preStep`，而 `preStep` 第一步就是同步 `inbox.claim`，`claim` 非空则必然走模型调用）；`agent/pre-step` 拒答语义不诚实；fork 一个有 turn 的会话循环依赖；伪造 `turn/start` 等于伪造宿主历史。
+
+**绕过（已实现，不动宿主投影）**：宿主判定的第一个条件是 `conversation.activeTargets.size > 0`——只要有一个会话视图目标处于激活态，外壳就切到 active 形态（输入框停靠底部），与「会话是否为空」无关。这条路径宿主明确对第三方开放（`docs/subsystems/conversation.zh.md:26,28`：「第三方 View 使用相同的选择与激活操作」），槽位目录也直接给了第三方注册 `conversation.view` 条目的示例（`packages/extensions/cordis-client-runner/src/client/slot-catalog.ts:2105`）。于是本仓注册一个只提供活动、不产出内容的视图目标，在协调者会话打开时激活它：会话**仍然是空的**（转录零节点、不跑首轮、不产生模型调用），外壳已经是「发了消息之后」的那个 View。代价是 `uiConversation` 不在机器可读的插件 API 目录 `api-catalog.ts` 里——宿主改这条契约时本仓要同步。
+
+
 ---
 
 ## 四、工具级（已验证可用，无缺口）
@@ -196,6 +319,15 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 客户端取数通道 | 通过 | `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化，实测携带完整卡片对象 |
 | 右栏看板 client 半边 | 通过 | web profile boot manifest 含本包条目（71 条目）；浏览器右栏出现「看板」Tab 并显示卡片；插件行名须为纯包名（见第 18 条） |
 | 面板读会话事件 | 通过 | `ctx.sessions.retain` → `binding.eventSource` → 筛 `tool/result` 事件取 `meta`（见第 20 条） |
+| 项目注册表（host 侧） | 通过 | `add_project` 落盘 `projects.json` 并建协调者会话；`list_projects` 返回注册表条目并标注协调者是否存活（见第 26 条） |
+| 解析目标项目（host 侧） | 通过 | `switch_project` 按 id 或名字返回该项目的协调者会话；协调者会话已删时如实说明需换新协调者 |
+| 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
+| 项目树（client 侧） | 通过 | 点行首槽位展开，列出该项目目录下的会话（协调者不在其中，会话行为纯文字行、无左右图标）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
+| 点项目打开协调者会话 | 通过 | 点项目行 → 先由宿主把协调者会话挂到项目目录的工作区，再打开会话；协调者会话注册并激活了第三方会话视图目标，官方外壳因此切到 active 形态（见第 34 条），浏览器实测主区域 `data-phase` 由 `hero` 变 `active`、页面无「Into the Unknown」、转录零节点、输入框几何与官方 active 布局一致 |
+| 插件工作区隐藏与移除 | 通过 | 官方工作区行命中即打标记属性并隐藏，浏览器实测假行 `display:none`；官方标题保持原样，归属记在项目注册表的 `workspaceId` 上；项目菜单可移除工作区，入口先弹二次确认（宿主 `workspaceRegistry.delete` 只删注册，会话与目录全保留）（见第 33 条） |
+| 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
+| 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
+| 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |
 
 ---
 
@@ -205,5 +337,5 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 - **真实模型下的协议遵循**：本轮用 mock 触发的工具调用验证了工具通路，未验证模型在真实推理下是否按协议层派工。
 - **web 组合下的唤醒**：P1 的完整链路在 sdk profile 验证；web profile 的组合更接近真实使用，但其会话由 UI 创建，尚未用同一套探针跑通。
 - **`list_agents` 能否列出本 bundle 派出的 worker**：源码路径一致（同一 `ctx.subagents` 与 catalog 投影），但未跑实测。
-- **看板的信号灯与槽位绑定**：纯投影与槽位绑定规则尚未实现（P2 剩余项），依赖看板 UI 落地后一并做。
+- **看板的信号灯**：信号灯纯投影尚未实现（P2 剩余项）。槽位绑定已在 P3 接上——卡片 `slots` 字段的反查索引与 `SLOTS.md` 正文注入均已落地并实测，信号灯仍待做。
 
