@@ -232,6 +232,10 @@ export function ProjectPanel(props) {
       setNotice(result.message)
       return
     }
+    // 会话已经打开，但首轮没起来：外观会退化成欢迎页，原因要报给用户。
+    if (typeof result.warning === 'string' && result.warning !== '') {
+      setNotice(result.warning)
+    }
     // 宿主可能刚注册了工作区：归属要同步回列表，否则「从 dsh 移除工作区」这个
     // 入口要等页面刷新才出现。
     if (result.workspaceId !== project.workspaceId) {

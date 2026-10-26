@@ -82,11 +82,15 @@ export function selectProjectSessionRows({ sessionIds, sessionRows, coordinatorS
  * 区），因此先让宿主把协调者会话挂到项目目录对应的工作区，挂不上就把原因报给
  * 用户，不静默失败。
  *
+ * 挂上之后还要请宿主把协调者会话跑过一轮：官方界面把空会话渲染成欢迎页（输入框
+ * 居中），跑过一轮才是输入框停靠底部的对话形态。首轮起不来时仍然打开会话——会话
+ * 是可用的，只是外观退化成欢迎页，原因作为警告带回。
+ *
  * @param {object} options - 选项
  * @param {object} options.project - 项目
  * @param {(method: string, args: unknown[]) => Promise<unknown>} options.callRemote - 调用宿主远程方法
  * @param {(sessionId: string) => void} options.openSession - 打开会话
- * @returns {Promise<{ok: boolean, message?: string, workspaceId?: string}>} 打开结果
+ * @returns {Promise<{ok: boolean, message?: string, warning?: string, workspaceId?: string}>} 打开结果
  */
 export async function openCoordinatorSession({ project, callRemote, openSession }) {
   try {
@@ -94,9 +98,18 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
     if (result?.attached !== true) {
       return { ok: false, message: result?.reason ?? '协调者会话挂到工作区失败。' }
     }
+    let warning
+    try {
+      const engagement = await callRemote('engageCoordinator', [project.id])
+      if (engagement?.engaged !== true) {
+        warning = engagement?.reason ?? '协调者会话首轮启动失败。'
+      }
+    } catch (error) {
+      warning = `协调者会话首轮启动失败：${error instanceof Error ? error.message : String(error)}`
+    }
     openSession(project.coordinatorSessionId)
     // 宿主可能刚为这个目录注册了工作区，把归属带回去给调用方更新列表。
-    return { ok: true, workspaceId: result.workspaceId }
+    return { ok: true, workspaceId: result.workspaceId, warning }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return { ok: false, message: `协调者会话挂到工作区失败：${message}` }

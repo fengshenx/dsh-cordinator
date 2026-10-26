@@ -60,19 +60,49 @@ test('没有会话时列表为空', () => {
   assert.deepEqual(selectProjectSessionRows({ sessionIds: [], sessionRows: {} }), [])
 })
 
-test('打开协调者会先让宿主把会话挂到工作区', async () => {
+test('打开协调者会先挂工作区再让协调者跑一轮', async () => {
   const calls = []
   const opened = []
   const result = await openCoordinatorSession({
     project: { id: 'p-1', coordinatorSessionId: 'session-1' },
     callRemote: async (method, args) => {
       calls.push([method, args])
-      return { attached: true, workspaceId: 'ws-1' }
+      if (method === 'attachCoordinator') return { attached: true, workspaceId: 'ws-1' }
+      return { engaged: true }
     },
     openSession: (sessionId) => opened.push(sessionId),
   })
-  assert.deepEqual(result, { ok: true, workspaceId: 'ws-1' })
-  assert.deepEqual(calls, [['attachCoordinator', ['p-1']]])
+  assert.deepEqual(result, { ok: true, workspaceId: 'ws-1', warning: undefined })
+  assert.deepEqual(calls, [['attachCoordinator', ['p-1']], ['engageCoordinator', ['p-1']]])
+  assert.deepEqual(opened, ['session-1'])
+})
+
+test('首轮起不来时仍然打开会话并带出警告', async () => {
+  const opened = []
+  const result = await openCoordinatorSession({
+    project: { id: 'p-1', coordinatorSessionId: 'session-1' },
+    callRemote: async (method) => (method === 'attachCoordinator'
+      ? { attached: true, workspaceId: 'ws-1' }
+      : { engaged: false, reason: '协调者会话当前不可达。' }),
+    openSession: (sessionId) => opened.push(sessionId),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.warning, '协调者会话当前不可达。')
+  assert.deepEqual(opened, ['session-1'])
+})
+
+test('首轮调用抛错时仍然打开会话并带出警告', async () => {
+  const opened = []
+  const result = await openCoordinatorSession({
+    project: { id: 'p-1', coordinatorSessionId: 'session-1' },
+    callRemote: async (method) => {
+      if (method === 'attachCoordinator') return { attached: true, workspaceId: 'ws-1' }
+      throw new Error('通道断开')
+    },
+    openSession: (sessionId) => opened.push(sessionId),
+  })
+  assert.equal(result.ok, true)
+  assert.match(result.warning, /通道断开/)
   assert.deepEqual(opened, ['session-1'])
 })
 
@@ -80,7 +110,9 @@ test('挂不上工作区时不打开会话并报出原因', async () => {
   const opened = []
   const result = await openCoordinatorSession({
     project: { id: 'p-1', coordinatorSessionId: 'session-1' },
-    callRemote: async () => ({ attached: false, reason: '当前宿主没有工作区服务' }),
+    callRemote: async (method) => (method === 'attachCoordinator'
+      ? { attached: false, reason: '当前宿主没有工作区服务' }
+      : { engaged: true }),
     openSession: (sessionId) => opened.push(sessionId),
   })
   assert.equal(result.ok, false)
