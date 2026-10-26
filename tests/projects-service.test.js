@@ -8,6 +8,7 @@ import {
   createCoordinatorSessionWithCtx,
   createProjectService,
   isSessionAttachedToWorkspace,
+  markWorkspaceAsProject,
   resolveWorkspaceIdForDirectory,
 } from '../src/host/projects/service.js'
 
@@ -272,6 +273,9 @@ function createWorkspaceRegistry({ workspaces = [], createFails } = {}) {
         path,
         title,
         sessionIds: [],
+        setTitle: async (next) => {
+          workspace.title = next
+        },
         attachSession: async (sessionId) => {
           attached.push({ workspaceId: workspace.id, sessionId })
           workspace.sessionIds.push(sessionId)
@@ -481,4 +485,58 @@ test('宿主没有工作区服务时建协调者会话退回 cwd', async () => {
   }
   await createCoordinatorSessionWithCtx(ctx, '/tmp/demo')
   assert.deepEqual(calls, [{ cwd: '/tmp/demo' }])
+})
+
+test('插件注册的工作区标题带来源标记', async () => {
+  const registry = createWorkspaceRegistry()
+  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
+  const workspace = await registry.create('/tmp/demo', 'demo')
+  await markWorkspaceAsProject(workspace, '/tmp/demo')
+  assert.equal(workspace.title, '[dsh-coordinator] demo')
+})
+
+test('用户自定义过标题的工作区不加盖标记', async () => {
+  const registry = createWorkspaceRegistry()
+  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
+  const workspace = await registry.create('/tmp/demo', '我的项目')
+  await markWorkspaceAsProject(workspace, '/tmp/demo')
+  assert.equal(workspace.title, '我的项目')
+})
+
+test('项目列表带出对应的工作区 id', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  assert.equal((await service.list())[0].workspaceId, undefined)
+  await service.attachCoordinator(project.id)
+  // 插件注册的工作区带来源标记，才算「项目工作区」。
+  assert.equal(registry.list()[0].title, `[dsh-coordinator] ${workspace.split(/[\\/]/).pop()}`)
+  assert.equal((await service.list())[0].workspaceId, 'ws-1')
+})
+
+test('用户自己加的同目录工作区不算项目工作区', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await service.attachCoordinator(project.id)
+  // 用户自己加的工作区：复用它挂会话，但不加标记、也不算项目工作区。
+  const userWorkspace = registry.list()[0]
+  await userWorkspace.setTitle('我自己的工作区')
+  assert.equal((await service.list())[0].workspaceId, undefined)
 })

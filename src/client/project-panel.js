@@ -40,6 +40,7 @@ import {
 } from './project-panel-logic.js'
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
 import { createWorkspaceExclusion } from './workspace-exclusion.js'
+import { createWorkspaceHiding } from './workspace-hiding.js'
 
 /**
  * 项目区块。
@@ -157,6 +158,14 @@ export function ProjectPanel(props) {
     exclusion.update(excluded)
     return () => exclusion.dispose()
   }, [sessionsByProject])
+
+  // 项目目录在宿主里必须有个工作区（官方 UI 才能打开协调者会话），那些工作区
+  // 属于「项目」语境，不摆在官方工作区树里。
+  useEffect(() => {
+    const hiding = createWorkspaceHiding()
+    hiding.update(projects.map((project) => project.workspaceId).filter((id) => typeof id === 'string'))
+    return () => hiding.dispose()
+  }, [projects])
 
   const startAdd = useCallback(async () => {
     if (busy) return
