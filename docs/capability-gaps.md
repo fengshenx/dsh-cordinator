@@ -295,7 +295,9 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **dsh 实测**：主区域的形态由 `conversationPhase(session, conversation)` 决定（`packages/client/ui-conversation/src/client/contract/snapshot.ts:26-33`）：会话为空时返回 `'blank'`，`ConversationMainPanel` 据此渲染居中的大标题与居中输入框（`packages/client/ui-conversation/src/client/skeleton/ConversationMainPanel.tsx:33-52`，形态同时写进主区域的 `data-phase` 属性）。会话「空」的真源是宿主投影 `sessionListMetadata.blank`，而它只被 `turn/start` 事件翻成 false（`packages/api/session-controller/src/list.ts:47-58`）；宿主没有提供「把会话标记为非空」的命令，客户端的 `promptAttempted` 是纯内存态（`packages/client/ui-conversation/src/client/session.ts:313` 的 `onEngaged` 只在本地 `prompt()` 成功后触发），刷新即失。
 
-**影响**：第三方建的会话（协调者会话就是这类）打开后**一定是欢迎页**，除非它真的跑过一轮。绕开的路径都被排除：客户端伪提交会留下假的「用户已发送」态且刷新即失；零消息空轮次不可达（`agent-loop` 的 `turn()` 同步执行 `preStep`，而 `preStep` 第一步就是同步 `inbox.claim`，`claim` 非空则必然走模型调用）；`agent/pre-step` 拒答语义不诚实；fork 一个有 turn 的会话循环依赖；伪造 `turn/start` 等于伪造宿主历史。可行的只有一条：**让会话真的跑一轮**——走宿主自带的 `agent.followup()`（与派工完成后的唤醒同一条路），不新增 session event 类型。代价是每个项目多一次模型调用，且协调者会先开口。
+**影响**：第三方建的会话（协调者会话就是这类）打开后**默认是欢迎页**。绕开的路径逐条被排除：客户端伪提交会留下假的「用户已发送」态且刷新即失；零消息空轮次不可达（`agent-loop` 的 `turn()` 同步执行 `preStep`，而 `preStep` 第一步就是同步 `inbox.claim`，`claim` 非空则必然走模型调用）；`agent/pre-step` 拒答语义不诚实；fork 一个有 turn 的会话循环依赖；伪造 `turn/start` 等于伪造宿主历史。
+
+**绕过（已实现，不动宿主投影）**：宿主判定的第一个条件是 `conversation.activeTargets.size > 0`——只要有一个会话视图目标处于激活态，外壳就切到 active 形态（输入框停靠底部），与「会话是否为空」无关。这条路径宿主明确对第三方开放（`docs/subsystems/conversation.zh.md:26,28`：「第三方 View 使用相同的选择与激活操作」），槽位目录也直接给了第三方注册 `conversation.view` 条目的示例（`packages/extensions/cordis-client-runner/src/client/slot-catalog.ts:2105`）。于是本仓注册一个只提供活动、不产出内容的视图目标，在协调者会话打开时激活它：会话**仍然是空的**（转录零节点、不跑首轮、不产生模型调用），外壳已经是「发了消息之后」的那个 View。代价是 `uiConversation` 不在机器可读的插件 API 目录 `api-catalog.ts` 里——宿主改这条契约时本仓要同步。
 
 
 ---
@@ -321,7 +323,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 解析目标项目（host 侧） | 通过 | `switch_project` 按 id 或名字返回该项目的协调者会话；协调者会话已删时如实说明需换新协调者 |
 | 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
 | 项目树（client 侧） | 通过 | 点行首槽位展开，列出该项目目录下的会话（协调者不在其中，会话行为纯文字行、无左右图标）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
-| 点项目打开协调者会话 | 通过 | 点项目行 → 先由宿主把协调者会话挂到项目目录的工作区，再让协调者跑一轮（空会话会被官方渲染成欢迎页，见第 34 条），再打开会话；浏览器实测主区域 `data-phase` 由 `hero` 变 `active`，输入框几何与官方 active 布局逐项相等（见第 32、34 条） |
+| 点项目打开协调者会话 | 通过 | 点项目行 → 先由宿主把协调者会话挂到项目目录的工作区，再打开会话；协调者会话注册并激活了第三方会话视图目标，官方外壳因此切到 active 形态（见第 34 条），浏览器实测主区域 `data-phase` 由 `hero` 变 `active`、页面无「Into the Unknown」、转录零节点、输入框几何与官方 active 布局一致 |
 | 插件工作区隐藏与移除 | 通过 | 官方工作区行命中即打标记属性并隐藏，浏览器实测假行 `display:none`；官方标题保持原样，归属记在项目注册表的 `workspaceId` 上；项目菜单可移除工作区，入口先弹二次确认（宿主 `workspaceRegistry.delete` 只删注册，会话与目录全保留）（见第 33 条） |
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
 | 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
