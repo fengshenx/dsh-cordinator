@@ -279,6 +279,12 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：第三方 bundle 是运行时才渲染的，拿不到那份构建期产物，`<use href="#dsw-icon-…">` 一律引用不到——图标尺寸为 0×0，**完全不可见且不报错**。第三方要出图标只能自带路径数据（本仓内联宿主 `artwork.ts` 的 regular 字重路径），代价是与宿主图标数据耦合。
 
+### 32. 会话不归属工作区，官方 UI 就打不开它
+
+**dsh 实测**：`session.create` 只在传 `workspaceId` 时才会把会话挂进工作区（`packages/api/session-controller/src/commands.ts:105-145` 里的 `workspace.attachSession(sessionId)`）；传 `cwd` 建出的会话**不归属任何工作区**。工作区实体的 `attachSession(sessionId)` 会校验会话头 cwd 与工作区 path 一致（`packages/workspace/workspace/src/entity.ts:102-130`），`WorkspaceRegistry.create(path, title?)` 是幂等的（`packages/workspace/workspace/src/index.ts:170-240`）。
+
+**影响**：第三方自建的会话（协调者会话就是这类）在官方 UI 里没有位置——调用 `uiWorkspace.openSession(sessionId)` 后主区域仍停在欢迎页，官方工作区树里也找不到它。要让会话能被官方 UI 打开，必须把它挂进工作区；目录还不是工作区时得先注册一个（副作用：用户的工作区列表里会多出该项目目录）。
+
 
 ---
 
@@ -302,7 +308,8 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 项目注册表（host 侧） | 通过 | `add_project` 落盘 `projects.json` 并建协调者会话；`list_projects` 返回注册表条目并标注协调者是否存活（见第 26 条） |
 | 解析目标项目（host 侧） | 通过 | `switch_project` 按 id 或名字返回该项目的协调者会话；协调者会话已删时如实说明需换新协调者 |
 | 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
-| 项目树（client 侧） | 通过 | 项目行可展开，列出该项目目录下的会话（协调者不在其中，worker 会话带执行者标记）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
+| 项目树（client 侧） | 通过 | 点行首槽位展开，列出该项目目录下的会话（协调者不在其中，会话行为纯文字行、无左右图标）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
+| 点项目打开协调者会话 | 通过 | 点项目行 → 先由宿主把协调者会话挂到项目目录的工作区，再打开会话；浏览器实测主区域从欢迎页切到会话视图（见第 32 条） |
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
 | 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
 | 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |
