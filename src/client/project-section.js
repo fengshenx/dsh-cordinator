@@ -5,7 +5,9 @@
  * 列表；协调者会话的入口在行的「更多」菜单里（项目名不再承担两个动作）。
  *
  * 排版对齐宿主的工作区浏览：小节标题用同一套行高与三级标签色，项目行用工作区
- * 行的高度、内边距、圆角与 hover 反馈，图标直接引用宿主的全局 sprite。
+ * 行的高度、内边距、圆角与 hover 反馈；行首槽位与官方工作区行同款——平时是目录
+ * 图标，悬停整行时换成展开箭头，展开时箭头旋转朝下。图标是自带的内联路径
+ * （宿主 web 端运行时没有 sprite，见 `icons.js`）。
  *
  * @module dsh-coordinator/client/project-section
  */
@@ -95,13 +97,44 @@ const STYLE_TEXT = `
   color: var(--dsw-alias-label-secondary);
 }
 .dsh-coordinator-project-title {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
   line-height: 20px;
+}
+/* 行首槽位：默认目录图标，悬停整行时换成展开箭头（与官方工作区行同款）。 */
+.dsh-coordinator-project-lead {
+  flex: none;
+  width: 16px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-coordinator-project-lead-arrow {
+  display: none;
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+  transition: transform 150ms var(--ds-ease-in-out, ease);
+}
+.dsh-coordinator-project-lead-arrow[data-open='true'] {
+  transform: rotate(90deg);
+}
+@media (hover: hover) {
+  .dsh-coordinator-project-row:hover .dsh-coordinator-project-lead-arrow {
+    display: inline-flex;
+  }
+  .dsh-coordinator-project-row:hover .dsh-coordinator-project-lead-folder {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dsh-coordinator-project-lead-arrow {
+    transition: none;
+  }
 }
 .dsh-coordinator-project-meta {
   flex: 1 1 auto;
@@ -115,9 +148,17 @@ const STYLE_TEXT = `
 }
 .dsh-coordinator-project-actions {
   flex: none;
-  display: flex;
+  display: none;
   align-items: center;
   gap: 2px;
+}
+@media (hover: hover) {
+  .dsh-coordinator-project-row:hover .dsh-coordinator-project-actions {
+    display: inline-flex;
+  }
+}
+.dsh-coordinator-project-row[data-menu-open='true'] .dsh-coordinator-project-actions {
+  display: inline-flex;
 }
 .dsh-coordinator-project-rename {
   flex: 1 1 auto;
@@ -166,27 +207,6 @@ const STYLE_TEXT = `
   font-size: 12px;
   line-height: 17px;
   color: var(--dsw-alias-label-secondary);
-}
-.dsh-coordinator-project-toggle {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-left: -4px;
-  padding: 0;
-  border: none;
-  border-radius: var(--dsw-radius-sm);
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-}
-@media (hover: hover) {
-  .dsh-coordinator-project-toggle:hover {
-    background: var(--dsw-alias-interactive-bg-hover);
-    color: var(--dsw-alias-label-secondary);
-  }
 }
 .dsh-coordinator-project-sessions {
   display: flex;
@@ -377,10 +397,10 @@ export function ProjectSection(props) {
 }
 
 /**
- * 一个项目行：展开箭头、项目名、目录，悬停时露出操作按钮。
+ * 一个项目行：行首目录图标、项目名，悬停整行时行首换成展开箭头、右端露出操作按钮。
  *
- * 展开后是该项目目录下的会话列表。协调者不在列表里——项目名本身就是它的入口，
- * 重复列出会让「点项目名打开协调者」这条路径变得含糊。
+ * 点行（或点行首图标）折叠/展开该项目下的会话列表。协调者不在列表里——它的入口
+ * 在行的「更多」菜单里，重复列出会让入口含糊。
  *
  * @param {object} props - 组件属性
  * @returns {object} React 元素
@@ -421,6 +441,9 @@ function ProjectRow(props) {
       {
         className: 'dsh-coordinator-project-row',
         'data-dead': openable ? undefined : 'true',
+        'data-menu-open': menuOpen ? 'true' : undefined,
+        role: 'treeitem',
+        'aria-expanded': expanded,
         title: `${project.name} · ${project.directory}`,
         onClick: (event) => {
           if (event.target.closest('.dsh-coordinator-project-actions') !== null) return
@@ -428,17 +451,22 @@ function ProjectRow(props) {
         },
       },
       createElement(
-        'button',
-        {
-          type: 'button',
-          className: 'dsh-coordinator-project-toggle',
-          title: expanded ? '收起会话' : '展开会话',
-          'aria-label': expanded ? '收起会话' : '展开会话',
-          onClick: (event) => { event.stopPropagation(); onToggleExpand(project.id) },
-        },
-        productIcon(expanded ? 'chevron-down-outline' : 'chevron-right-outline', { size: 14 }),
+        'span',
+        { className: 'dsh-coordinator-project-lead' },
+        createElement(
+          'span',
+          { className: 'dsh-coordinator-project-lead-folder' },
+          productIcon(expanded ? 'folder-open' : 'folder-close', { size: 16 }),
+        ),
+        createElement(
+          'span',
+          {
+            className: 'dsh-coordinator-project-lead-arrow',
+            'data-open': expanded ? 'true' : 'false',
+          },
+          productIcon('triangle-right-fill', { size: 14 }),
+        ),
       ),
-      productIcon('folder-close'),
       renaming
         ? createElement('input', {
             type: 'text',
