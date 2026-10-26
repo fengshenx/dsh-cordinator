@@ -198,7 +198,7 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
-        workspaceId: isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined,
+        workspaceId: recordedWorkspaceId(ctx, project),
       })))
     },
 
@@ -228,8 +228,10 @@ export function createProjectService({
         // 工作区，那不是我们的，不该被隐藏。
         await store.update(project.id, { workspaceId: workspace.id })
       }
+      // 归属可能刚写进记录（工作区是这次新建的），重读一遍再报给调用方。
+      const recorded = await store.get(project.id)
       if ((workspace.sessionIds ?? []).includes(project.coordinatorSessionId)) {
-        return { attached: true, workspaceId: workspace.id }
+        return { attached: true, workspaceId: recordedWorkspaceId(ctx, recorded ?? project) }
       }
       try {
         await workspace.attachSession(project.coordinatorSessionId)
@@ -237,7 +239,7 @@ export function createProjectService({
         const message = error instanceof Error ? error.message : String(error)
         return { attached: false, reason: `协调者会话挂到工作区失败：${message}` }
       }
-      return { attached: true, workspaceId: workspace.id }
+      return { attached: true, workspaceId: recordedWorkspaceId(ctx, recorded ?? project) }
     },
 
     /**
@@ -312,7 +314,7 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
-        workspaceId: isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined,
+        workspaceId: recordedWorkspaceId(ctx, project),
       }
     },
 
@@ -332,7 +334,7 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
-        workspaceId: isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined,
+        workspaceId: recordedWorkspaceId(ctx, project),
       }
     },
 
@@ -355,6 +357,12 @@ export function createProjectService({
     async replaceCoordinator(id) {
       const project = await store.get(id)
       if (project === undefined) throw new Error(`项目不存在：${id}`)
+      // 建会话本身会注册工作区（会话要归属工作区才能被官方 UI 打开），这一步
+      // 顺带把归属记进项目记录——工作区被删过再换协调者时，归属会重新落回。
+      const ensured = await ensureWorkspace(ctx, project.directory, canonicalize)
+      if (ensured?.created === true) {
+        await store.update(id, { workspaceId: ensured.workspace.id })
+      }
       const coordinatorSessionId = await openCoordinatorSession(project.directory)
       try {
         const updated = await store.update(id, { coordinatorSessionId })
@@ -415,6 +423,20 @@ async function ensureWorkspace(ctx, directory, canonicalize) {
   const created = await registry.create(canonical, canonical.split(/[\\/]/).pop() ?? canonical)
   if (created === undefined) return undefined
   return { workspace: created, canonical, created: true }
+}
+
+/**
+ * 读项目记录里的工作区 id，只认仍然活着的。
+ *
+ * 返回的是「项目自己的」工作区，不是当前目录对应的那个：复用的用户工作区不在
+ * 记录里，返回 undefined，客户端据此不给「从 dsh 移除工作区」的入口。
+ *
+ * @param {object} ctx - Cordis 上下文
+ * @param {object} project - 项目记录
+ * @returns {string | undefined} 工作区 id；没有或已不在宿主里时 undefined
+ */
+export function recordedWorkspaceId(ctx, project) {
+  return isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined
 }
 
 /**

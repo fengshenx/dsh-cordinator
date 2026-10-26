@@ -71,7 +71,7 @@ test('打开协调者会先让宿主把会话挂到工作区', async () => {
     },
     openSession: (sessionId) => opened.push(sessionId),
   })
-  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(result, { ok: true, workspaceId: 'ws-1' })
   assert.deepEqual(calls, [['attachCoordinator', ['p-1']]])
   assert.deepEqual(opened, ['session-1'])
 })

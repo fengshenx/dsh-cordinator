@@ -315,7 +315,7 @@ test('attachCoordinator 把协调者会话挂到项目目录的工作区', async
   assert.deepEqual(registry.attached, [{ workspaceId: 'ws-1', sessionId: 'session-1' }])
 })
 
-test('attachCoordinator 复用已存在的工作区，不重复注册', async () => {
+test('attachCoordinator 复用已存在的工作区，不重复注册，也不把它算成项目的工作区', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const existing = {
@@ -336,7 +336,8 @@ test('attachCoordinator 复用已存在的工作区，不重复注册', async ()
   const project = await service.create({ directory: workspace, name: 'alpha' })
   const result = await service.attachCoordinator(project.id)
   assert.equal(result.attached, true)
-  assert.equal(result.workspaceId, 'ws-existing')
+  // 返回的是「项目自己的」工作区：复用来的工作区不在项目记录里。
+  assert.equal(result.workspaceId, undefined)
   assert.equal(registry.created.length, 0)
 })
 

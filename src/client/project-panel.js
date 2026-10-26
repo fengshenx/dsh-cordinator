@@ -228,7 +228,17 @@ export function ProjectPanel(props) {
       callRemote,
       openSession: (sessionId) => uiWorkspace.openSession(sessionId),
     })
-    if (result.ok !== true) setNotice(result.message)
+    if (result.ok !== true) {
+      setNotice(result.message)
+      return
+    }
+    // 宿主可能刚注册了工作区：归属要同步回列表，否则「从 dsh 移除工作区」这个
+    // 入口要等页面刷新才出现。
+    if (result.workspaceId !== project.workspaceId) {
+      setProjects((current) => current.map((item) => (
+        item.id === project.id ? { ...item, workspaceId: result.workspaceId } : item
+      )))
+    }
   }, [callRemote, getUiWorkspace])
 
   const renameProject = useCallback(async (project, name) => {

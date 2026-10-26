@@ -86,7 +86,7 @@ export function selectProjectSessionRows({ sessionIds, sessionRows, coordinatorS
  * @param {object} options.project - 项目
  * @param {(method: string, args: unknown[]) => Promise<unknown>} options.callRemote - 调用宿主远程方法
  * @param {(sessionId: string) => void} options.openSession - 打开会话
- * @returns {Promise<{ok: boolean, message?: string}>} 打开结果
+ * @returns {Promise<{ok: boolean, message?: string, workspaceId?: string}>} 打开结果
  */
 export async function openCoordinatorSession({ project, callRemote, openSession }) {
   try {
@@ -95,13 +95,12 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
       return { ok: false, message: result?.reason ?? '协调者会话挂到工作区失败。' }
     }
     openSession(project.coordinatorSessionId)
-    return { ok: true }
+    // 宿主可能刚为这个目录注册了工作区，把归属带回去给调用方更新列表。
+    return { ok: true, workspaceId: result.workspaceId }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return { ok: false, message: `协调者会话挂到工作区失败：${message}` }
   }
-  openSession(project.coordinatorSessionId)
-  return { ok: true }
 }
 
 /**
