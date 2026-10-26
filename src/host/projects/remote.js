@@ -125,6 +125,19 @@ export function createProjectRemote({ service, ctx }) {
     }
 
     /**
+     * 从宿主里移除项目的工作区。
+     *
+     * 只删工作区注册，目录与全部会话日志都留着；协调者会话仍在，只是不再归属
+     * 工作区，下次打开项目会重新注册并挂上。
+     *
+     * @param {string} id - 项目 id
+     * @returns {Promise<{removed: boolean, reason?: string}>} 移除结果
+     */
+    async removeWorkspace(id) {
+      return this.projects.removeWorkspace(id)
+    }
+
+    /**
      * 列项目下的会话。
      * @returns {Promise<{projectId: string, sessionIds: string[]}[]>} 每个项目的会话 id 列表
      */

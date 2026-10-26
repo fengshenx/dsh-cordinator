@@ -46,6 +46,10 @@ function fakeService() {
       calls.push(['remove', id])
       return { id, name: 'gone', directory: '/tmp/gone', coordinatorSessionId: 's3' }
     },
+    async removeWorkspace(id) {
+      calls.push(['removeWorkspace', id])
+      return { removed: true }
+    },
     async rename(id, name) {
       calls.push(['rename', id, name])
       return { id, name, directory: '/tmp/demo', coordinatorSessionId: 's1' }
@@ -123,6 +127,8 @@ test('方法把调用转给项目服务', async () => {
   assert.deepEqual(await remote.sessionsByProject(), [
     { projectId: 'p1', sessionIds: ['s1', 's5'] },
   ])
+  assert.deepEqual(await remote.removeWorkspace('p1'), { removed: true })
+  assert.deepEqual(service.calls.at(-1), ['removeWorkspace', 'p1'])
 })
 
 test('注销项目返回布尔结果，不返回可能缺失的项目对象', async () => {

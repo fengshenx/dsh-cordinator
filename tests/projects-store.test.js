@@ -96,6 +96,18 @@ test('删项目后反查不到', async () => {
   assert.equal(await store.remove(draft.id), undefined)
 })
 
+test('更新时传 undefined 会清掉该字段', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const draft = store.draft({ name: 'alpha', directory: '/work/alpha' })
+  await store.insert(draft)
+  await store.update(draft.id, { workspaceId: 'ws-1' })
+  assert.equal((await store.get(draft.id)).workspaceId, 'ws-1')
+
+  await store.update(draft.id, { workspaceId: undefined })
+  assert.equal((await store.get(draft.id)).workspaceId, undefined)
+})
+
 test('并发写不丢项目', async () => {
   const home = await makeHome()
   const store = createProjectStore({ home })

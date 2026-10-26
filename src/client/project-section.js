@@ -15,7 +15,7 @@
 import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { productIcon } from './icons.js'
-import { isProjectOpenable, selectProjectSessionRows } from './project-panel-logic.js'
+import { buildProjectMenuItems, isProjectOpenable, selectProjectSessionRows } from './project-panel-logic.js'
 
 const STYLE_ID = 'dsh-coordinator-project-section'
 
@@ -337,7 +337,7 @@ export function ProjectSection(props) {
   const {
     projects, busy, notice, draft,
     onAdd, onConfirmAdd, onCancelAdd, onDraftName,
-    onOpen, onRename, onReplace, onRemove,
+    onOpen, onRename, onReplace, onRemove, onRemoveWorkspace,
     sessionsByProject, sessionRows, expandedProjects,
     onToggleExpand, onOpenSession,
     listExpanded, onToggleList,
@@ -447,6 +447,7 @@ export function ProjectSection(props) {
                 onRename,
                 onReplace,
                 onRemove,
+                onRemoveWorkspace,
                 sessions: sessionsByProject.get(project.id) ?? [],
                 sessionRows,
                 expanded: expandedProjects.has(project.id),
@@ -474,7 +475,7 @@ export function ProjectSection(props) {
  */
 function ProjectRow(props) {
   const {
-    project, busy, onOpen, onRename, onReplace, onRemove,
+    project, busy, onOpen, onRename, onReplace, onRemove, onRemoveWorkspace,
     sessions, sessionRows, expanded, onToggleExpand, onOpenSession,
   } = props
   const [menuOpen, setMenuOpen] = useState(false)
@@ -503,14 +504,14 @@ function ProjectRow(props) {
     coordinatorSessionId: project.coordinatorSessionId,
   })
 
-  const menuItems = [
-    openable
-      ? { id: 'open', label: '打开协调者会话', icon: 'new-chat-outline', onSelect: () => onOpen(project) }
-      : null,
-    { id: 'rename', label: '重命名', icon: 'edit-outline', onSelect: () => setRenaming(true) },
-    { id: 'replace', label: '换新协调者', icon: 'refresh-outline', onSelect: () => onReplace(project) },
-    { id: 'remove', label: '注销项目', icon: 'trash-outline', danger: true, onSelect: () => onRemove(project) },
-  ].filter((item) => item !== null)
+  const menuItems = buildProjectMenuItems(project, {
+    open: openable,
+    onOpen,
+    onRename: () => setRenaming(true),
+    onReplace,
+    onRemove,
+    onRemoveWorkspace,
+  })
 
   return createElement(
     'div',

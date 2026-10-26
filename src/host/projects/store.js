@@ -9,7 +9,9 @@
  * 两条领域规则来自 Telov 的项目容器：
  *
  * - **目录不可改**：项目目录是项目身份的一部分，改目录等于换项目。存储层只接受
- *   `name` 与 `coordinatorSessionId` 两个可变字段，其余字段原样保留。
+ *   `name`、`coordinatorSessionId` 与 `workspaceId` 三个可变字段，其余字段原样保留。
+ *   `workspaceId` 是插件自己注册的工作区 id——它标明了「这个工作区是我们的」，
+ *   用户自己加的同目录工作区不会写进来。
  * - **协调者会话硬绑定**：项目与它的协调者会话是显式指针，不是「目录里最新的那个
  *   会话」这类软约定。
  *
@@ -31,7 +33,7 @@ const STORE_VERSION = 1
  * 白名单而非黑名单：展开 `updates` 会让 `{id}`、`{directory}` 之类字段绕过校验
  * 直接改写身份字段。
  */
-const MUTABLE_FIELDS = Object.freeze(['name', 'coordinatorSessionId'])
+const MUTABLE_FIELDS = Object.freeze(['name', 'coordinatorSessionId', 'workspaceId'])
 
 /**
  * 读取项目注册表；文件缺失返回空表。
@@ -132,13 +134,14 @@ export function createProjectStore({ home, logger = () => {} } = {}) {
      * @param {string} [input.coordinatorSessionId] - 协调者会话 id
      * @returns {object} 项目记录
      */
-    draft({ name, directory, coordinatorSessionId }) {
+    draft({ name, directory, coordinatorSessionId, workspaceId }) {
       const now = Date.now()
       return {
         id: randomUUID(),
         name,
         directory,
         ...coordinatorSessionId === undefined ? {} : { coordinatorSessionId },
+        ...workspaceId === undefined ? {} : { workspaceId },
         createdAt: now,
         updatedAt: now,
       }
@@ -189,8 +192,11 @@ export function createProjectStore({ home, logger = () => {} } = {}) {
 
     /**
      * 改项目的可变字段。
+     *
+     * 传 `undefined` 表示清除该字段（`workspaceId` 移除工作区后要清空）。
+     *
      * @param {string} id - 项目 id
-     * @param {object} updates - 待改字段，只接受 name 与 coordinatorSessionId
+     * @param {object} updates - 待改字段，只接受 name、coordinatorSessionId 与 workspaceId
      * @returns {Promise<object>} 更新后的项目
      */
     async update(id, updates) {
@@ -201,7 +207,7 @@ export function createProjectStore({ home, logger = () => {} } = {}) {
         const current = store.projects[index]
         const next = { ...current }
         for (const key of MUTABLE_FIELDS) {
-          if (updates[key] !== undefined) next[key] = updates[key]
+          if (Object.hasOwn(updates, key)) next[key] = updates[key]
         }
         next.updatedAt = Date.now()
         store.projects[index] = next

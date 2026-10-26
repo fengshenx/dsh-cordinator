@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   basenameOf,
+  buildProjectMenuItems,
   isProjectOpenable,
   openCoordinatorSession,
   selectProjectSessionRows,
@@ -99,3 +100,39 @@ test('远程调用抛错时不打开会话并报出原因', async () => {
   assert.match(result.message, /通道断开/)
   assert.deepEqual(opened, [])
 })
+
+test('项目菜单在没有工作区时不给出移除入口', () => {
+  const items = buildProjectMenuItems({ id: 'p1' }, menuHandlers())
+  assert.equal(items.some((item) => item.id === 'remove-workspace'), false)
+})
+
+test('项目菜单在有工作区时给出移除入口', () => {
+  const items = buildProjectMenuItems({ id: 'p1', workspaceId: 'ws-1' }, menuHandlers())
+  const entry = items.find((item) => item.id === 'remove-workspace')
+  assert.ok(entry)
+  assert.equal(entry.icon, 'close-outline')
+})
+
+test('移除工作区与注销项目是两条不同的入口', () => {
+  const items = buildProjectMenuItems({ id: 'p1', workspaceId: 'ws-1' }, menuHandlers())
+  const removeWorkspace = items.find((item) => item.id === 'remove-workspace')
+  const remove = items.find((item) => item.id === 'remove')
+  assert.notEqual(removeWorkspace.icon, remove.icon)
+  assert.equal(remove.danger, true)
+})
+
+/**
+ * 菜单项只需要处理函数存在，测试里不关心它做了什么。
+ * @returns {object} 菜单处理函数
+ */
+function menuHandlers() {
+  const noop = () => {}
+  return {
+    open: true,
+    onOpen: noop,
+    onRename: noop,
+    onReplace: noop,
+    onRemove: noop,
+    onRemoveWorkspace: noop,
+  }
+}

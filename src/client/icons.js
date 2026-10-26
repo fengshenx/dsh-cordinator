@@ -99,6 +99,13 @@ const GLYPHS = {
       { d: 'M7.7849 8.23878L13.888 2.13574' },
     ],
   },
+  'close-outline': {
+    size: 16,
+    paths: [
+      { d: 'M2.5 2.5L13.5 13.5' },
+      { d: 'M13.5 2.5L2.5 13.5' },
+    ],
+  },
   'trash-outline': {
     size: 16,
     paths: [

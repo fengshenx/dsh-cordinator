@@ -8,8 +8,6 @@ import {
   createCoordinatorSessionWithCtx,
   createProjectService,
   isSessionAttachedToWorkspace,
-  markWorkspaceAsProject,
-  resolveWorkspaceIdForDirectory,
 } from '../src/host/projects/service.js'
 
 /**
@@ -266,6 +264,12 @@ function createWorkspaceRegistry({ workspaces = [], createFails } = {}) {
   const attached = []
   const registry = {
     list: () => workspaces,
+    delete: async (id) => {
+      const index = workspaces.findIndex((item) => item.id === id)
+      if (index === -1) return false
+      workspaces.splice(index, 1)
+      return true
+    },
     create: async (path, title) => {
       if (createFails !== undefined) throw new Error(createFails)
       const workspace = {
@@ -413,29 +417,6 @@ test('项目列表标注协调者会话是否已挂到工作区', async () => {
   assert.equal((await service.get(project.id)).coordinatorAttached, true)
 })
 
-test('resolveWorkspaceIdForDirectory 复用路径相同的工作区', async () => {
-  const registry = createWorkspaceRegistry({
-    workspaces: [{ id: 'ws-existing', path: '/tmp/demo', title: 'demo', sessionIds: [] }],
-  })
-  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
-  const id = await resolveWorkspaceIdForDirectory(ctx, '/tmp/demo', async (dir) => dir)
-  assert.equal(id, 'ws-existing')
-  assert.equal(registry.created.length, 0)
-})
-
-test('resolveWorkspaceIdForDirectory 没有工作区服务时返回 undefined', async () => {
-  const id = await resolveWorkspaceIdForDirectory(createContext(), '/tmp/demo', async (dir) => dir)
-  assert.equal(id, undefined)
-})
-
-test('resolveWorkspaceIdForDirectory 注册目录并返回新工作区 id', async () => {
-  const registry = createWorkspaceRegistry()
-  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
-  const id = await resolveWorkspaceIdForDirectory(ctx, '/tmp/demo', async (dir) => dir)
-  assert.equal(id, 'ws-1')
-  assert.deepEqual(registry.created, [{ path: '/tmp/demo', title: 'demo' }])
-})
-
 test('isSessionAttachedToWorkspace 判定会话归属', async () => {
   const registry = createWorkspaceRegistry({
     workspaces: [{ id: 'ws-1', path: '/tmp/demo', title: 'demo', sessionIds: ['session-a'] }],
@@ -487,20 +468,44 @@ test('宿主没有工作区服务时建协调者会话退回 cwd', async () => {
   assert.deepEqual(calls, [{ cwd: '/tmp/demo' }])
 })
 
-test('插件注册的工作区标题带来源标记', async () => {
+test('插件注册的工作区记进项目记录', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
-  const workspace = await registry.create('/tmp/demo', 'demo')
-  await markWorkspaceAsProject(workspace, '/tmp/demo')
-  assert.equal(workspace.title, '[dsh-coordinator] demo')
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await service.attachCoordinator(project.id)
+  assert.equal((await service.get(project.id)).workspaceId, 'ws-1')
 })
 
-test('用户自定义过标题的工作区不加盖标记', async () => {
-  const registry = createWorkspaceRegistry()
-  const ctx = { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) }
-  const workspace = await registry.create('/tmp/demo', '我的项目')
-  await markWorkspaceAsProject(workspace, '/tmp/demo')
-  assert.equal(workspace.title, '我的项目')
+test('复用用户自己加的工作区不记进项目记录', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const userWorkspace = {
+    id: 'ws-user',
+    path: await realpath(workspace),
+    title: '我自己的工作区',
+    sessionIds: [],
+    attachSession: async () => {},
+  }
+  const registry = createWorkspaceRegistry({ workspaces: [userWorkspace] })
+  const service = createProjectService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await service.attachCoordinator(project.id)
+  assert.equal((await service.get(project.id)).workspaceId, undefined)
+  assert.equal(userWorkspace.title, '我自己的工作区')
 })
 
 test('项目列表带出对应的工作区 id', async () => {
@@ -515,14 +520,11 @@ test('项目列表带出对应的工作区 id', async () => {
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
-  assert.equal((await service.list())[0].workspaceId, undefined)
-  await service.attachCoordinator(project.id)
-  // 插件注册的工作区带来源标记，才算「项目工作区」。
-  assert.equal(registry.list()[0].title, `[dsh-coordinator] ${workspace.split(/[\\/]/).pop()}`)
+  // 建项目时注册的工作区当场就记进记录，归属不会丢。
   assert.equal((await service.list())[0].workspaceId, 'ws-1')
 })
 
-test('用户自己加的同目录工作区不算项目工作区', async () => {
+test('从宿主移除项目工作区会清掉记录', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
@@ -535,8 +537,12 @@ test('用户自己加的同目录工作区不算项目工作区', async () => {
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
   await service.attachCoordinator(project.id)
-  // 用户自己加的工作区：复用它挂会话，但不加标记、也不算项目工作区。
-  const userWorkspace = registry.list()[0]
-  await userWorkspace.setTitle('我自己的工作区')
-  assert.equal((await service.list())[0].workspaceId, undefined)
+  const removed = await service.removeWorkspace(project.id)
+  assert.equal(removed.removed, true)
+  assert.equal(registry.list().length, 0)
+  assert.equal((await service.get(project.id)).workspaceId, undefined)
+  // 再移除一次：工作区已经不在了，如实说明而不是报错。
+  const again = await service.removeWorkspace(project.id)
+  assert.equal(again.removed, false)
+  assert.match(again.reason, /没有由插件注册的工作区/)
 })

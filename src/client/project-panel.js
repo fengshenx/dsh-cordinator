@@ -259,6 +259,25 @@ export function ProjectPanel(props) {
     }
   }, [busy, callRemote, refresh])
 
+  const removeWorkspace = useCallback(async (project) => {
+    if (busy) return
+    setBusy(true)
+    setNotice('')
+    try {
+      const result = await callRemote('removeWorkspace', [project.id])
+      if (result?.removed !== true) {
+        setNotice(result?.reason ?? '移除工作区失败。')
+        return
+      }
+      setNotice(`已从 dsh 移除项目「${project.name}」的工作区。协调者会话保留，下次打开项目会重新挂上。`)
+      await refresh()
+    } catch (error) {
+      setNotice(`移除工作区失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, callRemote, refresh])
+
   const removeProject = useCallback(async (project) => {
     if (busy) return
     setBusy(true)
@@ -288,6 +307,7 @@ export function ProjectPanel(props) {
     onRename: (project, name) => { void renameProject(project, name) },
     onReplace: (project) => { void replaceCoordinator(project) },
     onRemove: (project) => { void removeProject(project) },
+    onRemoveWorkspace: (project) => { void removeWorkspace(project) },
     sessionsByProject,
     sessionRows,
     expandedProjects,

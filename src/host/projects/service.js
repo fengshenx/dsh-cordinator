@@ -21,15 +21,6 @@ import { createCanonicalizer, groupSessionsByProject } from './session-index.js'
 /** 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。 */
 const canonicalize = createCanonicalizer(realpath)
 
-/**
- * 插件注册的工作区的标题标记前缀。
- *
- * 官方工作区记录没有备注或标签位，标题是唯一能被用户看到的位置——工作区在
- * dsh 的其它列表（欢迎页的工作区选择器、工作区管理面板）里仍会出现，标上来源
- * 免得用户以为是自己加的。
- */
-export const PROJECT_WORKSPACE_TITLE_PREFIX = '[dsh-coordinator] '
-
 /** 项目名的长度上限，与 Telov 一致。 */
 const MAX_NAME_LENGTH = 200
 
@@ -172,12 +163,16 @@ export function createProjectService({
       const fallbackName = normalizedDirectory.split(/[\\/]/).pop() ?? normalizedDirectory
       const displayName = assertUsableName(name ?? fallbackName)
 
+      // 只有插件自己注册的工作区才算项目的：复用来的可能是用户自己加的。
+      // 必须在建会话之前问——建会话本身也会注册工作区，那时再问就只剩「已存在」。
+      const ensured = await ensureWorkspace(ctx, normalizedDirectory, canonicalize)
       // 先建会话再建记录：会话建不出来时项目不落盘，失败路径没有半条记录。
       const coordinatorSessionId = await openCoordinatorSession(normalizedDirectory)
       const draft = store.draft({
         name: displayName,
         directory: normalizedDirectory,
         coordinatorSessionId,
+        ...ensured?.created === true ? { workspaceId: ensured.workspace.id } : {},
       })
       try {
         const inserted = await store.insert(draft)
@@ -193,7 +188,7 @@ export function createProjectService({
      * 列项目，并标注协调者会话是否仍在、是否已挂到工作区。
      *
      * `coordinatorAttached` 决定浏览器侧能不能把协调者会话打开成主区域：只有
-     * 归属工作区的会话才能被官方 UI 打开（见 `resolveWorkspaceIdForDirectory`）。
+     * 归属工作区的会话才能被官方 UI 打开（见 `ensureWorkspace`）。
      *
      * @returns {Promise<object[]>} 项目列表
      */
@@ -203,7 +198,7 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
-        workspaceId: await findWorkspaceIdForDirectory(ctx, project.directory, canonicalize),
+        workspaceId: isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined,
       })))
     },
 
@@ -211,7 +206,7 @@ export function createProjectService({
      * 确保协调者会话挂在项目目录对应的工作区上。
      *
      * 官方 UI 只能打开归属工作区的会话（宿主 `session.create` 传 `cwd` 建出的
-     * 会话不归属任何工作区，见 `resolveWorkspaceIdForDirectory`）。目录还不是
+     * 会话不归属任何工作区，见 `ensureWorkspace`）。目录还不是
      * 工作区时这里顺带注册一个——注册是幂等的，宿主侧已有同名工作区就直接复用。
      *
      * @param {string} id - 项目 id
@@ -220,18 +215,18 @@ export function createProjectService({
     async attachCoordinator(id) {
       const project = await store.get(id)
       if (project === undefined) throw new Error('项目不存在')
-      const registry = ctx.get('workspaceRegistry')
-      if (registry === undefined || typeof registry.list !== 'function') {
+      if (ctx.get('workspaceRegistry') === undefined) {
         return { attached: false, reason: '当前宿主没有工作区服务，无法把协调者会话挂到工作区。' }
       }
-      const canonical = await canonicalize(project.directory)
-      let workspace = registry.list().find((item) => item.path === canonical)
-      if (workspace === undefined) {
-        if (typeof registry.create !== 'function') {
-          return { attached: false, reason: '当前宿主的工作区服务不支持注册目录。' }
-        }
-        workspace = await registry.create(canonical, canonical.split(/[\\/]/).pop() ?? canonical)
-        await markWorkspaceAsProject(workspace, canonical)
+      const ensured = await ensureWorkspace(ctx, project.directory, canonicalize)
+      if (ensured === undefined) {
+        return { attached: false, reason: '当前宿主的工作区服务不支持注册目录。' }
+      }
+      const workspace = ensured.workspace
+      if (ensured.created) {
+        // 只有插件自己注册的工作区才记进项目记录：复用的可能是用户自己加的
+        // 工作区，那不是我们的，不该被隐藏。
+        await store.update(project.id, { workspaceId: workspace.id })
       }
       if ((workspace.sessionIds ?? []).includes(project.coordinatorSessionId)) {
         return { attached: true, workspaceId: workspace.id }
@@ -243,6 +238,40 @@ export function createProjectService({
         return { attached: false, reason: `协调者会话挂到工作区失败：${message}` }
       }
       return { attached: true, workspaceId: workspace.id }
+    },
+
+    /**
+     * 从宿主里移除项目的工作区。
+     *
+     * 插件注册的工作区在官方左栏里是隐藏的，用户在官方界面里没法直接删它——
+     * 这里给出项目侧的入口。宿主的 `delete` 只删注册，目录与全部会话日志都留着
+     * （`packages/workspace/workspace/src/index.ts:302-312`），协调者会话仍然在，
+     * 只是不再归属工作区；下次打开项目会重新注册并挂上。
+     *
+     * @param {string} id - 项目 id
+     * @returns {Promise<{removed: boolean, reason?: string}>} 移除结果
+     */
+    async removeWorkspace(id) {
+      const project = await store.get(id)
+      if (project === undefined) throw new Error('项目不存在')
+      const registry = ctx.get('workspaceRegistry')
+      if (registry === undefined || typeof registry.list !== 'function') {
+        return { removed: false, reason: '当前宿主没有工作区服务。' }
+      }
+      const workspaceId = project.workspaceId
+      if (typeof workspaceId !== 'string' || workspaceId === '') {
+        return { removed: false, reason: '该项目没有由插件注册的工作区。' }
+      }
+      if (!registry.list().some((workspace) => workspace.id === workspaceId)) {
+        await store.update(project.id, { workspaceId: undefined })
+        return { removed: false, reason: '工作区已经不在宿主里了。' }
+      }
+      if (typeof registry.delete !== 'function') {
+        return { removed: false, reason: '当前宿主的工作区服务不支持删除。' }
+      }
+      await registry.delete(workspaceId)
+      await store.update(project.id, { workspaceId: undefined })
+      return { removed: true }
     },
 
     /**
@@ -283,7 +312,7 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
-        workspaceId: await findWorkspaceIdForDirectory(ctx, project.directory, canonicalize),
+        workspaceId: isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined,
       }
     },
 
@@ -303,7 +332,7 @@ export function createProjectService({
         ...project,
         coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
-        workspaceId: await findWorkspaceIdForDirectory(ctx, project.directory, canonicalize),
+        workspaceId: isWorkspaceAlive(ctx, project.workspaceId) ? project.workspaceId : undefined,
       }
     },
 
@@ -360,7 +389,7 @@ export function createProjectService({
 }
 
 /**
- * 解析项目目录对应的工作区；目录还没有工作区就注册一个。
+ * 拿到项目目录对应的工作区，没有就注册一个。
  *
  * dsh 的会话只有挂到工作区上，UI 才能把它显示到主区域——宿主 `session.create`
  * 传 `cwd` 建出来的会话不属于任何工作区（`packages/api/session-controller/src/commands.ts`
@@ -368,64 +397,41 @@ export function createProjectService({
  * 因此建协调者会话前先确保目录已注册为工作区；注册是幂等的，目录已是工作区时
  * 直接复用。
  *
- * @param {object} ctx - Cordis 上下文
- * @param {string} directory - 项目目录绝对路径
- * @param {(path: string) => Promise<string>} canonicalize - realpath 归一
- * @returns {Promise<string | undefined>} 工作区 id；宿主没有工作区服务时 undefined
- */
-export async function resolveWorkspaceIdForDirectory(ctx, directory, canonicalize) {
-  const registry = ctx.get('workspaceRegistry')
-  if (registry === undefined || typeof registry.list !== 'function') return undefined
-  const canonical = await canonicalize(directory)
-  const existing = registry.list().find((workspace) => workspace.path === canonical)
-  if (existing !== undefined) return existing.id
-  if (typeof registry.create !== 'function') return undefined
-  const created = await registry.create(canonical, canonical.split(/[\\/]/).pop() ?? canonical)
-  await markWorkspaceAsProject(created, canonical)
-  return created?.id
-}
-
-/**
- * 给插件注册的工作区打上可识别标记。
- *
- * 宿主的工作区记录是封闭 schema（`path` / `title` / `sessionIds` / 时间戳），
- * 没有备注或标签位，标题是唯一能被用户看到的位置。标记只加在**插件自己新建的**
- * 工作区上：用户自己的工作区即便目录相同也原样不动。
- *
- * @param {object} workspace - 宿主工作区实体
- * @param {string} canonicalPath - 工作区的 canonical 目录
- * @returns {Promise<void>} 标记完成
- */
-export async function markWorkspaceAsProject(workspace, canonicalPath) {
-  if (workspace === undefined || typeof workspace.setTitle !== 'function') return
-  const base = canonicalPath.split(/[\\/]/).pop() ?? canonicalPath
-  if (workspace.title !== base) return
-  await workspace.setTitle(`${PROJECT_WORKSPACE_TITLE_PREFIX}${base}`)
-}
-
-/**
- * 查项目目录对应的**插件工作区** id，不做注册。
- *
- * 只认带来源标记的工作区：用户自己加的工作区即便目录与项目相同也不是我们的，
- * 不该被隐藏、也不该被算作项目工作区。
- *
- * 与 `resolveWorkspaceIdForDirectory` 的区别只在一处：这里只查，目录还不是
- * 工作区时返回 undefined，不产生副作用——项目列表是读路径，不该在读的时候
- * 往宿主里写东西。
+ * 「有没有是我们建的」由 `created` 区分：复用的工作区可能是用户自己加的，
+ * 那不是插件的东西，不该被隐藏、不该被记进项目记录。
  *
  * @param {object} ctx - Cordis 上下文
  * @param {string} directory - 项目目录绝对路径
  * @param {(directory: string) => Promise<string>} canonicalize - 路径归一器
- * @returns {Promise<string | undefined>} 工作区 id；没有对应工作区时 undefined
+ * @returns {Promise<{workspace: object, canonical: string, created: boolean} | undefined>} 工作区
  */
-export async function findWorkspaceIdForDirectory(ctx, directory, canonicalize) {
+async function ensureWorkspace(ctx, directory, canonicalize) {
   const registry = ctx.get('workspaceRegistry')
   if (registry === undefined || typeof registry.list !== 'function') return undefined
   const canonical = await canonicalize(directory)
-  const workspace = registry.list().find((item) => item.path === canonical)
-  if (workspace === undefined) return undefined
-  const title = String(workspace.title ?? '')
-  return title.startsWith(PROJECT_WORKSPACE_TITLE_PREFIX) ? workspace.id : undefined
+  const existing = registry.list().find((workspace) => workspace.path === canonical)
+  if (existing !== undefined) return { workspace: existing, canonical, created: false }
+  if (typeof registry.create !== 'function') return undefined
+  const created = await registry.create(canonical, canonical.split(/[\\/]/).pop() ?? canonical)
+  if (created === undefined) return undefined
+  return { workspace: created, canonical, created: true }
+}
+
+/**
+ * 判断工作区是否还在宿主里。
+ *
+ * 项目记录里的工作区 id 可能悬空——用户在工作区管理面板里删掉了它。悬空的 id
+ * 不该再被当成「项目工作区」，否则客户端会拿着一张不存在的行去隐藏。
+ *
+ * @param {object} ctx - Cordis 上下文
+ * @param {string} workspaceId - 记录里的工作区 id
+ * @returns {boolean} 工作区仍在时 true
+ */
+export function isWorkspaceAlive(ctx, workspaceId) {
+  if (typeof workspaceId !== 'string' || workspaceId === '') return false
+  const registry = ctx.get('workspaceRegistry')
+  if (registry === undefined || typeof registry.list !== 'function') return false
+  return registry.list().some((workspace) => workspace.id === workspaceId)
 }
 
 /**
@@ -449,7 +455,7 @@ export function isSessionAttachedToWorkspace(ctx, sessionId) {
  * bundle 提供，所有 profile 都有。两个服务都走惰性获取：它们不在本插件的
  * `inject` 列表里，声明成必需依赖会让不含该服务的 profile 整个插件挂起。
  *
- * 走 `sessionController` 时优先按工作区建（见 `resolveWorkspaceIdForDirectory`）：
+ * 走 `sessionController` 时优先按工作区建（见 `ensureWorkspace`）：
  * 只有归属工作区的会话才能被 UI 打开成主区域。
  *
  * @param {object} ctx - Cordis 上下文
@@ -459,7 +465,8 @@ export function isSessionAttachedToWorkspace(ctx, sessionId) {
 export async function createCoordinatorSessionWithCtx(ctx, directory) {
   const controller = ctx.get('sessionController')
   if (controller !== undefined && typeof controller.create === 'function') {
-    const workspaceId = await resolveWorkspaceIdForDirectory(ctx, directory, canonicalize)
+    const ensured = await ensureWorkspace(ctx, directory, canonicalize)
+    const workspaceId = ensured?.workspace.id
     const created = await controller.create(workspaceId === undefined
       ? { cwd: directory }
       : { workspaceId })

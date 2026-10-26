@@ -101,3 +101,27 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
   openSession(project.coordinatorSessionId)
   return { ok: true }
 }
+
+/**
+ * 构造项目行「更多」菜单的条目。
+ *
+ * 纯函数：菜单项的显隐规则只有一条——项目有由插件注册的工作区时，才给
+ * 「从 dsh 移除工作区」这个入口；没有就没有，免得点了只得到一句「没有工作区」。
+ *
+ * @param {object} project - 项目
+ * @param {{open: boolean, onOpen: Function, onRename: Function, onReplace: Function, onRemove: Function, onRemoveWorkspace: Function}} handlers - 各项的处理函数
+ * @returns {object[]} 菜单条目
+ */
+export function buildProjectMenuItems(project, handlers) {
+  const items = []
+  if (handlers.open) {
+    items.push({ id: 'open', label: '打开协调者会话', icon: 'new-chat-outline', onSelect: () => handlers.onOpen(project) })
+  }
+  items.push({ id: 'rename', label: '重命名', icon: 'edit-outline', onSelect: () => handlers.onRename(project) })
+  items.push({ id: 'replace', label: '换新协调者', icon: 'refresh-outline', onSelect: () => handlers.onReplace(project) })
+  if (typeof project.workspaceId === 'string' && project.workspaceId !== '') {
+    items.push({ id: 'remove-workspace', label: '从 dsh 移除工作区', icon: 'close-outline', onSelect: () => handlers.onRemoveWorkspace(project) })
+  }
+  items.push({ id: 'remove', label: '注销项目', icon: 'trash-outline', danger: true, onSelect: () => handlers.onRemove(project) })
+  return items
+}
