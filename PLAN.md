@@ -405,6 +405,7 @@ dsh 侧实现：
 | 项目区块（client 侧） | 通过 | web profile 实测：宽栏「项目」区块落在「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据经 Typert SRC 通道取回（浏览器实测 + `curl` 打官方 `/api/projects/list` 返回 200，无会话 cookie 返回 401） |
 | 项目树（client 侧） | 通过 | 点标题折叠/展开整个列表，点行首槽位展开/收起该目录下的会话（协调者不在其中，会话行是纯文字行、无左右图标）；行首槽位照官方工作区行（平时目录图标、悬停换箭头、展开时箭头朝下），「更多」贴行右端且悬停时出现，菜单复刻官方材质（`--dsw-menu-surface-fill` + 官方 elevation）；归属由宿主按 realpath 判定后经 `sessionsByProject` 下发（`curl` 打官方 `/api/projects/sessionsByProject` 返回 200，含 subagent 会话 id） |
 | 点项目打开协调者会话 | 通过 | 点项目行 → 宿主先把协调者会话挂到项目目录的工作区（`POST /api/projects/attachCoordinator` 返回 `attached:true`，`workspace.json` 校验会话已在 `sessionIds` 里），再打开会话；浏览器实测主区域从欢迎页切到会话视图 |
+| 插件工作区标记与隐藏 | 通过 | 插件注册的工作区标题带 `[dsh-coordinator] ` 前缀（欢迎页的工作区选择器可见），并从官方左栏工作区树隐藏（渲染层，官方数据不动）；用户自己加的同目录工作区不改标题也不隐藏 |
 | 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用落空（图标 0×0 不可见）；改为内联路径后浏览器实测图标尺寸与 path 齐全 |
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动 |
 | 槽位配置变更在下一轮 turn 生效 | 通过 | 改 `SLOTS.md` 正文（第一版→第二版→第三版→第四版）后逐轮对比请求体：下一轮的运行时上下文消息含新正文、不含旧正文 |
