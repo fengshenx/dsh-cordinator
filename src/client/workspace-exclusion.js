@@ -68,10 +68,60 @@ export function markSessionRow(row, excluded) {
 }
 
 /**
+ * 创建一个「同一帧只排一次」的调度器。
+ *
+ * 抽成独立函数是为了能脱离 DOM 单测：注入假的调度与取消函数即可验证去重与取消。
+ *
+ * @param {object} options - 选项
+ * @param {(callback: () => void) => number} options.schedule - 调度函数，返回句柄
+ * @param {(handle: number) => void} options.cancel - 取消已排的调度
+ * @returns {{ run: (task: () => void) => void, cancel: () => void }} 调度器
+ */
+export function createFrameScheduler({ schedule, cancel }) {
+  let pending = false
+  let handle
+  let generation = 0
+
+  return {
+    /**
+     * 排一个任务。同一帧内重复调用只有第一次生效。
+     * @param {() => void} task - 任务
+     * @returns {void}
+     */
+    run(task) {
+      if (pending) return
+      pending = true
+      generation += 1
+      const current = generation
+      handle = schedule(() => {
+        // 已取消的调度即使回调仍被调用，任务也不能执行。
+        if (current !== generation) return
+        pending = false
+        handle = undefined
+        task()
+      })
+    },
+
+    /**
+     * 取消尚未执行的任务。
+     * @returns {void}
+     */
+    cancel() {
+      if (!pending) return
+      pending = false
+      generation += 1
+      if (handle !== undefined) cancel(handle)
+      handle = undefined
+    },
+  }
+}
+
+/**
  * 创建排除器。
  *
  * 观察整棵文档：官方树重绘、虚拟滚动新增行、以及 React 重写 className，都会触发
- * 重新标记。全量扫描的范围是「所有会话行」，左栏里数量有限，开销可忽略。
+ * 重新标记。扫描范围是「所有会话行」，左栏里数量有限，但聊天流式渲染与看板投影
+ * 更新会连续触发观察回调，因此同一帧内只扫一次。
  *
  * @returns {{ update: (sessionIds: Iterable<string>) => void, dispose: () => void }} 排除器
  */
@@ -93,9 +143,14 @@ export function createWorkspaceExclusion() {
     }
   }
 
+  const scheduler = createFrameScheduler({
+    schedule: (callback) => requestAnimationFrame(callback),
+    cancel: (handle) => cancelAnimationFrame(handle),
+  })
+
   if (typeof document !== 'undefined') {
     ensureStyles()
-    observer = new MutationObserver(() => markAll())
+    observer = new MutationObserver(() => scheduler.run(markAll))
     observer.observe(document.body, {
       childList: true,
       subtree: true,
@@ -107,6 +162,9 @@ export function createWorkspaceExclusion() {
   return {
     /**
      * 更新排除集。
+     *
+     * 排除集变化是低频事件，立即生效；观察回调才是高频路径，由调度器去抖。
+     *
      * @param {Iterable<string>} sessionIds - 要排除的会话 id
      * @returns {void}
      */
@@ -122,6 +180,8 @@ export function createWorkspaceExclusion() {
     dispose() {
       observer?.disconnect()
       observer = undefined
+      // 必须先取消待执行的扫描：否则它会在清理之后把刚摘掉的隐藏标记又加回去。
+      scheduler.cancel()
       if (typeof document === 'undefined') return
       for (const row of document.querySelectorAll(`.${HIDDEN_CLASS}`)) {
         row.classList.remove(HIDDEN_CLASS)
