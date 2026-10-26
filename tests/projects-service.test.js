@@ -548,103 +548,17 @@ test('从宿主移除项目工作区会清掉记录', async () => {
   assert.match(again.reason, /没有由插件注册的工作区/)
 })
 
-/**
- * 造一个记录首轮投递的宿主上下文。
- * @param {object} [options] - 选项
- * @param {boolean} [options.blank] - 会话是否还没跑过一轮
- * @returns {{ ctx: object, delivered: object[] }} 上下文与投递记录
- */
-function createEngagingContext({ blank = true } = {}) {
-  const delivered = []
-  const agent = { followup: (message) => delivered.push(message) }
-  return {
-    ctx: {
-      get: (key) => (key === 'sessionController'
-        ? {
-            projections: async () => ({ values: { sessionListMetadata: { blank } } }),
-            resolveAgent: async () => ({ agent }),
-          }
-        : undefined),
-    },
-    delivered,
-  }
-}
-
-test('建项目会让协调者跑一轮', async () => {
+test('建项目不发起任何模型调用', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const { ctx, delivered } = createEngagingContext()
   const service = createProjectService({
     store,
-    ctx,
+    ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
     sessionExists: async () => true,
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
-  assert.equal(delivered.length, 1)
-  assert.match(delivered[0].content[0].text, /项目「alpha」/)
-  assert.match(delivered[0].content[0].text, new RegExp(workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   assert.equal(project.coordinatorSessionId, 'session-1')
-})
-
-test('首轮起不来时项目照常落盘', async () => {
-  const { home, workspace } = await makeWorkspace()
-  const store = createProjectStore({ home })
-  const service = createProjectService({
-    store,
-    ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
-    sessionExists: async () => true,
-  })
-
-  const project = await service.create({ directory: workspace, name: 'alpha' })
-  assert.equal(project.name, 'alpha')
   assert.equal((await store.list()).length, 1)
-})
-
-test('engageCoordinator 对已经跑过一轮的会话不再发起', async () => {
-  const { home, workspace } = await makeWorkspace()
-  const store = createProjectStore({ home })
-  const { ctx, delivered } = createEngagingContext({ blank: false })
-  const service = createProjectService({
-    store,
-    ctx,
-    createCoordinatorSession: createSessionFactory(),
-    sessionExists: async () => true,
-  })
-
-  const project = await service.create({ directory: workspace, name: 'alpha' })
-  const result = await service.engageCoordinator(project.id)
-  assert.deepEqual(result, { engaged: true })
-  assert.deepEqual(delivered, [])
-})
-
-test('engageCoordinator 对没有协调者会话的项目不发起首轮', async () => {
-  const { home, workspace } = await makeWorkspace()
-  const store = createProjectStore({ home })
-  const service = createProjectService({
-    store,
-    ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
-    sessionExists: async () => true,
-  })
-  const project = await service.create({ directory: workspace, name: 'alpha' })
-  await store.update(project.id, { coordinatorSessionId: '' })
-
-  const result = await service.engageCoordinator(project.id)
-  assert.deepEqual(result, { engaged: false, reason: '该项目还没有协调者会话。' })
-})
-
-test('engageCoordinator 对不存在的项目报错', async () => {
-  const { home } = await makeWorkspace()
-  const store = createProjectStore({ home })
-  const service = createProjectService({
-    store,
-    ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
-    sessionExists: async () => true,
-  })
-
-  await assert.rejects(() => service.engageCoordinator('missing'), /项目不存在/)
 })

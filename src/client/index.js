@@ -16,6 +16,7 @@
 
 import { BoardBody } from './board.js'
 import { ProjectPanel } from './project-panel.js'
+import { mountCoordinatorView, watchCoordinatorSessions } from './coordinator-view.js'
 import { callProjectRemote, mountProjectRemote, reportProjectRemoteError } from './project-remote.js'
 
 export const inject = ['slots', 'sidebarRightTabs', 'sessions']
@@ -73,6 +74,14 @@ export function apply(ctx) {
     }),
   }, ProjectPanel)), 'dsh-coordinator 左栏项目区块')
 
+  // 协调者视图目标：让协调者会话进入官方 active 形态，输入框停靠底部而会话区
+  // 保持空白。`uiConversation` 由 ui-conversation bundle 提供，缺失时这个回调
+  // 不执行（`ctx.inject` 单独起一个 fiber，不拖累本插件），协调者会话退化成
+  // 官方欢迎页。
+  ctx.inject(['uiConversation'], function mountCoordinatorViewFiber(conversationCtx) {
+    mountCoordinatorView(conversationCtx)
+  })
+
   // 项目命名空间挂在官方 gateway client 的 `ctx.remote` 上。远程通道由官方
   // bundle 提供，缺失时这个回调不执行（`ctx.inject` 单独起一个 fiber，不拖累本
   // 插件），看板与左栏注册照常工作；面板此时显示「项目通道未就绪」。
@@ -82,5 +91,7 @@ export function apply(ctx) {
       reportProjectRemoteError(message)
       remoteCtx.logger?.warn?.(`dsh-coordinator: 项目通道挂载失败：${message}`)
     })
+    // 协调者会话名单走同一条通道：填充不挂在项目面板上，侧栏收起时面板会卸载。
+    watchCoordinatorSessions(remoteCtx)
   })
 }

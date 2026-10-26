@@ -125,19 +125,6 @@ export function createProjectRemote({ service, ctx }) {
     }
 
     /**
-     * 确保协调者会话跑过至少一轮。
-     *
-     * 官方界面把空会话渲染成欢迎页（输入框居中），跑过一轮才是输入框停靠底部的
-     * 对话形态。幂等：已经跑过一轮的协调者不会重复发起。
-     *
-     * @param {string} id - 项目 id
-     * @returns {Promise<{engaged: boolean, reason?: string}>} 结果
-     */
-    async engageCoordinator(id) {
-      return this.projects.engageCoordinator(id)
-    }
-
-    /**
      * 从宿主里移除项目的工作区。
      *
      * 只删工作区注册，目录与全部会话日志都留着；协调者会话仍在，只是不再归属

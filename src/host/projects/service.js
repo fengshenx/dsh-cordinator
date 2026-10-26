@@ -16,7 +16,6 @@
 import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
-import { createEngager } from './engagement.js'
 import { createCanonicalizer, groupSessionsByProject } from './session-index.js'
 
 /** 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。 */
@@ -92,7 +91,6 @@ export function createProjectService({
     ?? ((directory) => createCoordinatorSessionWithCtx(ctx, directory))
   const coordinatorExists = sessionExists
     ?? ((sessionId) => sessionExistsWithCtx(ctx, sessionId))
-  const engager = createEngager({ ctx, logger })
 
   /**
    * 协调者会话 id → 项目目录的内存镜像。
@@ -184,14 +182,6 @@ export function createProjectService({
         await abandonCoordinatorSession(coordinatorSessionId)
         throw error
       }
-      // 建完项目就让协调者跑一轮：空会话在官方界面里渲染成欢迎页（输入框居中），
-      // 跑过一轮才是输入框停靠底部的对话形态（见 `engagement.js`）。首轮失败不
-      // 影响项目落盘——下次打开项目时还会再试一次。
-      await engager.engage({
-        sessionId: coordinatorSessionId,
-        name: displayName,
-        directory: normalizedDirectory,
-      })
       return inserted
     },
 
@@ -386,36 +376,7 @@ export function createProjectService({
         await abandonCoordinatorSession(coordinatorSessionId)
         throw error
       }
-      await engager.engage({
-        sessionId: coordinatorSessionId,
-        name: project.name,
-        directory: project.directory,
-      })
       return updated
-    },
-
-    /**
-     * 确保协调者会话跑过至少一轮。
-     *
-     * 官方界面把空会话渲染成欢迎页（输入框居中），跑过一轮才是输入框停靠底部的
-     * 对话形态。这个方法是幂等的：会话已经跑过一轮就什么都不做。建项目时已经跑过
-     * 一轮的协调者不会重复发起。
-     *
-     * @param {string} id - 项目 id
-     * @returns {Promise<{engaged: boolean, reason?: string}>} 结果
-     */
-    async engageCoordinator(id) {
-      const project = await store.get(id)
-      if (project === undefined) throw new Error(`项目不存在：${id}`)
-      const sessionId = project.coordinatorSessionId
-      if (typeof sessionId !== 'string' || sessionId === '') {
-        return { engaged: false, reason: '该项目还没有协调者会话。' }
-      }
-      return engager.engage({
-        sessionId,
-        name: project.name,
-        directory: project.directory,
-      })
     },
 
     /**
