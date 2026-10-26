@@ -19,11 +19,14 @@ DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent �
 | 项目工具 | `src/host/tools/projects.js` | `list_projects` / `add_project` / `switch_project` / `remove_project`：列项目、注册项目、切项目、注销项目 |
 | 项目存储与服务 | `src/host/projects/` | 项目注册表（`projects.json`）与项目服务：建项目连带建协调者会话并绑定，失败整体回滚 |
 | 项目通道 | `src/host/projects/remote.js` | 浏览器侧 → 宿主侧的 Typert 远程通道（命名空间 `projects`，走官方 `/api` 共享通道） |
+| 会话归属 | `src/host/projects/session-index.js` | 按 realpath 把会话归到项目目录，得出「项目 → 会话」映射 |
 | 角色槽位 | `src/host/slots/` | 读项目目录的 `SLOTS.md`，按卡片 `slots` 字段绑定到会话，作为运行时上下文注入 |
 | skill provider | `src/host/skills.js` | 把 bundle 内的 skill 注册进 `ctx.skills`，让模型能通过 dsh 的 `skill` 工具发现与加载 |
 | 右栏看板 Tab | `src/client/index.js` | 浏览器侧注册「看板」Tab 类型与面板主体 |
 | 看板面板 | `src/client/board.js` | 订阅本会话事件窗口，重放卡片投影还原看板 |
 | 左栏项目区块 | `src/client/project-panel.js` | 左栏「项目」区块：在「自动化任务」之下、工作区之上（DOM 注入取位），加项目、打开协调者会话、换新协调者、注销项目 |
+| 项目树 | `src/client/project-section.js` | 项目行展开后列该项目目录下的会话（协调者不在其中，worker 会话带执行者标记） |
+| 官方树排除 | `src/client/workspace-exclusion.js` | 把项目下的会话从官方工作区树里隐藏（渲染层，官方数据层不动） |
 
 bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ctx`，不 peer 依赖任何 dsh 内部包——避免宿主解析失败导致整个 bundle 加载失败。
 
@@ -72,7 +75,7 @@ dsh plugin --profile dev add dsh-coordinator
 3. **派工**：调用 `spawn_worker`，参数 `task` 必填、`label` 可选。工具立即返回子会话 id；worker 结束后，协调者会被自动唤醒，收到一条「【worker 回报】」完成通知（任务、子会话、状态、产物摘要、下一步）。
 4. **记任务事实**：调用 `create_card` 建卡（`title` 必填），`update_card` 改卡（`id` 必填，改内容带 `expectedRevision` 做乐观并发），`list_cards` 查卡（默认不含归档卡）。卡片落盘在 `$DSH_HOME/dsh-coordinator/cards.json`，编号全局递增不复用。
 5. **看交付看板**：浏览器右栏打开「看板」Tab。卡片不另存一份——卡片工具把卡片结构投影到 `tool/result` 事件的 `meta` 上，与 session log 一起持久化；面板重放本会话的投影还原看板。因此**卡片要在同一个会话里产生**才会出现在该会话的看板上。
-6. **管理项目**：项目是显式注册的实体，不是目录。`add_project` 在目标目录里建好协调者会话并与项目绑定，`list_projects` 列出全部项目，`switch_project` 给出目标项目的协调者会话 id，`remove_project` 注销项目（协调者会话保留）。浏览器左栏底部有「项目」区块，可加项目、点项目名打开其协调者会话、换新协调者、注销项目。
+6. **管理项目**：项目是显式注册的实体，不是目录。`add_project` 在目标目录里建好协调者会话并与项目绑定，`list_projects` 列出全部项目，`switch_project` 给出目标项目的协调者会话 id，`remove_project` 注销项目（协调者会话保留）。浏览器左栏有「项目」区块（在「自动化任务」之下、工作区之上），可加项目、点项目名打开其协调者会话、换新协调者、注销项目；项目行左侧的箭头展开该目录下的会话（协调者不在其中），这些会话不再出现在官方工作区树里。
 7. **配角色槽位**：在项目目录写 `SLOTS.md`，按 `## <槽位名>` 分节写角色的工作方法与人设；在卡片的 `slots` 字段把槽位名绑到会话 id，该会话每轮 turn 都会注入对应槽位正文，改动 `SLOTS.md` 在下一轮 turn 生效。槽位只贡献提示词文本，不授予工具权限。
 
 协议层也随 bundle 分发到 `skills/` 下；项目内若自行放置 `.agents/skills/coordinator-mode/`，项目副本优先（dsh 的 skill 发现按来源层级取优）。
@@ -90,8 +93,9 @@ dsh plugin --profile dev add dsh-coordinator
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
 - **看板只覆盖当前会话**。卡片数据随会话事件持久化，看板重放本会话的投影——别的会话建的卡不会出现在这里。面板会主动加载该会话的完整历史（会话事件按页加载，最多翻 20 页；到顶会标注「仅显示已加载的历史片段」）。信号灯（停滞判定）尚未实现。
 - **项目区块靠 DOM 注入取位**。dsh 的左栏正文区只有 `sidebar.workspaces` 一个槽且已被宿主占用，slot 机制没有包装能力，第三方插不进并列区块——本仓在左栏的「面板列表 nav」之后插容器并用 portal 渲染，位置是「自动化任务之下、工作区之上」；宿主结构变化导致找不到锚点时内容退回原槽，功能不受影响。
-- **项目协调者会话落 dsh 左栏的「未分组」桶**。dsh 的会话树按 workspace 归组，项目会话不被任何 workspace 认领；Telov 里项目会话从工作区列表双向排除，这里做不到。
-- **worker 会话在 dsh 左栏不可见**。worker 是 subagent 会话（`origin==='subagent'`），被左栏过滤。
+- **项目树是自建的，与官方工作区树并存**。官方只有按工作区分组的会话树，没有「项目」维度。本仓的项目树按目录挂会话（协调者不在子列表里，worker 会话带执行者标记），归属由宿主按 realpath 判定后下发。
+- **「项目会话不出现在官方工作区树」是渲染层排除，不是数据层**。官方没有按外部集合排除行的扩展点，本仓认 `data-row-key="session:<id>"` 给命中排除集的行加隐藏类。代价：官方分组行上的会话计数仍包含被隐藏的会话；被隐藏的行仍在 DOM 里，官方搜索仍能命中。
+- **子目录里的会话不算项目下的会话**。归属按会话 cwd 与项目目录的 realpath 精确相等判定；两个项目指向同一目录时先注册的归属。
 - **卡片编号是全局的**。卡片不按项目分区，编号跨项目不复用也不分区——将来若要求按项目编号，需迁移存量卡片。
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
 - **浏览器侧 → 宿主侧走 Typert 远程通道**（命名空间 `projects`，经官方 `/api` 共享通道）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 又被官方 gateway 占用；Typert 的 SRC 回退通道允许第三方按协议形状注册服务，但代价是**手写的协议形状与宿主版本耦合**——本仓对齐宿主 `0.2.1-rc.2`（标记属性名、`version:1` 描述符、`typertRemote` 绑定字段、方法形参即 wire 字段名），宿主改契约时本仓要同步改。远程方法名还要避开官方命名空间服务的保留字（撞名会让整个命名空间挂不上）。
