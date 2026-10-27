@@ -141,7 +141,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **实测**：`ctx.sidebarRightTabs.register` 与 `ctx.slots.inject('sidebar.right.pane.tab', …)` 是 client 服务（`packages/client/ui-sidebar-right`，browser-side UI plugin layer），host 进程（Node 侧插件）注册不了。
 
-**影响**：看板 UI 必须有 client 半边——package.json 声明 `dsh.client`（`platform:'web'`、`exports:'./client'`、`external` 列非 baseline 模块），并产出 `lib/client.js`（closure-factory 格式，React 等 baseline 模块由宿主提供）。构建链见第 19 条，插件行名的硬约束见第 18 条。
+**影响**：看板 UI 必须有 client 半边——package.json 声明 `dsh.client`（`platform:'web'`、`exports:'./client'`），并产出 `lib/client.js`（closure-factory 格式，React 等 baseline 模块由宿主提供，本仓无额外模块请求）。构建链见第 19 条，插件行名的硬约束见第 18 条。
 
 ### 16. 读子会话原始回合内容没有默认可用的工具
 
@@ -167,7 +167,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **实测**：dsh 的 `clientBundle` 预设（`packages/client/tsdown.client.ts`）绑定仓内 `PLATFORM_MODULES` 等多个模块，第三方仓无法直接引用；宿主按 closure-factory 约定加载产物——`window.__ModuleLoader__.load({ id, factory: (require) => { var module = { exports: {} }; … return module.exports; } })`。
 
-**影响**：本 bundle 用 esbuild 自建轻量构建链（`build/client.mjs`）：产物体是 CJS，banner 注册工厂并注入 require，footer 交回 exports；宿主模块表里的行（React 等）由 `dsh.client.external` 声明，运行时由工厂的 require 解析。
+**影响**：本 bundle 用 esbuild 自建轻量构建链（`build/client.mjs`）：产物体是 CJS，banner 注册工厂并注入 require，footer 交回 exports；产物里留下的外部 import 由工厂的 require 解析——React 与 react-dom 是宿主基线模块（`PLATFORM_MODULES`），必须 external 掉以复用宿主那份实例，打进产物会出现第二份 React 实例。manifest 的 `dsh.client.external` 只用于请求非基线模块，本仓无此需求。
 
 ### 20. 面板读会话事件要走 `ctx.sessions`，不是纯 session projection
 

@@ -13,7 +13,13 @@ dsh 的 bundle 有两半：host 半边跑在 Node 进程，client 半边跑在�
 
 **插件行名必须是纯包名**。`packages/client/modules/src/index.ts:892` 的 `locatePkgJson` 靠 Loader 行名定位包 manifest 才能判断「这个包有 client 半边」：`exactPackageSpecifier` 不接受含 `/` 的子路径。行名写成 `dsh-coordinator/src/host` 时定位失败，该行不会被识别为 client row——宿主根本不下发 client bundle，浏览器右栏只剩内置欢迎页。改成 `dsh-coordinator` 后，包入口相应改为再导出 host 侧实现（`index.js` 的 `apply`/`inject`/`name` 全部来自 `src/host/index.js`，不再自己声明一份 `name`，避免重复导出）。
 
-**client 产物自己产，用 esbuild 复刻 closure-factory 封装**。dsh 的 `clientBundle` 预设（`packages/client/tsdown.client.ts`）绑定仓内 `PLATFORM_MODULES` 等多个模块，第三方仓无法引用；宿主按 closure-factory 约定加载产物（`window.__ModuleLoader__.load({ id, factory: (require) => { … return module.exports; } })`）。于是 `build/client.mjs` 用 esbuild 产出 CJS 产物：banner 注册工厂并注入 require，footer 交回 exports；宿主模块表里的行（React 等）由 `dsh.client.external` 声明，运行时由工厂的 require 解析。产物不入库（`.gitignore` 忽略 `lib/`），发布时由 `prepublishOnly` 重建。
+**client 产物自己产，用 esbuild 复刻 closure-factory 封装**。dsh 的 `clientBundle` 预设（`packages/client/tsdown.client.ts`）绑定仓内 `PLATFORM_MODULES` 等多个模块，第三方仓无法引用；宿主按 closure-factory 约定加载产物（`window.__ModuleLoader__.load({ id, factory: (require) => { … return module.exports; } })`）。于是 `build/client.mjs` 用 esbuild 产出 CJS 产物：banner 注册工厂并注入 require，footer 交回 exports；产物里留下的外部 import 由工厂的 require 解析。产物不入库（`.gitignore` 忽略 `lib/`），发布时由 `prepublishOnly` 重建。
+
+**React 不进本仓依赖，也不进产物，但必须留在产物外面**。宿主 web 端自带 React：`packages/client/web/src/platform.ts` 的 `PLATFORM_MODULES` 列了 react、react-dom 等基线模块，`seed.ts` 把它们静态 import 进冻结模块表，注释写明「every bundle sees the same instance」。因此本仓既不装 React 依赖（会打出第二份 React 实例，hooks 随之失效），也不能让 esbuild 把它打进产物——`build/client.mjs` 的 `BASELINE_EXTERNALS` 固定 external 掉 react 与 react-dom，产物里只留 `require("react")` 与 `require("react-dom")`，运行时由宿主模块表提供同一份实例。
+
+**manifest 的 `dsh.client.external` 不声明 React**。宿主契约里 `external` 是「基线之外的额外模块请求」（`package-manifest/src/types.ts`：「beyond the implicit client baseline」；`client/modules` 的 `WebBootEntry.external`：「Non-baseline module specifiers this row requests」），基线模块本来就能解析，重复声明反而是违规——宿主自己的 CI 脚本 `scripts/verify-client-packages.ts` 会把「重复基线模块」的声明判成 violation 并自动移除。本仓产物只 require 基线里的 react 与 react-dom，不需要任何额外请求，于是整个 `external` 字段留空（缺省即只要基线）。
+
+**构建期的 external 与 manifest 的 external 是两件事**。前者决定哪些 import 留在产物外（必须含 react），后者是给宿主的模块请求清单（只含非基线模块）。二者一度共用同一份清单——`build/client.mjs` 直接读 `package.json` 的 `dsh.client.external` 当 esbuild 的 external——于是删掉冗余声明会把 React 打进产物。已拆开：构建期由 `BASELINE_EXTERNALS` 自持，manifest 侧不再声明。
 
 **面板订阅会话事件窗口，不另存一份卡片**。纯 session projection 路线走不通——仓外事件类型不进宿主读路径（见 capability-gaps 第 8 条）。可行的取法是 `ctx.sessions.retain(sessionId, { source })` → `reference.ready` → `reference.binding.eventSource`（`ObservableSnapshot<SessionEventWindow>`），筛出 `tool/result` 事件取其 `meta` 投影重放。全量投影清空视图，单卡投影覆盖一张卡。
 
@@ -38,6 +44,8 @@ dsh 的 bundle 有两半：host 半边跑在 Node 进程，client 半边跑在�
 ## 证据
 
 web profile（dsh 0.2.1-rc.2）实测：boot manifest 从 70 条目变 71 条目，多出的条目即本包（`plugins/??dsh-coordinator/client.js`，`inject` 含 `@deepseek-ai/dsh-client-ui-sidebar-right` 与 `@deepseek-ai/dsh-api-session-controller`）；浏览器右栏出现「看板」Tab，点开显示面板。
+
+删掉 manifest 的 `dsh.client.external` 后实测：插件照常被发现与加载，产物里仍只有 `require("react")` 与 `require("react-dom")` 两处外部依赖，看板渲染 4 张卡（3 张 active + 1 张已完成），信号灯四档与链接 chip 均正常，控制台无报错。
 
 数据通道实测：web 会话里模型调 `create_card` → 落盘 `#3「端到端验证卡片」` → 该会话的 `tool/result` 事件 `meta` 携带 `{"kind":"dsh-coordinator-cards","scope":"card","cards":[…]}`。
 
