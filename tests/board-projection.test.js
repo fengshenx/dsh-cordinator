@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   STALLED_THRESHOLD_MS,
+  applyEventChange,
   cardSignal,
   collectCards,
   fitLinkChips,
@@ -97,7 +98,7 @@ test('翻页到上限仍有更早历史时，如实报告未加载完', async ()
   assert.equal(calls, 3)
 })
 
-test('loadOlder 失败不打断加载流程，也不无限循环', async () => {
+test('loadOlder 失败会抛出，不打断加载流程，也不无限循环', async () => {
   let calls = 0
   const binding = {
     eventSource: { getSnapshot: () => ({ hasMore: true }) },
@@ -330,11 +331,20 @@ test('停滞判定要求有绑定会话且超过阈值，非 active 不计时', 
   const now = 100 * 60 * 60 * 1000
   const bound = { status: 'active', slots: { a: { sessionId: 's1' } } }
   const idle = { status: 'active', slots: { a: {} } }
-  assert.equal(isCardStalled({ ...bound, updatedAt: now - STALLED_THRESHOLD_MS - 1 }, new Map(), now), true)
-  assert.equal(isCardStalled({ ...bound, updatedAt: now - STALLED_THRESHOLD_MS }, new Map(), now), false)
-  assert.equal(isCardStalled({ ...idle, updatedAt: 0 }, new Map(), now), false)
-  assert.equal(isCardStalled({ ...bound, status: 'done', updatedAt: 0 }, new Map(), now), false)
-  assert.equal(isCardStalled({ ...bound, updatedAt: now }, new Map(), now), false)
+  const states = new Map([['s1', sessionState()]])
+  assert.equal(isCardStalled({ ...bound, updatedAt: now - STALLED_THRESHOLD_MS - 1 }, states, now), true)
+  assert.equal(isCardStalled({ ...bound, updatedAt: now - STALLED_THRESHOLD_MS }, states, now), false)
+  assert.equal(isCardStalled({ ...idle, updatedAt: 0 }, states, now), false)
+  assert.equal(isCardStalled({ ...bound, status: 'done', updatedAt: 0 }, states, now), false)
+  assert.equal(isCardStalled({ ...bound, updatedAt: now }, states, now), false)
+})
+
+test('停滞判定：会话状态不可知时不断言卡住', () => {
+  const now = 100 * 60 * 60 * 1000
+  const target = { status: 'active', slots: { a: { sessionId: 's1' } }, updatedAt: 0 }
+  const unknown = new Map([['s1', sessionState({ known: false })]])
+  assert.equal(isCardStalled(target, unknown, now), false)
+  assert.equal(isCardStalled(target, new Map(), now), false)
 })
 
 test('停滞判定：名下会话正在跑不算停滞', () => {
@@ -385,4 +395,71 @@ test('链接 chip 排布：宽度未量出时全量展示，放不下时为 +N �
     overflowWidth: 30,
     gap: 6,
   }), 0)
+})
+
+test('链接 chip 排布：间距非法时全量展示，不藏链接', () => {
+  assert.equal(fitLinkChips({
+    availableWidth: 100,
+    chipWidths: [50, 50],
+    overflowWidth: 20,
+    gap: Number.NaN,
+  }), 2)
+  assert.equal(fitLinkChips({
+    availableWidth: 100,
+    chipWidths: [50, 50],
+    overflowWidth: 20,
+    gap: -1,
+  }), 2)
+})
+
+test('事件增量：append 只处理新增条目，不重放整扇窗口', () => {
+  const first = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
+  const second = cardEvent('card', [{ id: 'b', number: 2, revision: 1 }])
+  const initial = applyEventChange(new Map(), { kind: 'append', entries: [first] }, [first])
+  assert.deepEqual([...initial.cards.keys()], ['a'])
+  const next = applyEventChange(initial.cards, { kind: 'append', entries: [second] }, [first, second])
+  assert.deepEqual([...next.cards.keys()], ['a', 'b'])
+  assert.equal(next.changed, true)
+})
+
+test('事件增量：卡片表为空时全量重建', () => {
+  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
+  const result = applyEventChange(new Map(), { kind: 'append', entries: [] }, entries)
+  assert.deepEqual([...result.cards.keys()], ['a'])
+})
+
+test('事件增量：prepend 与 replace 全量重建，窗口靠后的版本作数', () => {
+  const older = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
+  const newer = cardEvent('card', [{ id: 'a', number: 1, revision: 2 }])
+  const base = applyEventChange(new Map(), { kind: 'replace', entries: [newer] }, [newer])
+  const prepended = applyEventChange(base.cards, { kind: 'prepend', entries: [older] }, [older, newer])
+  assert.equal(prepended.cards.get('a').revision, 2)
+  const replaced = applyEventChange(base.cards, { kind: 'replace', entries: [older] }, [older])
+  assert.equal(replaced.cards.get('a').revision, 1)
+})
+
+test('事件增量：settle-assistant 不改卡片表', () => {
+  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
+  const base = applyEventChange(new Map(), { kind: 'replace', entries }, entries)
+  const settled = applyEventChange(base.cards, { kind: 'settle-assistant', attemptId: 'a1' }, entries)
+  assert.equal(settled.changed, false)
+  assert.equal(settled.cards, base.cards)
+})
+
+test('事件增量：全量投影清空此前的视图', () => {
+  const one = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
+  const all = cardEvent('all', [{ id: 'b', number: 2, revision: 1 }])
+  const base = applyEventChange(new Map(), { kind: 'replace', entries: [one] }, [one])
+  const result = applyEventChange(base.cards, { kind: 'append', entries: [all] }, [one, all])
+  assert.deepEqual([...result.cards.keys()], ['b'])
+})
+
+test('事件增量：同一 revision 的卡片不重复写入，transient 条目被跳过', () => {
+  const one = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
+  const base = applyEventChange(new Map(), { kind: 'replace', entries: [one] }, [one])
+  const again = applyEventChange(base.cards, { kind: 'append', entries: [one] }, [one, one])
+  assert.equal(again.changed, false)
+  const transient = { type: 'transient', event: { type: 'assistant/live-chunk' } }
+  const skipped = applyEventChange(new Map(), { kind: 'append', entries: [transient] }, [transient])
+  assert.equal(skipped.cards.size, 0)
 })

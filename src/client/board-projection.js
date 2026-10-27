@@ -53,6 +53,100 @@ export const CARD_SIGNALS = Object.freeze([
 ])
 
 /**
+ * 把一段事件条目里的卡片投影写进卡片表。
+ *
+ * 全量投影（`scope:'all'`）是权威快照，会清空此前的视图；单卡投影
+ * （`scope:'card'`）覆盖同 id 的那一张。
+ *
+ * @param {Map<string, object>} cards - 卡片表（原地修改）
+ * @param {readonly object[]} entries - 会话事件窗口条目
+ * @returns {boolean} 卡片表是否变化
+ */
+function applyEntries(cards, entries) {
+  let changed = false
+  for (const entry of entries) {
+    if (entry.type !== 'event') continue
+    const event = entry.event
+    if (event.type !== 'tool/result') continue
+    const meta = event.data?.meta
+    if (meta === undefined || meta.kind !== META_KIND) continue
+    const projected = Array.isArray(meta.cards) ? meta.cards : []
+    if (meta.scope === 'all') {
+      if (cards.size > 0) changed = true
+      cards.clear()
+    }
+    for (const card of projected) {
+      if (card === null || typeof card !== 'object' || typeof card.id !== 'string') continue
+      const previous = cards.get(card.id)
+      // 卡片带 revision 时才算同一版本；没有 revision 的卡片按后写覆盖
+      if (previous !== undefined
+        && previous.revision !== undefined
+        && previous.revision === card.revision) {
+        continue
+      }
+      cards.set(card.id, card)
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
+ * 两张卡片表是否等价。
+ *
+ * 卡片带 `revision`（卡片存储保证单调递增），同 id 同 revision 即同一版本。
+ *
+ * @param {ReadonlyMap<string, object>} left - 左表
+ * @param {ReadonlyMap<string, object>} right - 右表
+ * @returns {boolean} 是否等价
+ */
+function sameCardTable(left, right) {
+  if (left.size !== right.size) return false
+  for (const [id, card] of left) {
+    const other = right.get(id)
+    if (other === undefined || other.revision !== card.revision) return false
+  }
+  return true
+}
+
+/**
+ * 用宿主的事件增量更新卡片表。
+ *
+ * 宿主的事件窗口「每接受一次变更就同步发布一次」（`packages/api/session-controller/
+ * src/client/contract/events.ts:119`），流式输出时每个 chunk 都是一次 append。
+ * 每次都全量重放整个窗口，等于把「窗口有多大」乘上「chunk 有多少」——这是看板
+ * 在协调者流式输出时卡顿的主因。
+ *
+ * 增量的边界按宿主给的 `change` 分派：`append` 与 `settle-assistant` 只处理增量
+ * 条目；`replace` 与 `prepend` 全量重建——`prepend` 往窗口前面补历史，早到的
+ * 投影与后到的投影谁作数取决于窗口顺序，只有全量重放能定。卡片表为空时同样
+ * 全量重建：增量条目只覆盖增量部分，空表靠增量拼不出完整的视图。
+ *
+ * @param {ReadonlyMap<string, object>} previous - 上一轮的卡片表
+ * @param {object} change - 宿主事件窗口的增量
+ * @param {readonly object[]} entries - 当前窗口的全部条目
+ * @returns {{ cards: Map<string, object>, changed: boolean }} 更新后的卡片表与是否变化
+ */
+export function applyEventChange(previous, change, entries) {
+  const full = change === undefined
+    || change.kind === 'replace'
+    || change.kind === 'prepend'
+    || previous.size === 0
+  if (full) {
+    const cards = new Map()
+    applyEntries(cards, entries)
+    return { cards, changed: !sameCardTable(previous, cards) }
+  }
+  const delta = change.kind === 'append'
+    ? change.entries
+    : (change.entry === undefined ? [] : [change.entry])
+  if (delta.length === 0) return { cards: previous, changed: false }
+  const cards = new Map(previous)
+  const changed = applyEntries(cards, delta)
+  return { cards, changed }
+}
+
+/**
  * 重放事件窗口里的卡片投影。
  *
  * 全量投影（`scope:'all'`）是权威快照，会清空此前的视图；单卡投影
@@ -63,22 +157,7 @@ export const CARD_SIGNALS = Object.freeze([
  */
 export function collectCards(entries) {
   const cards = new Map()
-  for (const entry of entries) {
-    if (entry.type !== 'event') continue
-    const event = entry.event
-    if (event.type !== 'tool/result') continue
-    const meta = event.data?.meta
-    if (meta === undefined || meta.kind !== META_KIND) continue
-    const projected = Array.isArray(meta.cards) ? meta.cards : []
-    if (meta.scope === 'all') {
-      cards.clear()
-    }
-    for (const card of projected) {
-      if (card !== null && typeof card === 'object' && typeof card.id === 'string') {
-        cards.set(card.id, card)
-      }
-    }
-  }
+  applyEntries(cards, entries)
   return [...cards.values()].sort((left, right) => (left.number ?? 0) - (right.number ?? 0))
 }
 
@@ -309,6 +388,9 @@ export function sortDoneCards(cards) {
  * 没有绑定会话的卡不参与停滞计时——那是「没开始」不是「卡住」。会话正在跑的卡
  * 同样不算停滞——它正在干活，只是协调者没更新卡片。
  *
+ * 状态不可知的会话也不算停滞：读不到运行态不等于它停了，断言「卡住」同样是
+ * 撒谎。这与信号灯的口径一致——状态不可知显示「状态未知」，不冒充空闲。
+ *
  * 活动的度量只能用卡片自己的 `updatedAt`：dsh 会话列表的 `updatedAt` 是「最后一次
  * 被提示的时间」（`packages/api/session-controller/src/list.ts:360`），不是会话的
  * 最后活动时间，拿它当活动度量会把「在跑」误判成「卡住」。
@@ -322,8 +404,9 @@ export function isCardStalled(card, states, now) {
   if (card?.status !== 'active') return false
   const bound = slotBindingsOf(card).filter((binding) => binding.sessionId !== '')
   if (bound.length === 0) return false
-  const running = bound.some((binding) => states.get(binding.sessionId)?.running === true)
-  if (running) return false
+  const boundStates = bound.map((binding) => states.get(binding.sessionId))
+  if (boundStates.some((state) => state === undefined || state.known !== true)) return false
+  if (boundStates.some((state) => state.running === true)) return false
   return now - (card.updatedAt ?? 0) > STALLED_THRESHOLD_MS
 }
 
@@ -363,6 +446,8 @@ export function fitLinkChips({ availableWidth, chipWidths, overflowWidth, gap })
     !usable(availableWidth)
     || !Number.isFinite(overflowWidth)
     || overflowWidth < 0
+    || !Number.isFinite(gap)
+    || gap < 0
     || chipWidths.some((width) => !usable(width))
   ) {
     return total

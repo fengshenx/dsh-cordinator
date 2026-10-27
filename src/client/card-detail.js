@@ -12,7 +12,7 @@
  * @module dsh-coordinator/client/card-detail
  */
 
-import { createElement } from 'react'
+import { createElement, useEffect } from 'react'
 import { ModalShell } from './modal-shell.js'
 import { productIcon } from './icons.js'
 import { ensureBoardStyles } from './board-styles.js'
@@ -56,7 +56,9 @@ function DetailSection({ title, text }) {
  * @returns {object} React 元素
  */
 export function CardDetail({ card, onClose, restoreFocus = null }) {
-  ensureBoardStyles()
+  useEffect(() => {
+    ensureBoardStyles()
+  }, [])
   const checkpoint = card?.checkpoint
   const links = Array.isArray(card?.links) ? card.links : []
   const done = card?.status === 'done'

@@ -17,15 +17,16 @@
  * @module dsh-coordinator/client/board
  */
 
-import { createElement, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  collectCards,
+  applyEventChange,
   loadHistory,
   mergeSessionState,
   slotBindingsOf,
   sortActiveCards,
   sortDoneCards,
 } from './board-projection.js'
+import { SlotRetention } from './slot-retain.js'
 import { BoardCard } from './board-card.js'
 import { CardDetail } from './card-detail.js'
 import { ensureBoardStyles } from './board-styles.js'
@@ -105,7 +106,9 @@ function sameStatuses(left, right) {
  */
 function useSlotStates(cards, getSessions, useSessionStatus) {
   const [snapshots, setSnapshots] = useState(() => new Map())
-  const retained = useRef(new Map())
+  const retention = useRef(undefined)
+  const latest = useRef(getSessions)
+  latest.current = getSessions
 
   const needed = useMemo(() => {
     const ids = new Set()
@@ -130,64 +133,46 @@ function useSlotStates(cards, getSessions, useSessionStatus) {
     sameStatuses,
   )
 
-  useEffect(() => {
-    const sessions = getSessions()
-    if (sessions === undefined || sessions === null) return undefined
-
-    for (const [sessionId, entry] of retained.current) {
-      if (needed.has(sessionId)) continue
-      entry.unsubscribe?.()
-      entry.reference.release()
-      retained.current.delete(sessionId)
-      setSnapshots((previous) => {
-        const next = new Map(previous)
-        next.delete(sessionId)
-        return next
-      })
-    }
-
-    for (const sessionId of needed) {
-      if (retained.current.has(sessionId)) continue
-      let reference
-      try {
-        reference = sessions.retain(sessionId, { source: 'dshCoordinatorBoard' })
-      } catch {
-        // 宿主不认识这个会话 id：状态保持未知，不谎称空闲
-        continue
-      }
-      const entry = { reference, unsubscribe: undefined }
-      retained.current.set(sessionId, entry)
-      reference.ready
-        .then((binding) => {
-          // 保留期间卡片撤掉了该槽位：会话已被释放，不再订阅它的快照
-          if (retained.current.get(sessionId) !== entry) return
-          const read = () => {
-            const snapshot = binding.session.getSnapshot()
-            setSnapshots((previous) => {
-              const next = new Map(previous)
-              next.set(sessionId, {
-                running: snapshot.running === true,
-                failed: typeof snapshot.lastAgentError === 'string' && snapshot.lastAgentError !== '',
-              })
-              return next
-            })
+  if (retention.current === undefined) {
+    retention.current = new SlotRetention({
+      retain: (sessionId) => {
+        const sessions = latest.current()
+        if (sessions === undefined || sessions === null) throw new Error('会话服务不可用')
+        return sessions.retain(sessionId, { source: 'dshCoordinatorBoard' })
+      },
+      onState: (sessionId, state) => {
+        setSnapshots((previous) => {
+          const current = previous.get(sessionId)
+          // 宿主每次发布都重建快照对象，值没变就不必换表——换表会让整棵看板重渲染
+          if (current !== undefined
+            && current.running === state.running
+            && current.failed === state.failed) {
+            return previous
           }
-          read()
-          entry.unsubscribe = binding.session.subscribe(read)
+          const next = new Map(previous)
+          next.set(sessionId, state)
+          return next
         })
-        .catch(() => {
-          // 保留失败：状态表里不出现这一项，槽位显示为未知
+      },
+      onDrop: (sessionId) => {
+        setSnapshots((previous) => {
+          if (!previous.has(sessionId)) return previous
+          const next = new Map(previous)
+          next.delete(sessionId)
+          return next
         })
-    }
-    return undefined
+      },
+    })
+  }
+
+  useEffect(() => {
+    // 释放先于保留，且不受会话服务可用与否影响：保留的副作用正是阻止宿主回收
+    // 会话，服务不可用这段时间里也得把不再需要的会话放掉
+    retention.current.sync(needed)
   }, [needed, getSessions])
 
   useEffect(() => () => {
-    for (const entry of retained.current.values()) {
-      entry.unsubscribe?.()
-      entry.reference.release()
-    }
-    retained.current.clear()
+    retention.current.dispose()
   }, [])
 
   return useMemo(() => {
@@ -248,12 +233,13 @@ function BoardEmpty({ allDone }) {
  * @returns {object} React 元素
  */
 function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }) {
-  const [cards, setCards] = useState([])
+  const [cards, setCards] = useState(() => new Map())
   const [error, setError] = useState(null)
   const [history, setHistory] = useState('loading')
   const [detail, setDetail] = useState(null)
   const [doneOpen, setDoneOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
+  const replay = useRef(new Map())
 
   useEffect(() => {
     ensureBoardStyles()
@@ -279,10 +265,18 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
       setError(`读取会话失败：${cause instanceof Error ? cause.message : String(cause)}`)
       return undefined
     }
+    replay.current = new Map()
     reference.ready
       .then((binding) => {
         if (cancelled) return
-        const read = () => { setCards(collectCards(binding.eventSource.getSnapshot().entries)) }
+        // 事件窗口每接受一次变更就同步发布一次，流式输出时每个 chunk 都会走到
+        // 这里；按宿主的增量只处理新增条目，避免全量重放整扇窗口
+        const read = () => {
+          const window = binding.eventSource.getSnapshot()
+          const result = applyEventChange(replay.current, window.change, window.entries)
+          replay.current = result.cards
+          if (result.changed) setCards(result.cards)
+        }
         read()
         unsubscribe = binding.eventSource.subscribe(read)
         return loadHistory(binding).then((complete) => {
@@ -301,21 +295,24 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     }
   }, [sessionId, getSessions])
 
-  const states = useSlotStates(cards, getSessions, useSessionStatus)
+  const cardList = useMemo(() => [...cards.values()], [cards])
+  const states = useSlotStates(cardList, getSessions, useSessionStatus)
 
   const { active, done } = useMemo(() => ({
     active: sortActiveCards(
-      cards.filter((card) => card.status === 'active'),
+      cardList.filter((card) => card.status === 'active'),
       states,
     ),
-    done: sortDoneCards(cards.filter((card) => card.status === 'done')),
-  }), [cards, states])
+    done: sortDoneCards(cardList.filter((card) => card.status === 'done')),
+  }), [cardList, states])
 
-  const openSession = (targetSessionId) => {
+  const openSession = useCallback((targetSessionId) => {
     const uiWorkspace = getUiWorkspace?.()
     if (uiWorkspace === undefined || uiWorkspace === null) return
     uiWorkspace.openSession(targetSessionId)
-  }
+  }, [getUiWorkspace])
+
+  const openDetail = useCallback((card, anchor) => { setDetail({ card, anchor }) }, [])
 
   if (error !== null) {
     return createElement(
@@ -325,7 +322,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     )
   }
 
-  if (cards.length === 0 && history !== 'complete') {
+  if (cards.size === 0 && history !== 'complete') {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
@@ -339,15 +336,13 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     )
   }
 
-  if (cards.length === 0) {
+  if (cards.size === 0) {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
       createElement(BoardEmpty, { allDone: false }),
     )
   }
-
-  const openDetail = (card, anchor) => { setDetail({ card, anchor }) }
 
   return createElement(
     'div',

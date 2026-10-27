@@ -12,7 +12,7 @@
  * @module dsh-coordinator/client/board-card
  */
 
-import { createElement, useLayoutEffect, useRef, useState } from 'react'
+import { createElement, memo, useLayoutEffect, useRef, useState } from 'react'
 import {
   cardSignal,
   fitLinkChips,
@@ -24,9 +24,6 @@ import { productIcon } from './icons.js'
 
 /** 链接行左侧缩进，对齐标题文字起点（信号灯槽 14px + 间距 8px）。 */
 const LINKS_ROW_INDENT = 22
-
-/** 链接 chip 之间的间距。 */
-const LINKS_ROW_GAP = 4
 
 /**
  * 键盘触发详情。
@@ -69,7 +66,7 @@ function linkChipContent(link) {
  *
  * @param {object} props - 组件属性
  * @param {object[]} props.links - 链接列表
- * @param {(card: object, anchor: HTMLElement) => void} props.onOpenDetail - 开详情
+ * @param {(anchor: HTMLElement) => void} props.onOpenDetail - 开详情
  * @returns {object} React 元素
  */
 function BoardLinks({ links, onOpenDetail }) {
@@ -84,13 +81,18 @@ function BoardLinks({ links, onOpenDetail }) {
     const fit = () => {
       const widths = Array.from(measureElement.children)
         .map((element) => element.getBoundingClientRect().width)
-      // 测量层最后一个固定是「+N」；结构被改坏时 fitLinkChips 把非有限值当未测量，全量展示
+      // 测量层最后一个固定是「+N」，取的是被收起链接数的上界（links.length）：
+      // 实际收起几个要等排布结果出来才知道，只能按最坏情况留位——宁可少露一个
+      // chip，也不能让「+N」被挤出可视区。结构被改坏时 fitLinkChips 把非有限值当
+      // 未测量，全量展示
       const overflowWidth = widths.pop() ?? 0
+      // 间距取 CSS 的真值：JS 里再写一份常量，改样式时就会算错
+      const gap = Number.parseFloat(getComputedStyle(rowElement).columnGap)
       setVisibleCount(fitLinkChips({
         availableWidth: rowElement.getBoundingClientRect().width - LINKS_ROW_INDENT,
         chipWidths: widths,
         overflowWidth,
-        gap: LINKS_ROW_GAP,
+        gap: Number.isFinite(gap) ? gap : 0,
       }))
     }
     fit()
@@ -108,15 +110,15 @@ function BoardLinks({ links, onOpenDetail }) {
     createElement(
       'div',
       { ref: measure, 'aria-hidden': 'true', className: 'dsh-coordinator-board-links-measure' },
-      links.map((link) => (typeof link.url === 'string' && link.url !== ''
+      links.map((link, index) => (typeof link.url === 'string' && link.url !== ''
         ? createElement('a', {
-            key: link.id ?? link.label,
+            key: link.id ?? `${link.label}-${index}`,
             href: link.url,
             tabIndex: -1,
             className: 'dsh-coordinator-board-link-chip',
           }, linkChipContent(link))
         : createElement('button', {
-            key: link.id ?? link.label,
+            key: link.id ?? `${link.label}-${index}`,
             type: 'button',
             tabIndex: -1,
             className: 'dsh-coordinator-board-link-chip',
@@ -127,9 +129,9 @@ function BoardLinks({ links, onOpenDetail }) {
         `+${links.length}`,
       ),
     ),
-    links.slice(0, visibleCount).map((link) => (typeof link.url === 'string' && link.url !== ''
+    links.slice(0, visibleCount).map((link, index) => (typeof link.url === 'string' && link.url !== ''
       ? createElement('a', {
-          key: link.id ?? link.label,
+          key: link.id ?? `${link.label}-${index}`,
           href: link.url,
           target: '_blank',
           rel: 'noreferrer',
@@ -138,7 +140,7 @@ function BoardLinks({ links, onOpenDetail }) {
           onClick: (event) => { event.stopPropagation() },
         }, linkChipContent(link))
       : createElement('button', {
-          key: link.id ?? link.label,
+          key: link.id ?? `${link.label}-${index}`,
           type: 'button',
           title: link.purpose || link.label,
           className: 'dsh-coordinator-board-link-chip',
@@ -228,7 +230,7 @@ function BoardSlot({ slot, onOpenSession }) {
  * @param {(sessionId: string) => void} props.onOpenSession - 打开会话
  * @returns {object} React 元素
  */
-export function BoardCard({ card, states, now, onOpenDetail, onOpenSession }) {
+function BoardCardView({ card, states, now, onOpenDetail, onOpenSession }) {
   const links = Array.isArray(card.links) ? card.links : []
   const done = card.status === 'done'
 
@@ -301,3 +303,11 @@ export function BoardCard({ card, states, now, onOpenDetail, onOpenSession }) {
       : null,
   )
 }
+
+/**
+ * 看板卡片行。
+ *
+ * 记忆化：会话状态表与卡片对象在两轮之间引用不变时不必重渲染整棵卡面——流式
+ * 输出期间看板会频繁收到新事件，没有这道闸，卡面上的链接测量会跟着一起跑。
+ */
+export const BoardCard = memo(BoardCardView)
