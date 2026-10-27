@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   basenameOf,
   buildProjectMenuItems,
+  defaultProjectName,
   describeWorkspaceRemoval,
   isProjectOpenable,
   openCoordinatorSession,
@@ -22,6 +23,24 @@ test('项目名不能为空也不能过长', () => {
   assert.equal(validateProjectName('  ').ok, false)
   assert.equal(validateProjectName('x'.repeat(201)).ok, false)
   assert.equal(validateProjectName('x'.repeat(200)).ok, true)
+})
+
+test('目录名能当项目名时直接可用', () => {
+  const check = defaultProjectName('/work/alpha')
+
+  assert.equal(check.ok, true)
+  assert.equal(check.name, 'alpha')
+  assert.equal(check.error, '')
+})
+
+test('目录名当不了项目名时给出改名理由', () => {
+  const root = defaultProjectName('/')
+  assert.equal(root.ok, false)
+  assert.equal(root.error, '项目名不能为空')
+
+  const tooLong = defaultProjectName(`/work/${'x'.repeat(201)}`)
+  assert.equal(tooLong.ok, false)
+  assert.equal(tooLong.error, '项目名过长（上限 200 字）')
 })
 
 test('协调者会话没了的项目不能直接打开', () => {

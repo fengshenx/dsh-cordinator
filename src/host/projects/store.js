@@ -24,6 +24,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { MAX_PROJECT_NAME_LENGTH } from '../../shared/projects.js'
 
 const STORE_VERSION = 1
 
@@ -34,6 +35,36 @@ const STORE_VERSION = 1
  * 直接改写身份字段。
  */
 const MUTABLE_FIELDS = Object.freeze(['name', 'coordinatorSessionId', 'workspaceId'])
+
+/**
+ * 为项目名找一个没被占用的写法。
+ *
+ * 项目名默认取目录末段，两个不同目录末段同名是常事（`/work/a/repo` 与
+ * `/work/b/repo`）。重名本身不破坏数据——id 与目录都不同——但列表里两个一模一样
+ * 的名字没法指认。追加 `-2`、`-3` 保持默认名字可用，要改随时用行上的「重命名」。
+ *
+ * 查重与写入在同一个串行链里完成：先查后写分成两步时，并发建项会双双通过查重。
+ *
+ * @param {object[]} existingProjects - 注册表里已有的项目
+ * @param {string} name - 期望的项目名
+ * @returns {string} 未被占用的项目名
+ */
+export function uniqueProjectName(existingProjects, name) {
+  const taken = new Set(
+    (Array.isArray(existingProjects) ? existingProjects : [])
+      .map((project) => project?.name)
+      .filter((value) => typeof value === 'string'),
+  )
+  if (!taken.has(name)) return name
+  // 序号也算进长度上限，否则超长名字加上后缀会被服务层重新拒掉。
+  const limit = MAX_PROJECT_NAME_LENGTH
+  for (let index = 2; index < 1000; index += 1) {
+    const suffix = `-${index}`
+    const candidate = `${name.slice(0, Math.max(1, limit - suffix.length))}${suffix}`
+    if (!taken.has(candidate)) return candidate
+  }
+  throw new Error(`同名项目过多，无法为「${name}」生成新名字`)
+}
 
 /**
  * 读取项目注册表；文件缺失返回空表。
@@ -155,9 +186,11 @@ export function createProjectStore({ home, logger = () => {} } = {}) {
     async insert(project) {
       return serialize(async () => {
         const store = await readStore(file, recoverFromCorruption)
-        store.projects.push(project)
+        const name = uniqueProjectName(store.projects, project.name)
+        const record = name === project.name ? project : { ...project, name }
+        store.projects.push(record)
         await writeStore(store)
-        return project
+        return record
       })
     },
 
@@ -208,6 +241,13 @@ export function createProjectStore({ home, logger = () => {} } = {}) {
         const next = { ...current }
         for (const key of MUTABLE_FIELDS) {
           if (Object.hasOwn(updates, key)) next[key] = updates[key]
+        }
+        // 重命名也要查重：建项时自动避让只是名字唯一性的一半，改名同样能撞上，
+        // 列表里会重新出现两个一模一样的项目。这里不偷偷加序号——用户明明打了
+        // 这个名字，被改成「X-2」比报错让他改更意外。
+        if (next.name !== current.name
+          && store.projects.some((item) => item.id !== id && item.name === next.name)) {
+          throw new Error(`项目名「${next.name}」已被占用`)
         }
         next.updatedAt = Date.now()
         store.projects[index] = next

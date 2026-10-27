@@ -7,8 +7,9 @@
  * @module dsh-coordinator/client/project-panel-logic
  */
 
-/** 项目名的长度上限，与宿主侧一致。 */
-export const MAX_PROJECT_NAME_LENGTH = 200
+import { MAX_PROJECT_NAME_LENGTH } from '../shared/projects.js'
+
+export { MAX_PROJECT_NAME_LENGTH }
 
 /**
  * 取路径的末段名称。
@@ -34,6 +35,21 @@ export function validateProjectName(name) {
     return { ok: false, error: `项目名过长（上限 ${MAX_PROJECT_NAME_LENGTH} 字）` }
   }
   return { ok: true, error: '' }
+}
+
+/**
+ * 把目录末段当默认项目名，并判定它能不能直接用。
+ *
+ * 能用就直接建项目（用户挑完目录就看到建好的项目）；不能用就得让用户改名——
+ * 直接提交只会换回一条没有出口的报错。
+ *
+ * @param {string} directory - 选中的目录
+ * @returns {{ name: string, ok: boolean, error: string }} 默认名与判定
+ */
+export function defaultProjectName(directory) {
+  const name = basenameOf(directory)
+  const check = validateProjectName(name)
+  return { name, ok: check.ok, error: check.error }
 }
 
 /**

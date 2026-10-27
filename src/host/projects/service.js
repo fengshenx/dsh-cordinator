@@ -17,12 +17,10 @@ import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { createCanonicalizer, groupSessionsByProject } from './session-index.js'
+import { MAX_PROJECT_NAME_LENGTH } from '../../shared/projects.js'
 
 /** 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。 */
 const canonicalize = createCanonicalizer(realpath)
-
-/** 项目名的长度上限，与 Telov 一致。 */
-const MAX_NAME_LENGTH = 200
 
 /**
  * 校验项目目录。
@@ -63,8 +61,8 @@ export function assertUsableName(name) {
     throw new Error('项目名不能为空')
   }
   const trimmed = name.trim()
-  if (trimmed.length > MAX_NAME_LENGTH) {
-    throw new Error(`项目名过长（上限 ${MAX_NAME_LENGTH} 字）`)
+  if (trimmed.length > MAX_PROJECT_NAME_LENGTH) {
+    throw new Error(`项目名过长（上限 ${MAX_PROJECT_NAME_LENGTH} 字）`)
   }
   return trimmed
 }
@@ -278,10 +276,11 @@ export function createProjectService({
     },
 
     /**
-     * 列项目下的会话。
+     * 列项目下的 worker 会话。
      *
-     * 判据是会话跑的目录：worker 会话与协调者会话都跑在项目目录里，用户在该目录
-     * 手动开的会话也算。子目录里开的会话不算——那属于另一个目录。
+     * 判据是会话跑的目录加上 worker 身份：只有 `origin: 'subagent'` 的子代理会话
+     * 才算项目的 worker。协调者会话（入口在项目行上）与用户在项目目录里手动开的
+     * 会话都不算。子目录里开的 worker 不算——那属于另一个目录。
      *
      * `sessionQuery` 缺失时返回空映射：会话索引是增强能力，缺了不该让项目列表
      * 整体不可用。
@@ -297,6 +296,8 @@ export function createProjectService({
         .map((record) => ({
           id: record?.header?.id,
           cwd: record?.header?.cwd,
+          // `origin: 'subagent'` 标记子代理会话——项目下的 worker 就是这一类。
+          origin: record?.header?.origin,
         }))
         .filter((session) => typeof session.id === 'string' && session.id !== '')
       const grouped = await groupSessionsByProject({ projects, sessions, canonicalize })

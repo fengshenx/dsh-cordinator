@@ -118,3 +118,69 @@ test('并发写不丢项目', async () => {
   )
   assert.equal((await store.list()).length, 8)
 })
+
+test('同名项目落盘时自动加序号', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const first = await store.insert(store.draft({ name: 'repo', directory: '/work/a/repo' }))
+  const second = await store.insert(store.draft({ name: 'repo', directory: '/work/b/repo' }))
+
+  assert.equal(first.name, 'repo')
+  assert.equal(second.name, 'repo-2')
+  assert.deepEqual((await store.list()).map((project) => project.name), ['repo', 'repo-2'])
+})
+
+test('序号跳过已被占用的名字', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  await store.insert(store.draft({ name: 'repo', directory: '/work/a' }))
+  await store.insert(store.draft({ name: 'repo-2', directory: '/work/b' }))
+  const third = await store.insert(store.draft({ name: 'repo', directory: '/work/c' }))
+
+  assert.equal(third.name, 'repo-3')
+})
+
+test('并发建同名项目也只有一个拿到原名', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  await Promise.all(
+    Array.from({ length: 3 }, (_value, index) =>
+      store.insert(store.draft({ name: 'repo', directory: `/work/${index}/repo` }))),
+  )
+  const names = (await store.list()).map((project) => project.name).sort()
+
+  assert.deepEqual(names, ['repo', 'repo-2', 'repo-3'])
+})
+
+test('改名撞上已有项目名时报错，不偷偷加序号', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const alpha = await store.insert(store.draft({ name: 'alpha', directory: '/work/a' }))
+  await store.insert(store.draft({ name: 'repo', directory: '/work/b' }))
+
+  await assert.rejects(() => store.update(alpha.id, { name: 'repo' }), /已被占用/)
+  assert.equal((await store.get(alpha.id)).name, 'alpha')
+})
+
+test('把项目改成它自己当前的名字不算撞名', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const alpha = await store.insert(store.draft({ name: 'alpha', directory: '/work/a' }))
+
+  const updated = await store.update(alpha.id, { name: 'alpha', coordinatorSessionId: 'session-9' })
+  assert.equal(updated.name, 'alpha')
+  assert.equal(updated.coordinatorSessionId, 'session-9')
+})
+
+test('只改协调者会话时不查名字，两个同名项目仍可各自改绑', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const first = await store.insert(store.draft({ name: 'alpha', directory: '/work/a' }))
+  const second = await store.insert(store.draft({ name: 'beta', directory: '/work/b' }))
+
+  await store.update(first.id, { coordinatorSessionId: 'session-1' })
+  const rebound = await store.update(second.id, { coordinatorSessionId: 'session-2' })
+
+  assert.equal(rebound.name, 'beta')
+  assert.equal(rebound.coordinatorSessionId, 'session-2')
+})

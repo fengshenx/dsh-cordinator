@@ -147,16 +147,6 @@ const STYLE_TEXT = `
     transition: none;
   }
 }
-.dsh-coordinator-project-meta {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-tertiary);
-}
 .dsh-coordinator-project-actions {
   flex: none;
   display: none;
@@ -243,6 +233,26 @@ const STYLE_TEXT = `
   justify-content: center;
   color: inherit;
 }
+.dsh-coordinator-project-notice {
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+  /* 报错与目录路径都不带空格，不主动断行会横向撑出左栏。 */
+  overflow-wrap: anywhere;
+}
+.dsh-coordinator-project-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px;
+}
+.dsh-coordinator-project-draft-directory {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
 .dsh-coordinator-project-draft-action {
   padding: 4px 10px;
   border: none;
@@ -252,12 +262,6 @@ const STYLE_TEXT = `
   font-size: 12px;
   line-height: 18px;
   cursor: pointer;
-}
-.dsh-coordinator-project-notice {
-  padding: 4px 8px;
-  font-size: 12px;
-  line-height: 17px;
-  color: var(--dsw-alias-label-secondary);
 }
 .dsh-coordinator-project-sessions {
   display: flex;
@@ -335,8 +339,9 @@ function ensureStyles() {
  */
 export function ProjectSection(props) {
   const {
-    projects, busy, notice, draft,
-    onAdd, onConfirmAdd, onCancelAdd, onDraftName,
+    projects, busy, notice,
+    onAdd,
+    naming, onConfirmNaming, onCancelNaming, onNamingChange,
     onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
     sessionsByProject, sessionRows, expandedProjects,
     onToggleExpand, onOpenSession,
@@ -395,40 +400,6 @@ export function ProjectSection(props) {
         ),
       ),
     ),
-    draft === null ? null : createElement(
-      'div',
-      { style: { padding: '4px 8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
-      createElement(
-        'div',
-        { className: 'dsh-coordinator-project-meta' },
-        draft.directory,
-      ),
-      createElement('input', {
-        type: 'text',
-        className: 'dsh-coordinator-project-rename',
-        value: draft.name,
-        autoFocus: true,
-        onChange: (event) => onDraftName(event.target.value),
-        onKeyDown: (event) => {
-          if (event.key === 'Enter') onConfirmAdd()
-          if (event.key === 'Escape') onCancelAdd()
-        },
-      }),
-      createElement(
-        'div',
-        { style: { display: 'flex', gap: '4px' } },
-        createElement(
-          'button',
-          { type: 'button', disabled: busy, onClick: onConfirmAdd, className: 'dsh-coordinator-project-draft-action' },
-          '注册',
-        ),
-        createElement(
-          'button',
-          { type: 'button', onClick: onCancelAdd, className: 'dsh-coordinator-project-draft-action' },
-          '取消',
-        ),
-      ),
-    ),
     listExpanded
       ? (projects.length === 0
           ? createElement(
@@ -456,6 +427,41 @@ export function ProjectSection(props) {
               })),
             ))
       : null,
+    // 目录名当不了项目名时才出现：这时直接提交只会换回一条没有出口的报错——
+    // 项目没建成，列表里就没有那一行，行上的「重命名」也不存在。
+    naming === null || naming === undefined ? null : createElement(
+      'div',
+      { className: 'dsh-coordinator-project-draft' },
+      createElement('div', { className: 'dsh-coordinator-project-draft-directory' }, naming.directory),
+      createElement('input', {
+        type: 'text',
+        className: 'dsh-coordinator-project-rename',
+        value: naming.name,
+        autoFocus: true,
+        onChange: (event) => onNamingChange(event.target.value),
+        onKeyDown: (event) => {
+          if (event.key === 'Enter') onConfirmNaming()
+          if (event.key === 'Escape') onCancelNaming()
+        },
+      }),
+      createElement(
+        'div',
+        { style: { display: 'flex', gap: '4px' } },
+        createElement(
+          'button',
+          { type: 'button', disabled: busy, className: 'dsh-coordinator-project-draft-action', onClick: onConfirmNaming },
+          '建项目',
+        ),
+        createElement(
+          'button',
+          { type: 'button', className: 'dsh-coordinator-project-draft-action', onClick: onCancelNaming },
+          '取消',
+        ),
+      ),
+      naming.error === '' || naming.error === undefined
+        ? null
+        : createElement('div', { className: 'dsh-coordinator-project-notice' }, naming.error),
+    ),
     notice === '' ? null : createElement(
       'div',
       { className: 'dsh-coordinator-project-notice' },

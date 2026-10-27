@@ -16,6 +16,9 @@ export const PROJECT_REMOTE_SERVICE_KEY = 'dsh-coordinatorProjects'
 /** 线上命名空间，即 endpoint 的 `namespace/method` 前缀。 */
 export const PROJECT_REMOTE_NAMESPACE = 'projects'
 
+/** 项目名的长度上限，与 Telov 一致。宿主侧校验与浏览器侧前置校验共用同一个数。 */
+export const MAX_PROJECT_NAME_LENGTH = 200
+
 /**
  * 每个远程方法的参数名。
  *

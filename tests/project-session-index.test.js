@@ -28,13 +28,26 @@ function createFakeCanonicalizer(mapping) {
   return async (path) => mapping[path] ?? path
 }
 
-test('会话 cwd 等于项目目录时归属该项目', async () => {
+test('worker 会话 cwd 等于项目目录时归属该项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
-    sessions: [{ id: 's1', cwd: '/repo' }],
+    sessions: [{ id: 's1', cwd: '/repo', origin: 'subagent' }],
     canonicalize: createFakeCanonicalizer({}),
   })
   assert.deepEqual(grouped.get('p1'), ['s1'])
+})
+
+test('非 worker 会话不归属项目', async () => {
+  // 协调者会话的入口在项目行上，用户在项目目录里手动开的会话也不属于项目编排。
+  const grouped = await groupSessionsByProject({
+    projects: [{ id: 'p1', directory: '/repo' }],
+    sessions: [
+      { id: 'coordinator', cwd: '/repo' },
+      { id: 'manual', cwd: '/repo' },
+    ],
+    canonicalize: createFakeCanonicalizer({}),
+  })
+  assert.equal(grouped.has('p1'), false)
 })
 
 test('同一物理目录的两种写法归到同一个项目', async () => {
@@ -42,21 +55,21 @@ test('同一物理目录的两种写法归到同一个项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/tmp/demo' }],
     sessions: [
-      { id: 'coordinator', cwd: '/tmp/demo' },
-      { id: 'worker', cwd: '/private/tmp/demo' },
+      { id: 'worker-a', cwd: '/tmp/demo', origin: 'subagent' },
+      { id: 'worker-b', cwd: '/private/tmp/demo', origin: 'subagent' },
     ],
     canonicalize: createFakeCanonicalizer({
       '/tmp/demo': '/private/tmp/demo',
       '/private/tmp/demo': '/private/tmp/demo',
     }),
   })
-  assert.deepEqual(grouped.get('p1'), ['coordinator', 'worker'])
+  assert.deepEqual(grouped.get('p1'), ['worker-a', 'worker-b'])
 })
 
 test('子目录里的会话不归属项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
-    sessions: [{ id: 's1', cwd: '/repo/sub' }],
+    sessions: [{ id: 's1', cwd: '/repo/sub', origin: 'subagent' }],
     canonicalize: createFakeCanonicalizer({}),
   })
   assert.equal(grouped.has('p1'), false)
@@ -65,7 +78,7 @@ test('子目录里的会话不归属项目', async () => {
 test('没有 cwd 的会话不归属任何项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
-    sessions: [{ id: 's1' }],
+    sessions: [{ id: 's1', origin: 'subagent' }],
     canonicalize: createFakeCanonicalizer({}),
   })
   assert.equal(grouped.has('p1'), false)
@@ -77,7 +90,7 @@ test('两个项目指向同一目录时先注册的那个持有会话', async ()
       { id: 'p1', directory: '/repo' },
       { id: 'p2', directory: '/repo' },
     ],
-    sessions: [{ id: 's1', cwd: '/repo' }],
+    sessions: [{ id: 's1', cwd: '/repo', origin: 'subagent' }],
     canonicalize: createFakeCanonicalizer({}),
   })
   assert.deepEqual(grouped.get('p1'), ['s1'])
@@ -108,8 +121,8 @@ test('服务按项目聚合会话', async () => {
   const query = {
     listSessions: async () => [
       { header: { id: 'session-coordinator', cwd: workspace } },
-      { header: { id: 'session-worker', cwd: workspace } },
-      { header: { id: 'session-elsewhere', cwd: join(workspace, '..') } },
+      { header: { id: 'session-worker', cwd: workspace, origin: 'subagent' } },
+      { header: { id: 'session-elsewhere', cwd: join(workspace, '..'), origin: 'subagent' } },
     ],
   }
   const service = createProjectService({
@@ -123,7 +136,7 @@ test('服务按项目聚合会话', async () => {
   const grouped = await service.sessionsByProject()
   assert.equal(grouped.length, 1)
   assert.equal(grouped[0].projectId, project.id)
-  assert.deepEqual(grouped[0].sessionIds, ['session-coordinator', 'session-worker'])
+  assert.deepEqual(grouped[0].sessionIds, ['session-worker'])
 })
 
 test('服务在没有 sessionQuery 时返回空映射', async () => {
@@ -152,8 +165,8 @@ test('真实符号链接目录按 realpath 归一后归属同一项目', async (
       get: (key) => (key === 'sessionQuery'
         ? {
             listSessions: async () => [
-              { header: { id: 'via-real', cwd: canonical } },
-              { header: { id: 'via-link', cwd: link } },
+              { header: { id: 'via-real', cwd: canonical, origin: 'subagent' } },
+              { header: { id: 'via-link', cwd: link, origin: 'subagent' } },
             ],
           }
         : undefined),
@@ -177,7 +190,7 @@ test('项目目录下新建的子目录不改变归属', async () => {
     store,
     ctx: {
       get: (key) => (key === 'sessionQuery'
-        ? { listSessions: async () => [{ header: { id: 's1', cwd: join(workspace, 'nested') } }] }
+        ? { listSessions: async () => [{ header: { id: 's1', cwd: join(workspace, 'nested'), origin: 'subagent' } }] }
         : undefined),
     },
     createCoordinatorSession: async () => 'session-coordinator',
