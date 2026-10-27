@@ -426,6 +426,39 @@ dsh 侧实现：
 - **手写的 Typert 协议形状与宿主版本耦合**：宿主升级后须复核标记契约并重跑契约测试。
 - **菜单与确认弹窗是复制宿主源码改写的**：宿主改 `Modal` / `Menu` 时本仓要同步改。
 
+### P4 · 看板卡面重做（3–5 人日）
+
+**交付**：右栏「看板」Tab 的卡面渲染与交互对齐 Telov——卡面零操作铬，active 卡三层、done 卡单行变体，链接 chip 按实测宽度排布，信号灯五档，只读详情浮层，已完成收进折叠区。
+
+**起因**：P2 的看板只有数据通道，卡面是带边框的方框、正文把 `spec` 与 `checkpoint` 全量铺开、状态做成右上角胶囊，没有链接、槽位、信号灯、详情视图与已完成区。用户指认「Card 的交互完全不对，太难看」，要求参考 Telov。
+
+**内容**：卡面三层结构与信号灯档位（`src/client/board-card.js`、`src/client/board-styles.js`）；只读详情浮层与浮层外壳共用（`src/client/card-detail.js`、`src/client/modal-shell.js`）；槽位会话状态实时投影与排序/停滞判定（`src/client/board-projection.js`）；看板容器分组、空态与已完成折叠区（`src/client/board.js`）。
+
+**验收**
+- active 卡三层、done 卡单行变体，视觉取宿主 `--dsw-*` 令牌
+- 链接 chip 按实测宽度排布，放不下的收进「+N」
+- 信号灯按槽位会话状态分档，读不到会话时显示「状态未知」而非空闲
+- 点卡面开详情、点链接 chip 直跳、点槽位 chip 开会话，三种语义互不串扰
+- 已完成卡片收进可折叠区
+
+**P4 验收结果（2026-10-27）**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| active 卡三层 / done 卡单行变体 | 通过 | `src/client/board-card.js`；浏览器实测（见 `docs/evidence/2026-10-27-看板卡片-改后.png`） |
+| 视觉走宿主令牌 | 通过 | `src/client/board-styles.js` 全部取 `--dsw-*` 变量与宿主数值，不引 Tailwind、不 import 宿主 UI 包 |
+| 链接 chip 按实测宽度排布 | 通过 | `fitLinkChips` 与 Telov `board-link-fit.ts` 逐行同构（不可见测量层 + `ResizeObserver`）；实测 3 个 chip 全展示，放不下时收进「+N」 |
+| 信号灯五档 | 通过 | `attention / running / idle / unknown / none`；槽位状态取自 `ctx.sessions.retain` 后的 `SessionSnapshot`，保留失败即「状态未知」 |
+| 停滞判定 | 通过 | 24 小时阈值，基于卡片自身 `updatedAt`；无绑定会话不计时（没开始不是卡住），名下会话在跑也不计时（在跑不是卡住） |
+| 交互三语义 | 通过 | 点卡面开详情浮层、点链接 chip 新标签打开、点槽位 chip 打开该槽位会话；键盘 Enter/Space 只在事件来自卡面根时触发 |
+| 只读详情浮层 | 通过 | `card-detail.js` + 共用的 `modal-shell.js`；遮罩 / Escape / Tab 焦点陷阱 / 初始焦点 / 关闭回焦齐备（见 `2026-10-27-看板卡片-详情浮层.png`） |
+| 已完成折叠区 | 通过 | Linear 风格折叠区，默认收起，计数胶囊；展开后 done 单行变体（见 `2026-10-27-看板卡片-已完成区展开.png`） |
+| 确认弹窗行为不变 | 通过 | `confirm-dialog.js` 改为复用浮层外壳，单测与真实实例均通过 |
+| 卡片写操作（完成/置顶/重命名/删除） | **未做** | 客户端无通用写通道，需新增宿主远程方法（见 capability-gaps 第 36 条） |
+| 信号灯「等你输入 / 未看」两档 | **未做** | 宿主未暴露 pending 审批与未读投影（见 capability-gaps 第 35 条） |
+
+**P4 结论**：卡面与交互按 Telov 的信息结构重做并真实实例取证通过；两处结构性缺口（宿主无写通道、宿主无未读/审批投影）记在 [docs/capability-gaps.md](docs/capability-gaps.md) 第 35–36 条。实现期的两条取舍写进[看板卡片视觉与交互](.agents/notes/2026-10-27-board-card-visual-and-interaction.md)：浮层外壳抽出供确认弹窗与详情浮层共用；卡面根 `role="button"` 内嵌可聚焦控件的 ARIA 冲突沿用 Telov 同款取舍。
+
 ---
 
 ## 7. 风险与对策

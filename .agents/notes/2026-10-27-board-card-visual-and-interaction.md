@@ -1,0 +1,55 @@
+# 看板卡片视觉与交互
+
+**状态**：implemented（P4，2026-10-27）
+**范围**：`src/client/board.js`、`src/client/board-card.js`、`src/client/board-styles.js`、`src/client/card-detail.js`、`src/client/modal-shell.js`、`src/client/board-projection.js`、`src/client/confirm-dialog.js`、`src/client/icons.js`
+
+## 背景
+
+P2 的看板只有数据通道与一个能列出卡片的壳：卡面是带边框的方框，正文把 `spec` 与 `checkpoint` 全量铺开，状态做成右上角胶囊，没有链接、没有槽位、没有信号灯、没有详情视图、没有已完成区。用户指认「Card 的交互完全不对，太难看」，要求参考 Telov 的看板。
+
+Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：active 卡三层（标题行 / 链接行 / 元信息行）、done 卡单行变体、信号灯五档、链接 chip 按实测宽度排布、点击开只读详情浮层、已完成收进折叠区。它的信息结构能整段搬，宿主差异集中在三处：视觉令牌（Tailwind → `--dsw-*`）、图标（宿主运行时无 sprite → 内联路径）、浮层组件（官方 `Modal` 不可 import → 复制改写）。
+
+## 决策
+
+**卡面零操作铬**。卡片只做信息与导航，不放操作按钮（完成、置顶、重命名、删除都没有）。卡片是协调者维护的事实，UI 越权写会把「谁在改」搅浑；Telov 同样不做。
+
+**视觉走「复制宿主数值 + `--dsw-*` 变量」**。不引 Tailwind、不 import 宿主 UI 包。类名统一 `dsh-coordinator-board-*` 前缀，样式由 `board-styles.js` 注入一次（`<style id="dsh-coordinator-board">`），沿用确认弹窗既有的「同一页面只注入一次」做法。
+
+**active 卡三层**：标题行（14px 固定信号槽 → `#编号` mono 11px → 标题 13px/500 两行 clamp → 停滞时长）→ 链接行（缩进 22px，圆角胶囊 chip）→ 元信息行（槽位 chip：状态点 + 槽位名）。done 卡是单行轻量变体（绿勾 + 编号 + 标题 + 相对完成时间）。卡面无边框无阴影，静态零装饰，hover 只出背景。
+
+**链接 chip 按实测宽度排布**。`fitLinkChips` 与 Telov 的 `board-link-fit.ts` 逐行同构：可见 chip 数由实测宽度决定，放不下的收进「+N」胶囊；测量层是全量 chip 的不可见副本（`visibility:hidden` 仍参与布局，`<a>`/`<button>` 与真实 chip 同构），`ResizeObserver` 监听行宽变化重排。首帧未测量时全量展示而不是藏链接。
+
+**交互三语义**：点卡面其他区域 → 开只读详情浮层；点有 URL 的链接 chip → 新标签打开（`stopPropagation`）；点槽位 chip → 打开该槽位绑定的会话。键盘 Enter/Space 只在事件来自卡面根本身时触发——嵌套控件的 Enter/Space 归自己。
+
+**卡面根是 `role="button"` 且内嵌可聚焦控件**，严格说违反 ARIA 的「button 不含可聚焦后代」。这是 Telov 同款取舍：整卡热区与嵌套控件并存，子控件保留独立按钮语义优先，键盘可达性由子控件自己保证。
+
+**信号灯五档**：`attention`（红实心）> `running`（琥珀脉冲）> `idle`（灰实心）> `unknown`（虚线圈）> `none`（虚线圈）。聚合自卡片声明的槽位会话状态，**不落存储**。未派工与状态未知共用虚线圈：两者都不谎称空闲，形状上与实心档区分；这两种情况在卡面上本来就不同——有槽位的卡多一行槽位 chip，空的没有。
+
+**槽位状态取自保留会话的快照**：`ctx.sessions.retain(sessionId, {source})` → `reference.ready` → `binding.session.getSnapshot()`（`running` / `lastAgentError`）+ `subscribe`。会话列表对未保留的 subagent 子会话给的 `running` 不可信；`retain` 对未知 id **同步抛错**，try/catch 后状态保持 `unknown`（虚线圈）——不谎称空闲。
+
+**槽位只渲染卡片实际声明的**。dsh 的槽位集合由项目 `SLOTS.md` 决定，客户端拿不到；恒渲染空槽等于宣称存在不存在的 worker。未派工的槽位（没有绑定会话）不是按钮——没有会话可打开。
+
+**排序**：active = 信号档位升序 → `sortOrder` 升序（未设置排后）→ `updatedAt` 降序 → 编号升序；done = `doneAt` 倒序；archived 不展示。
+
+**停滞判定**阈值 24 小时。没有绑定会话的卡不计时（那是「没开始」不是「卡住」）；名下会话正在跑的卡也不计时（它正在干活，只是协调者没更新卡片）。活动的度量只能用卡片自己的 `updatedAt`——dsh 会话列表的 `updatedAt` 是「最后一次被提示的时间」（`packages/api/session-controller/src/list.ts:360`），拿它当活动度量会把「在跑」误判成「卡住」。60 秒计时器驱动停滞判定与相对时长展示。
+
+**详情浮层只读**，用 `headless` 模式自带头部（标题就是卡片标题本身，不用宿主默认的「无信息标题」）。卡片写权限归协调者工具，UI 不越权写。
+
+**浮层外壳抽成 `modal-shell.js`** 供确认弹窗与详情浮层共用：portal、遮罩、ESC、Tab 焦点陷阱、初始焦点、关闭回焦，以及宿主 `Modal.module.css` 的样式全文（style id `dsh-coordinator-modal`）。`confirm-dialog.js` 改为复用它，行为不变。
+
+**焦点的抑制与释放整段照抄宿主 `focus.ts`**：只设 `data-dsh-automatic-focus` 属性而照抄释放逻辑（失焦或键盘导航时撤掉），焦点环就再也回不来——简化这一段会削掉键盘可达性，属静默回归。
+
+## 边界
+
+- **信号灯少两档**：宿主未暴露 pending 审批与未读投影，Telov 的「等你输入 / 未看」表达不了。dsh 侧档位为 attention / running / idle / unknown / none。
+- **详情只读**：完成、置顶、重命名、删除需要新增宿主远程方法，属独立议题。
+- **无 workspace chip**：卡片不按项目/工作区分区，编号全局递增（见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。
+- **浮层与宿主 Modal 是复制改写**：宿主改 `Modal.tsx` 时本仓要同步（与确认弹窗同一条耦合）。
+- **卡面根的 ARIA 冲突**：见上。
+- **看板会保留槽位会话**：`retain` 的会话在卡片撤掉该槽位后释放，否则状态表会随卡片增删漂移。
+
+## 证据
+
+单测 209 例全绿（新增 9 例：槽位绑定提取、槽位视图、信号档位、active 排序、done 排序、停滞判定（含「会话在跑不算停滞」）、时长格式化、链接排布）。
+
+真实实例取证用隔离 mock profile（`DSH_HOME=/tmp/dsh-mock`）：mock provider 发 `create_card` / `update_card` 工具调用，**真实卡片工具执行** → 投影进 session log → 看板渲染，全程不触达真实 API。截图见 `docs/evidence/`：`2026-10-27-看板卡片-改前.png`（P2 旧卡面）、`2026-10-27-看板卡片-改后.png`、`2026-10-27-看板卡片-详情浮层.png`、`2026-10-27-看板卡片-悬停态.png`、`2026-10-27-看板卡片-已完成区展开.png`。改前/改后取自同一会话的同一批卡片。

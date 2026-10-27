@@ -1,6 +1,6 @@
-# 能力缺口清单（P0–P1 实测）
+# 能力缺口清单（P0–P4 实测）
 
-本清单由 P0–P1 阶段在真实 dsh（0.2.1-rc.2）上实测得出，不是文档推断。每条给出 Telov 现状、dsh 实测现状、证据与影响。
+本清单由 P0–P4 阶段在真实 dsh（0.2.1-rc.2）上实测得出，不是文档推断。每条给出 Telov 现状、dsh 实测现状、证据与影响。
 
 复现环境：macOS arm64，dsh `0.2.1-rc.2`，web、headless 与 sdk 三个 profile。
 
@@ -300,6 +300,22 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 **绕过（已实现，不动宿主投影）**：宿主判定的第一个条件是 `conversation.activeTargets.size > 0`——只要有一个会话视图目标处于激活态，外壳就切到 active 形态（输入框停靠底部），与「会话是否为空」无关。这条路径宿主明确对第三方开放（`docs/subsystems/conversation.zh.md:26,28`：「第三方 View 使用相同的选择与激活操作」），槽位目录也直接给了第三方注册 `conversation.view` 条目的示例（`packages/extensions/cordis-client-runner/src/client/slot-catalog.ts:2105`）。于是本仓注册一个只提供活动、不产出内容的视图目标，在协调者会话打开时激活它：会话**仍然是空的**（转录零节点、不跑首轮、不产生模型调用），外壳已经是「发了消息之后」的那个 View。代价是 `uiConversation` 不在机器可读的插件 API 目录 `api-catalog.ts` 里——宿主改这条契约时本仓要同步。
 
 
+### 35. 宿主没有 pending 审批与未读投影——信号灯缺「等你输入 / 未看」两档
+
+**Telov 现状**：信号灯五档——`waiting`（等你输入）、`attention`（需注意）、`running`（执行中）、`idle`（空闲）、`no-sessions`（无 worker），其中「未看 / 已看」还区分未看等待光环与已看等待慢脉冲（`candyapp/apps/electron/src/renderer/components/board/BoardSignalDot.tsx`）。
+
+**dsh 实测**：会话快照 `SessionSnapshot`（`packages/api/session-controller/src/client/contract/snapshot.ts:69-96`）只有 `running`、`lastAgentError`、`blank`、`awaitingFirstTurn`、`pendingSubmissions`（仅本地回显的提交态），**没有**「等待用户批准」与「未读」字段；审批状态挂在会话命令的调用侧（`packages/core/tool-executor-*`），未读不是会话属性。
+
+**影响**：dsh 侧信号灯只能表达「需注意 / 执行中 / 空闲 / 状态未知 / 无信号」五档，「等你输入」与「未看」两档表达不了。缺口记在 [看板卡片视觉与交互](../.agents/notes/2026-10-27-board-card-visual-and-interaction.md)。
+
+### 36. 客户端没有通用写通道——卡片详情只能只读
+
+**Telov 现状**：卡片详情浮层带编辑能力（改标题、状态、链接、槽位、排序）。
+
+**dsh 实测**：浏览器侧 → 宿主侧的写通道只有本仓自建的 Typert SRC 命名空间 `projects`（见第 26 条），宿主官方未暴露通用远程方法注册面（`connection.rpc.handle` 对仓外插件不可用）。要改卡片只能新增远程方法，而卡片的写入语义（revision 乐观并发、归档终态）都住在 host 侧的卡片存储里。
+
+**影响**：本轮卡片详情浮层只读，完成、置顶、重命名、删除都没做，卡面也不放操作按钮。补齐需要新增一组 Typert 远程方法，属独立议题。
+
 ---
 
 ## 四、工具级（已验证可用，无缺口）
@@ -328,6 +344,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
 | 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
 | 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |
+| 看板卡面与详情浮层 | 通过 | P4 重做卡面（active 三层 / done 单行 / 链接 chip 实测排布 / 信号灯五档 / 只读详情浮层 / 已完成折叠区）；mock LLM 触发真实卡片工具建卡后浏览器实测渲染，console 无报错（见第 35、36 条） |
 
 ---
 
@@ -337,5 +354,5 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 - **真实模型下的协议遵循**：本轮用 mock 触发的工具调用验证了工具通路，未验证模型在真实推理下是否按协议层派工。
 - **web 组合下的唤醒**：P1 的完整链路在 sdk profile 验证；web profile 的组合更接近真实使用，但其会话由 UI 创建，尚未用同一套探针跑通。
 - **`list_agents` 能否列出本 bundle 派出的 worker**：源码路径一致（同一 `ctx.subagents` 与 catalog 投影），但未跑实测。
-- **看板的信号灯**：信号灯纯投影尚未实现（P2 剩余项）。槽位绑定已在 P3 接上——卡片 `slots` 字段的反查索引与 `SLOTS.md` 正文注入均已落地并实测，信号灯仍待做。
+- **看板的信号灯**：信号灯纯投影已在 P4 实现（attention / running / idle / unknown / none 五档，聚合自槽位会话状态，不落存储）；缺「等你输入 / 未看」两档，宿主未暴露相应投影（见第 35 条）。
 
