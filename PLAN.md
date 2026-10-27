@@ -230,6 +230,8 @@ dsh team 的消息是 inbox 投递：target 睡着时排队，等它自己醒来
 
 **P1 实测后的修正**：原设想靠 `turn/end` 事件感知子会话结束，实际用 `activation.result` 更直接——它是子会话的终态 promise，不需要额外订阅事件。另一个实测结论是**唤醒失败的真因不是投影未注册，而是父会话已被销毁**（headless 一次性 CLI 在 turn 结束后 dispose 会话）；只要父会话存活，对空闲 agent 调 `followup()` 就能可靠唤醒。
 
+**通知的呈现（2026-10-27 追加）**：完成通知是注入父会话的一条 `user/message`，说话人不是用户。宿主把这类消息渲染成右对齐的用户气泡，于是本仓用自定义 `source.kind`（`dsh-coordinator/worker-report`）标记归属，客户端注册独立 Chat node kind 并用 exclusive claim 接管，渲染成左侧、带头像与身份的气泡。选这条路而不是抢占官方的 `user` 渲染键，是因为后者会接管所有会话的用户消息渲染。详见 [worker 回报气泡的呈现](.agents/notes/2026-10-27-worker-report-bubble.md)。
+
 ### 5.3 Card 存储域
 
 **P2 决策：不进 dsh storage domain，改用自建落盘**（`src/host/cards/store.js`）。
@@ -345,7 +347,7 @@ dsh 侧实现：
 
 | 验收项 | 结果 | 证据 |
 |---|---|---|
-| worker 结束 → 协调者开新 turn 并收到通知 | 通过 | sdk profile 实测：父 inbox 收到「【worker 回报】任务「写文件」已结束…」后状态 `idle → running → idle` |
+| worker 结束 → 协调者开新 turn 并收到通知 | 通过 | sdk profile 实测：父 inbox 收到「任务「写文件」已结束…」后状态 `idle → running → idle` |
 | 派工不阻塞父 turn | 通过 | `spawn_worker` 立即返回子会话 id，父 turn 正常结束，worker 在后台跑完 |
 | 完成通知落盘 | 通过 | `$DSH_HOME/dsh-coordinator/notifications.json` 记录通知，投递成功后出队（实测 `pending: 0`） |
 | 协调者重启后未投递的通知被补投 | 通过（单测） | `agent/created` 触发 `redeliverPending`；崩溃窗口由落盘队列覆盖 |
