@@ -77,9 +77,13 @@ export function apply(ctx) {
   ctx.tools.register(createSwitchProjectTool({ service: projectService }))
   ctx.tools.register(createRemoveProjectTool({ service: projectService }))
 
+  const cards = createCardStore({ home: resolveDshHome(), logger })
+  // 卡片按项目归属：归属由宿主按调用方会话判定，模型不传项目参数。
+  const resolveProject = (sessionId) => projectService.resolveProjectOfSession(sessionId)
+
   // 浏览器侧要读项目、也要建项目，走 dsh 官方的 Typert 远程调用（`/api`
   // 共享通道），与工作区控制器同构。
-  createProjectRemote({ service: projectService, ctx })
+  createProjectRemote({ service: projectService, cards, ctx })
 
   const store = createNotificationStore({ logger })
   const dispatcher = createDispatcher({
@@ -92,10 +96,9 @@ export function apply(ctx) {
 
   ctx.tools.register(createSpawnWorkerTool({ dispatcher }))
 
-  const cards = createCardStore({ home: resolveDshHome(), logger })
-  ctx.tools.register(createCreateCardTool({ store: cards }))
-  ctx.tools.register(createUpdateCardTool({ store: cards }))
-  ctx.tools.register(createListCardsTool({ store: cards }))
+  ctx.tools.register(createCreateCardTool({ store: cards, resolveProject }))
+  ctx.tools.register(createUpdateCardTool({ store: cards, resolveProject }))
+  ctx.tools.register(createListCardsTool({ store: cards, resolveProject }))
 
   // 角色槽位注入：会话被卡片绑到某个槽位时，每轮 turn 注入该槽位在项目
   // `SLOTS.md` 里的正文。槽位不注册工具、不改工具可见性。

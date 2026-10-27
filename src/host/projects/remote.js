@@ -45,16 +45,19 @@ function buildMethodDescriptor() {
  *
  * @param {object} options - 装配选项
  * @param {object} options.service - 项目服务（`src/host/projects/service.js`）
+ * @param {object} options.cards - 卡片存储（`src/host/cards/store.js`）
  * @param {object} options.ctx - 宿主 Cordis 上下文
  * @returns {object} 已注册的远程服务实例
  */
-export function createProjectRemote({ service, ctx }) {
+export function createProjectRemote({ service, cards, ctx }) {
   class ProjectRemote {
     /**
      * @param {object} service - 项目服务
+     * @param {object} cards - 卡片存储
      */
-    constructor(service) {
+    constructor(service, cards) {
       this.projects = service
+      this.cards = cards
       // 服务绑定：宿主据此认出「这个服务导出哪个命名空间」。绑定里的 service 必须
       // 指向服务实例本身，宿主会拿它与调用时取到的实例比对。
       this.typertRemote = {
@@ -144,6 +147,32 @@ export function createProjectRemote({ service, ctx }) {
     async sessionsByProject() {
       return this.projects.sessionsByProject()
     }
+
+    /**
+     * 解析某个会话所属的项目。
+     *
+     * 判据与卡片归属同一套：协调者会话走项目注册表的指针，其它会话按 cwd 与项目
+     * 目录的 canonical 路径相等。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {Promise<object | undefined>} 项目摘要；不归属任何项目时 undefined
+     */
+    async resolveProject(sessionId) {
+      return this.projects.resolveProjectOfSession(sessionId)
+    }
+
+    /**
+     * 列某个项目的看板卡片。
+     *
+     * 看板按项目取卡：一个项目一个看板，跨会话聚合（协调者建的卡与 worker 建的
+     * 卡在一处）。卡片真源在宿主的卡片库里，不从会话事件流重建。
+     *
+     * @param {string} projectId - 项目 id
+     * @returns {Promise<object[]>} 该项目的全部卡片
+     */
+    async boardCards(projectId) {
+      return this.cards.list({ projectId })
+    }
   }
 
   Object.defineProperty(ProjectRemote.prototype, REMOTE_METHOD_DESCRIPTOR, {
@@ -151,7 +180,7 @@ export function createProjectRemote({ service, ctx }) {
     value: buildMethodDescriptor(),
   })
 
-  const remote = new ProjectRemote(service)
+  const remote = new ProjectRemote(service, cards)
   ctx.provide(PROJECT_REMOTE_SERVICE_KEY, remote)
   return remote
 }

@@ -33,23 +33,27 @@ function card(overrides = {}) {
  * @returns {object} 查询条件
  */
 function query(overrides = {}) {
-  return { cardId: undefined, status: 'active', limit: LIST_DEFAULT_LIMIT, offset: 0, ...overrides }
+  return { cardId: undefined, status: 'active', scope: 'project', limit: LIST_DEFAULT_LIMIT, offset: 0, ...overrides }
 }
 
 test('解析参数：缺省取默认值，非法值直接报错', () => {
   // 不带 cardId 时不留这个键：工具返回值要过宿主的 lossless JSON 校验
   assert.deepEqual(parseListQuery({}), {
     status: 'active',
+    scope: 'project',
     limit: LIST_DEFAULT_LIMIT,
     offset: 0,
   })
   assert.deepEqual(parseListQuery({ cardId: 'card-1' }), {
     cardId: 'card-1',
     status: 'active',
+    scope: 'project',
     limit: LIST_DEFAULT_LIMIT,
     offset: 0,
   })
   assert.equal(parseListQuery({ status: 'all' }).status, 'all')
+  assert.equal(parseListQuery({ scope: 'all' }).scope, 'all')
+  assert.throws(() => parseListQuery({ scope: 'projectt' }), /scope 非法/)
   assert.equal(parseListQuery({ limit: 5 }).limit, 5)
   assert.throws(() => parseListQuery({ status: 'archivedd' }), /status 非法/)
   assert.throws(() => parseListQuery({ limit: 0 }), /limit 必须是正整数/)
@@ -132,7 +136,7 @@ test('列表视图：空页与翻过头是两句话', () => {
 test('列表视图：状态尾注报全项目计数', () => {
   const cards = [card(), card({ id: 'b', status: 'done' })]
   const rendered = renderCardList(cards, query())
-  assert.match(rendered, /全项目：active 1 · done 1 · archived 0，用 status 参数切换。/)
+  assert.match(rendered, /本项目：active 1 · done 1 · archived 0，用 status 参数切换。/)
 })
 
 test('列表视图：还有未显示的卡时给续页位置', () => {
@@ -145,7 +149,7 @@ test('列表视图：首行不报本页张数，显示数只由尾注说', () =>
   const cards = Array.from({ length: 3 }, (_, index) => card({ id: `c${index}`, number: index + 1 }))
   const rendered = renderCardList(cards, query({ status: 'all', limit: 2 }))
   // 首行按 limit 写「本页 2 张」会与实际渲染张数矛盾：本页张数会被字符预算截断
-  assert.match(rendered, /^卡片快照（status=all，共 3 张）：/)
+  assert.match(rendered, /^卡片快照（scope=project，status=all，共 3 张）：/)
   assert.doesNotMatch(rendered, /共 3 张，本页/)
   assert.match(rendered, /本页显示 2 张，还有 1 张未显示/)
 })
@@ -160,7 +164,7 @@ test('列表视图：超预算按卡截断并给续页位置', () => {
   assert.match(rendered, new RegExp(`输出超过 ${LIST_MAX_CHARS} 字符上限`))
   assert.match(rendered, /用 offset=\d+ 继续/)
   // 截断后的显示数只出现在尾注，首行不再与它矛盾
-  assert.match(rendered, /^卡片快照（status=all，共 20 张）：/)
+  assert.match(rendered, /^卡片快照（scope=project，status=all，共 20 张）：/)
   assert.match(rendered, /本页显示 \d+\/20 张/)
 })
 

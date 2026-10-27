@@ -1,9 +1,9 @@
 /**
- * 看板面板：从会话事件里重建任务卡片。
+ * 看板面板：项目维度的任务看板。
  *
- * 卡片数据不在浏览器侧另存一份，而是由宿主在卡片工具执行后随 `tool/result`
- * 事件的 `meta` 投影出来（见 `src/host/tools/cards.js`）。面板因此只需读本会话
- * 的事件窗口：按事件顺序重放卡片投影，全量投影清空视图、单卡投影覆盖一张卡。
+ * 看板是**项目**的看板：一个项目一个看板。面板先按自己所属的会话解析出项目，
+ * 再从宿主取该项目的全部卡片（`src/client/project-board-data.js`）——协调者建的
+ * 卡与 worker 建的卡在同一处，不再是「卡建在哪个会话就只能在哪看到」。
  *
  * 卡面视觉与交互对齐 Telov 的看板（`components/board/`）：卡面零操作铬，
  * active 卡三层、done 卡单行并收进折叠区，空态与骨架同款。见
@@ -19,13 +19,12 @@
 
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  applyEventChange,
-  loadHistory,
   mergeSessionState,
   slotBindingsOf,
   sortActiveCards,
   sortDoneCards,
 } from './board-projection.js'
+import { BOARD_REFRESH_MS, fetchBoardCards, resolveProject } from './project-board-data.js'
 import { SlotRetention } from './slot-retain.js'
 import { BoardCard } from './board-card.js'
 import { CardDetail } from './card-detail.js'
@@ -39,17 +38,19 @@ import { productIcon } from './icons.js'
  * @param {string} props.sessionId - 面板所属会话
  * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务的延迟取值器
+ * @param {(method: string, args: unknown[]) => Promise<unknown>} props.callRemote - 项目通道调用
  * @param {Function} [props.useSessionStatus] - 宿主会话状态 hook（宿主未挂载
  *   ui-session 时不存在）
  * @returns {object} React 元素
  */
 export function BoardBody(props) {
-  const { sessionId, getSessions, getUiWorkspace, useSessionStatus } = props
+  const { sessionId, getSessions, getUiWorkspace, useSessionStatus, callRemote } = props
   return createElement(BoardPanel, {
     sessionId,
     getSessions,
     getUiWorkspace,
     useSessionStatus,
+    callRemote,
   })
 }
 
@@ -194,9 +195,11 @@ function useSlotStates(cards, getSessions, useSessionStatus) {
  *
  * @param {object} props - 组件属性
  * @param {boolean} props.allDone - 是否全部完成
+ * @param {string} [props.projectName] - 项目名；看板是项目维度的，空态要说清是谁的
  * @returns {object} React 元素
  */
-function BoardEmpty({ allDone }) {
+function BoardEmpty({ allDone, projectName }) {
+  const whose = projectName === undefined ? '本项目' : `「${projectName}」`
   return createElement(
     'div',
     { className: 'dsh-coordinator-board-empty' },
@@ -219,7 +222,7 @@ function BoardEmpty({ allDone }) {
     createElement(
       'div',
       { className: 'dsh-coordinator-board-empty-hint' },
-      allDone ? '本会话的卡片都已完成' : '协调者调用 create_card 后，卡片会出现在这里',
+      allDone ? `${whose}的卡片都已完成` : '协调者调用 create_card 后，卡片会出现在这里',
     ),
   )
 }
@@ -231,19 +234,21 @@ function BoardEmpty({ allDone }) {
  * @param {string} props.sessionId - 面板所属会话
  * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务的延迟取值器
+ * @param {(method: string, args: unknown[]) => Promise<unknown>} props.callRemote - 项目通道调用
  * @param {Function} [props.useSessionStatus] - 宿主会话状态 hook
  * @returns {object} React 元素
  */
-function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }) {
-  // 卡片表不随 sessionId 变化重置：宿主的 `RightbarRoot` 按 `key={view.sessionId}`
-  // 渲染每个会话的子树，切会话等于换一棵子树，面板随之重新挂载。
-  const [cards, setCards] = useState(() => new Map())
+function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, callRemote }) {
+  const [project, setProject] = useState(undefined)
+  // 项目解析完成与否要和「解析出来是不属于项目」分开：解析是个异步往返，中间
+  // 不能先闪一句「不属于任何项目」——那是还没问完就下的结论。
+  const [resolved, setResolved] = useState(false)
+  const [cards, setCards] = useState(() => [])
   const [error, setError] = useState(null)
-  const [history, setHistory] = useState('loading')
+  const [loaded, setLoaded] = useState(false)
   const [detail, setDetail] = useState(null)
   const [doneOpen, setDoneOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
-  const replay = useRef(new Map())
 
   useEffect(() => {
     ensureBoardStyles()
@@ -254,52 +259,58 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     return () => clearInterval(timer)
   }, [])
 
+  // 看板是项目维度的：先按面板所属的会话解析出项目。会话换了（面板随之重挂载）
+  // 就重新解析。
   useEffect(() => {
-    const sessions = getSessions()
-    if (sessions === undefined || sessions === null) {
-      setError('会话服务不可用，看板无法读取卡片')
-      return undefined
-    }
     let cancelled = false
-    let unsubscribe
-    let reference
-    try {
-      reference = sessions.retain(sessionId, { source: 'dshCoordinatorBoard' })
-    } catch (cause) {
-      setError(`读取会话失败：${cause instanceof Error ? cause.message : String(cause)}`)
-      return undefined
-    }
-    replay.current = new Map()
-    reference.ready
-      .then((binding) => {
+    setError(null)
+    setResolved(false)
+    // 换了会话就是换了项目，上一个项目的卡片不能留在面板里。
+    setCards([])
+    setLoaded(false)
+    resolveProject(callRemote, sessionId)
+      .then((resolvedProject) => {
         if (cancelled) return
-        // 事件窗口每接受一次变更就同步发布一次，流式输出时每个 chunk 都会走到
-        // 这里；按宿主的增量只处理新增条目，避免全量重放整扇窗口
-        const read = () => {
-          const window = binding.eventSource.getSnapshot()
-          const result = applyEventChange(replay.current, window.change, window.entries)
-          replay.current = result.cards
-          if (result.changed) setCards(result.cards)
-        }
-        read()
-        unsubscribe = binding.eventSource.subscribe(read)
-        return loadHistory(binding).then((complete) => {
-          if (cancelled) return
-          setHistory(complete ? 'complete' : 'partial')
-          read()
-        })
+        setProject(resolvedProject)
+        setResolved(true)
       })
       .catch((cause) => {
-        if (!cancelled) setError(`读取会话失败：${cause instanceof Error ? cause.message : String(cause)}`)
+        if (cancelled) return
+        setError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
       })
+    return () => { cancelled = true }
+  }, [sessionId, callRemote])
+
+  // 卡片取数：挂载时拉一次，之后定时刷新，窗口重新聚焦时立刻刷一次。
+  // 定时刷新是必要的——卡片可能由别的会话（worker）建，那边的事件流不在本面板
+  // 的窗口里，等不到它的变化。
+  useEffect(() => {
+    if (project === undefined) return undefined
+    let cancelled = false
+    const refresh = () => {
+      fetchBoardCards(callRemote, project.id)
+        .then((next) => {
+          if (cancelled) return
+          setCards(next)
+          setLoaded(true)
+        })
+        .catch((cause) => {
+          if (cancelled) return
+          setError(`读取卡片失败：${cause instanceof Error ? cause.message : String(cause)}`)
+        })
+    }
+    refresh()
+    const timer = setInterval(refresh, BOARD_REFRESH_MS)
+    const onFocus = () => { refresh() }
+    window.addEventListener('focus', onFocus)
     return () => {
       cancelled = true
-      if (unsubscribe !== undefined) unsubscribe()
-      reference.release()
+      clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
     }
-  }, [sessionId, getSessions])
+  }, [project, callRemote])
 
-  const cardList = useMemo(() => [...cards.values()], [cards])
+  const cardList = cards
   const states = useSlotStates(cardList, getSessions, useSessionStatus)
 
   const { active, done } = useMemo(() => ({
@@ -326,7 +337,38 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     )
   }
 
-  if (cards.size === 0 && history !== 'complete') {
+  // 会话不属于任何项目：没有项目看板可看。这不是错误状态，是「这里没有看板」。
+  // 解析还没回来时先给骨架——早闪一句「不属于任何项目」是还没问完就下的结论。
+  if (project === undefined) {
+    return createElement(
+      'div',
+      { className: 'dsh-coordinator-board-list' },
+      resolved
+        ? createElement(
+            'div',
+            { className: 'dsh-coordinator-board-empty' },
+            createElement(
+              'div',
+              { className: 'dsh-coordinator-board-empty-title' },
+              '当前会话不属于任何项目',
+            ),
+            createElement(
+              'div',
+              { className: 'dsh-coordinator-board-empty-hint' },
+              '看板按项目组织：在项目协调者会话里打开它。',
+            ),
+          )
+        : createElement(
+            'div',
+            { className: 'dsh-coordinator-board-group' },
+            createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
+            createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
+            createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
+          ),
+    )
+  }
+
+  if (!loaded) {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
@@ -340,11 +382,11 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     )
   }
 
-  if (cards.size === 0) {
+  if (cards.length === 0) {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
-      createElement(BoardEmpty, { allDone: false }),
+      createElement(BoardEmpty, { allDone: false, projectName: project.name }),
     )
   }
 
@@ -354,13 +396,6 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
     createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
-      history === 'partial'
-        ? createElement(
-            'div',
-            { className: 'dsh-coordinator-board-empty-hint' },
-            '仅显示已加载的历史片段，更早的记录未加载。',
-          )
-        : null,
       active.length > 0
         ? createElement(
             'div',
@@ -375,7 +410,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }
             })),
           )
         : null,
-      active.length === 0 ? createElement(BoardEmpty, { allDone: true }) : null,
+      active.length === 0 ? createElement(BoardEmpty, { allDone: true, projectName: project.name }) : null,
       done.length > 0
         ? createElement(
             'div',

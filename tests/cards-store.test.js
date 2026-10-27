@@ -184,3 +184,32 @@ test('状态没变不算内容更新，不递增版本', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('按项目列卡：无归属的存量卡不进任何项目', async () => {
+  const { store, home } = await createStore()
+  try {
+    await store.create({ title: '项目一的卡', projectId: 'p1' })
+    await store.create({ title: '项目二的卡', projectId: 'p2' })
+    await store.create({ title: '存量卡' })
+    const mine = await store.list({ projectId: 'p1' })
+    assert.deepEqual(mine.map((card) => card.title), ['项目一的卡'])
+    // 空串是「无归属」这一档：存量卡没有 projectId 字段，算在里头
+    const orphan = await store.list({ projectId: '' })
+    assert.deepEqual(orphan.map((card) => card.title), ['存量卡'])
+    const all = await store.list()
+    assert.equal(all.length, 3)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('改卡不改变归属：卡片始终留在建卡时的项目里', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '任务', projectId: 'p1' })
+    const updated = await store.update({ id: card.id, title: '改了' })
+    assert.equal(updated.projectId, 'p1')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})

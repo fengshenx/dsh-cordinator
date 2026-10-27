@@ -1,11 +1,13 @@
 /**
  * 看板的纯投影逻辑。
  *
- * 三部分都不碰 React，便于单测——面板组件只负责渲染：
+ * 两部分都不碰 React，便于单测——面板组件只负责渲染：
  *
- * - **事件重放**：从会话事件窗口还原卡片列表，并补齐未加载的历史；
  * - **看板投影**：把卡片与槽位会话状态投影成信号灯、排序与停滞判定；
  * - **排布计算**：链接 chip 一行放得下几个。
+ *
+ * 卡片本身从宿主取（`src/client/project-board-data.js`），这里只管「卡片加上会话
+ * 状态之后怎么显示」。
  *
  * 信号灯是实时投影零存储：推进/需注意/空闲/未知全部由槽位绑定的会话状态推导，
  * 卡片本体只存显式状态（active/done/archived）。发现任何「可从会话推导的字段落进
@@ -13,15 +15,6 @@
  *
  * @module dsh-coordinator/client/board-projection
  */
-
-/** 宿主投影的卡片数据标记。 */
-export const META_KIND = 'dsh-coordinator-cards'
-
-/**
- * 补齐历史时最多翻的页数。每页按 Turn 对齐，最少 50 条事件；设上限是为了在
- * `loadOlder` 失败（宿主只记日志不抛错）时不会无限循环。
- */
-export const MAX_HISTORY_PAGES = 20
 
 /**
  * 停滞阈值：名下有会话但 24h 无活动。照抄 Telov 的 `STALLED_THRESHOLD_MS`。
@@ -46,142 +39,11 @@ export const SLOT_STATES = Object.freeze([
 ])
 
 /**
- * 卡片级信号灯档位。聚合规则见 {@link cardSignal}。
+ * 卡片级信号灯档位。聚合规则见 {@link cardSignal}.
  */
 export const CARD_SIGNALS = Object.freeze([
   'waiting', 'attention', 'running', 'unread', 'idle', 'unknown', 'none',
 ])
-
-/**
- * 把一段事件条目里的卡片投影写进卡片表。
- *
- * 全量投影（`scope:'all'`）是权威快照，会清空此前的视图；单卡投影
- * （`scope:'card'`）覆盖同 id 的那一张。
- *
- * @param {Map<string, object>} cards - 卡片表（原地修改）
- * @param {readonly object[]} entries - 会话事件窗口条目
- * @returns {boolean} 卡片表是否变化
- */
-function applyEntries(cards, entries) {
-  let changed = false
-  for (const entry of entries) {
-    if (entry.type !== 'event') continue
-    const event = entry.event
-    if (event.type !== 'tool/result') continue
-    const meta = event.data?.meta
-    if (meta === undefined || meta.kind !== META_KIND) continue
-    const projected = Array.isArray(meta.cards) ? meta.cards : []
-    if (meta.scope === 'all') {
-      if (cards.size > 0) changed = true
-      cards.clear()
-    }
-    for (const card of projected) {
-      if (card === null || typeof card !== 'object' || typeof card.id !== 'string') continue
-      const previous = cards.get(card.id)
-      // 卡片带 revision 时才算同一版本；没有 revision 的卡片按后写覆盖
-      if (previous !== undefined
-        && previous.revision !== undefined
-        && previous.revision === card.revision) {
-        continue
-      }
-      cards.set(card.id, card)
-      changed = true
-    }
-  }
-  return changed
-}
-
-/**
- * 两张卡片表是否等价。
- *
- * 卡片带 `revision`（卡片存储保证单调递增），同 id 同 revision 即同一版本。
- *
- * @param {ReadonlyMap<string, object>} left - 左表
- * @param {ReadonlyMap<string, object>} right - 右表
- * @returns {boolean} 是否等价
- */
-function sameCardTable(left, right) {
-  if (left.size !== right.size) return false
-  for (const [id, card] of left) {
-    const other = right.get(id)
-    if (other === undefined || other.revision !== card.revision) return false
-  }
-  return true
-}
-
-/**
- * 用宿主的事件增量更新卡片表。
- *
- * 宿主的事件窗口「每接受一次变更就同步发布一次」（`packages/api/session-controller/
- * src/client/contract/events.ts:119`），流式输出时每个 chunk 都是一次 append。
- * 每次都全量重放整个窗口，等于把「窗口有多大」乘上「chunk 有多少」——这是看板
- * 在协调者流式输出时卡顿的主因。
- *
- * 增量的边界按宿主给的 `change` 分派：`append` 与 `settle-assistant` 只处理增量
- * 条目；`replace` 与 `prepend` 全量重建——`prepend` 往窗口前面补历史，早到的
- * 投影与后到的投影谁作数取决于窗口顺序，只有全量重放能定。卡片表为空时同样
- * 全量重建：增量条目只覆盖增量部分，空表靠增量拼不出完整的视图。
- *
- * @param {ReadonlyMap<string, object>} previous - 上一轮的卡片表
- * @param {object} change - 宿主事件窗口的增量
- * @param {readonly object[]} entries - 当前窗口的全部条目
- * @returns {{ cards: Map<string, object>, changed: boolean }} 更新后的卡片表与是否变化
- */
-export function applyEventChange(previous, change, entries) {
-  const full = change === undefined
-    || change.kind === 'replace'
-    || change.kind === 'prepend'
-    || previous.size === 0
-  if (full) {
-    const cards = new Map()
-    applyEntries(cards, entries)
-    return { cards, changed: !sameCardTable(previous, cards) }
-  }
-  const delta = change.kind === 'append'
-    ? change.entries
-    : (change.entry === undefined ? [] : [change.entry])
-  if (delta.length === 0) return { cards: previous, changed: false }
-  const cards = new Map(previous)
-  const changed = applyEntries(cards, delta)
-  // 增量条目里没有卡片投影时保持原引用：换了引用等于告诉渲染层「卡片变了」，
-  // 整棵看板会白重渲染一次。settle-assistant 带 entry 的情形正是如此。
-  if (!changed) return { cards: previous, changed: false }
-  return { cards, changed }
-}
-
-/**
- * 重放事件窗口里的卡片投影。
- *
- * 全量投影（`scope:'all'`）是权威快照，会清空此前的视图；单卡投影
- * （`scope:'card'`）覆盖同 id 的那一张。
- *
- * @param {readonly object[]} entries - 会话事件窗口条目
- * @returns {object[]} 按编号升序排列的卡片
- */
-export function collectCards(entries) {
-  const cards = new Map()
-  applyEntries(cards, entries)
-  return [...cards.values()].sort((left, right) => (left.number ?? 0) - (right.number ?? 0))
-}
-
-/**
- * 逐页加载更早的历史，直到窗口没有更早记录。
- *
- * 事件窗口初始只装最近一页，早期建卡/改卡的投影不在其中——只重放窗口内的
- * 投影会把「全量投影是权威快照」的前提打破：窗口内若有 `list_cards` 的全量
- * 投影，它代表的是完整列表，却被窗口内的部分视图覆盖。
- *
- * @param {object} binding - 会话绑定
- * @param {number} [maxPages] - 最多翻的页数
- * @returns {Promise<boolean>} 是否已加载到最早的历史
- */
-export async function loadHistory(binding, maxPages = MAX_HISTORY_PAGES) {
-  for (let page = 0; page < maxPages; page += 1) {
-    if (!binding.eventSource.getSnapshot().hasMore) return true
-    await binding.session.loadOlder()
-  }
-  return !binding.eventSource.getSnapshot().hasMore
-}
 
 /**
  * 槽位的看板状态。

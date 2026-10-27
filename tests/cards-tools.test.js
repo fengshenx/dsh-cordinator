@@ -12,9 +12,11 @@ import {
 
 /**
  * 建一组卡片工具与它们共用的存储。
+ * @param {(sessionId: string | undefined) => Promise<object | undefined>} [resolveProject] -
+ *   解析调用方会话所属项目；不传则卡片没有归属
  * @returns {Promise<{ home: string, tools: Record<string, object> }>} 工具集与 home 目录
  */
-async function createTools() {
+async function createTools(resolveProject) {
   const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-cardtools-'))
   // 可控时钟：卡片排序按更新时间戳，两次写入落在同一毫秒会退回插入序，
   // 断言「最近更新的排前面」就成了碰运气的 flaky 用例。
@@ -23,9 +25,9 @@ async function createTools() {
   return {
     home,
     tools: {
-      create_card: createCreateCardTool({ store }),
-      update_card: createUpdateCardTool({ store }),
-      list_cards: createListCardsTool({ store }),
+      create_card: createCreateCardTool({ store, resolveProject }),
+      update_card: createUpdateCardTool({ store, resolveProject }),
+      list_cards: createListCardsTool({ store, resolveProject }),
     },
   }
 }
@@ -322,6 +324,70 @@ test('查卡工具拒绝非法状态与非法的分页参数', async () => {
       () => tools.list_cards.execute({ offset: -1 }, exec),
       /offset 必须是非负整数/,
     )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('建卡按调用方会话归属项目，归属由宿主判定而非模型传参', async () => {
+  const { home, tools } = await createTools(async () => ({ id: 'p1', name: '项目一', directory: '/repo' }))
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    assert.equal(created.card.projectId, 'p1')
+    assert.equal(created.card.createdBy, 'session-1')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('会话不归属任何项目时，卡片没有归属', async () => {
+  const { home, tools } = await createTools(async () => undefined)
+  try {
+    const created = await tools.create_card.execute({ title: '任务' }, exec)
+    assert.equal(created.card.projectId, undefined)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('查卡默认只列本项目的卡，scope=all 才跨项目', async () => {
+  const { home, tools } = await createTools(async () => ({ id: 'p1', name: '项目一', directory: '/repo' }))
+  try {
+    await tools.create_card.execute({ title: '本项目的卡' }, exec)
+    // 另一个项目的卡直接写进存储：归属是建卡时定下的，不会被后来的调用改写
+    const store = createCardStore({ home })
+    await store.create({ title: '别的项目的卡', projectId: 'p2' })
+    const listed = await tools.list_cards.execute({}, exec)
+    assert.equal(listed.cards.length, 1)
+    assert.equal(listed.cards[0].title, '本项目的卡')
+    const all = await tools.list_cards.execute({ scope: 'all' }, exec)
+    assert.equal(all.cards.length, 2)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('跨项目改卡被拒绝', async () => {
+  const { home, tools } = await createTools(async () => ({ id: 'p1', name: '项目一', directory: '/repo' }))
+  try {
+    const store = createCardStore({ home })
+    const other = await store.create({ title: '别的项目的卡', projectId: 'p2' })
+    await assert.rejects(
+      () => tools.update_card.execute({ id: other.id, title: '改它' }, exec),
+      /属于另一个项目/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('无归属的存量卡仍可改：没有归属可冲突', async () => {
+  const { home, tools } = await createTools(async () => ({ id: 'p1', name: '项目一', directory: '/repo' }))
+  try {
+    const store = createCardStore({ home })
+    const legacy = await store.create({ title: '存量卡' })
+    const updated = await tools.update_card.execute({ id: legacy.id, title: '改过了' }, exec)
+    assert.equal(updated.card.title, '改过了')
   } finally {
     await rm(home, { recursive: true, force: true })
   }

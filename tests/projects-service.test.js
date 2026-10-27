@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
-import { mkdir, realpath } from 'node:fs/promises'
+import { mkdir, realpath, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createProjectStore } from '../src/host/projects/store.js'
 import {
@@ -563,4 +563,66 @@ test('建项目不发起任何模型调用', async () => {
   const project = await service.create({ directory: workspace, name: 'alpha' })
   assert.equal(project.coordinatorSessionId, 'session-1')
   assert.equal((await store.list()).length, 1)
+})
+
+test('解析会话所属项目：协调者会话按注册表指针，worker 按 cwd 相同', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const sessions = {
+    get: (id) => ({
+      'session-worker': { header: { cwd: workspace } },
+      'session-elsewhere': { header: { cwd: '/somewhere/else' } },
+    })[id],
+  }
+  const service = createProjectService({
+    store,
+    ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+
+  // 协调者会话：注册表里的指针
+  const coordinator = await service.resolveProjectOfSession(project.coordinatorSessionId)
+  assert.equal(coordinator.id, project.id)
+  assert.equal(coordinator.name, 'alpha')
+  // worker 会话：cwd 与项目目录相同
+  const worker = await service.resolveProjectOfSession('session-worker')
+  assert.equal(worker.id, project.id)
+  // 目录不同的会话不归属任何项目
+  assert.equal(await service.resolveProjectOfSession('session-elsewhere'), undefined)
+  assert.equal(await service.resolveProjectOfSession('session-unknown'), undefined)
+})
+
+test('解析会话所属项目：符号链接写法与项目目录相同也算同一个项目', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const link = join(home, 'link-to-workspace')
+  await symlink(workspace, link)
+  const sessions = { get: () => ({ header: { cwd: link } }) }
+  const service = createProjectService({
+    store,
+    ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const resolved = await service.resolveProjectOfSession('session-linked')
+  assert.equal(resolved.id, project.id)
+})
+
+test('删项目后原会话不再归属任何项目', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const sessions = { get: () => ({ header: { cwd: workspace } }) }
+  const service = createProjectService({
+    store,
+    ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await service.remove(project.id)
+  assert.equal(await service.resolveProjectOfSession(project.coordinatorSessionId), undefined)
+  assert.equal(await service.resolveProjectOfSession('session-worker'), undefined)
 })
