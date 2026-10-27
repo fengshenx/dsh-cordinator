@@ -118,3 +118,36 @@ test('并发写不丢项目', async () => {
   )
   assert.equal((await store.list()).length, 8)
 })
+
+test('同名项目落盘时自动加序号', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const first = await store.insert(store.draft({ name: 'repo', directory: '/work/a/repo' }))
+  const second = await store.insert(store.draft({ name: 'repo', directory: '/work/b/repo' }))
+
+  assert.equal(first.name, 'repo')
+  assert.equal(second.name, 'repo-2')
+  assert.deepEqual((await store.list()).map((project) => project.name), ['repo', 'repo-2'])
+})
+
+test('序号跳过已被占用的名字', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  await store.insert(store.draft({ name: 'repo', directory: '/work/a' }))
+  await store.insert(store.draft({ name: 'repo-2', directory: '/work/b' }))
+  const third = await store.insert(store.draft({ name: 'repo', directory: '/work/c' }))
+
+  assert.equal(third.name, 'repo-3')
+})
+
+test('并发建同名项目也只有一个拿到原名', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  await Promise.all(
+    Array.from({ length: 3 }, (_value, index) =>
+      store.insert(store.draft({ name: 'repo', directory: `/work/${index}/repo` }))),
+  )
+  const names = (await store.list()).map((project) => project.name).sort()
+
+  assert.deepEqual(names, ['repo', 'repo-2', 'repo-3'])
+})
