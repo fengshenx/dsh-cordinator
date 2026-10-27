@@ -46,7 +46,7 @@ function clip(text, max) {
  * 实际拿到的是第一页。
  *
  * @param {object} args - 工具入参
- * @returns {{ cardId: string | undefined, status: string, limit: number, offset: number }} 查询条件
+ * @returns {{ cardId: string | undefined, status: string, scope: string, limit: number, offset: number }} 查询条件
  */
 export function parseListQuery(args) {
   const input = args ?? {}
@@ -59,6 +59,13 @@ export function parseListQuery(args) {
     : input.status
   if (status !== 'active' && status !== 'done' && status !== 'archived' && status !== 'all') {
     throw new Error(`list_cards: status 非法：${String(status)}`)
+  }
+  // 卡片按项目归属，默认只看本项目的卡；`all` 才跨项目列全库。
+  const scope = input.scope === undefined || input.scope === null || input.scope === ''
+    ? 'project'
+    : input.scope
+  if (scope !== 'project' && scope !== 'all') {
+    throw new Error(`list_cards: scope 非法：${String(scope)}`)
   }
   const limit = input.limit === undefined || input.limit === null || input.limit === ''
     ? LIST_DEFAULT_LIMIT
@@ -77,6 +84,7 @@ export function parseListQuery(args) {
   return {
     ...(cardId === undefined ? {} : { cardId }),
     status,
+    scope,
     limit: Math.min(limit, LIST_MAX_LIMIT),
     offset,
   }
@@ -216,7 +224,7 @@ function renderCardDetail(card) {
  * 渲染查卡结果。
  *
  * @param {readonly object[]} cards - 全部卡片
- * @param {{ cardId: string | undefined, status: string, limit: number, offset: number }} query - 查询条件
+ * @param {{ cardId: string | undefined, status: string, scope: string, limit: number, offset: number }} query - 查询条件
  * @returns {string} 给模型看的文本
  */
 export function renderCardList(cards, query) {
@@ -226,21 +234,24 @@ export function renderCardList(cards, query) {
     return renderCardDetail(found).join('\n')
   }
   const { page, total, counts } = selectCards(cards, query)
+  // 「项目」与「全库」是两种范围，措辞要跟着变：把全库说成「项目」会让模型
+  // 以为看到的卡就是本项目的全部。
+  const where = query.scope === 'all' ? '全库' : '本项目'
   if (page.length === 0) {
-    // 空页有两种：项目真的没有卡，与 offset 翻过头。后者不能说成「项目没有卡」，
+    // 空页有两种：范围里真的没有卡，与 offset 翻过头。后者不能说成「没有卡」，
     // 同一句里报「没有 active 卡」又列 active 5 会让协调者误判项目无在途任务。
     if (total > 0) {
-      const scope = query.status === 'all' ? `本项目共 ${total} 张` : `status=${query.status} 共 ${total} 张`
+      const scope = query.status === 'all' ? `${where}共 ${total} 张` : `status=${query.status} 共 ${total} 张`
       return `offset 超出范围：${scope}，请从 offset=0 重新翻页。`
     }
     return query.status === 'all'
-      ? '项目当前没有卡片。'
-      : `项目当前没有 ${query.status} 卡（active ${counts.active} · done ${counts.done} · archived ${counts.archived}）。`
+      ? `${where}当前没有卡片。`
+      : `${where}当前没有 ${query.status} 卡（active ${counts.active} · done ${counts.done} · archived ${counts.archived}）。`
   }
   // 首行只报总张数，不报「本页 N 张」：本页张数会被字符预算截断，首行按 limit 写
   // 会与实际渲染出来的张数自相矛盾（「本页 20 张」对「只显示 11/20 张」）。
   // 实际显示了几张由尾注说。
-  const header = `卡片快照（status=${query.status}，共 ${total} 张）：`
+  const header = `卡片快照（scope=${query.scope}，status=${query.status}，共 ${total} 张）：`
   const blocks = []
   let used = header.length
   for (const card of page) {
@@ -261,8 +272,8 @@ export function renderCardList(cards, query) {
     }
   }
   if (query.status !== 'all') {
-    // 计数是全项目口径，不随本页过滤变化，因此不能写成「另有」（那会被读成还有多少张没显示）
-    notes.push(`全项目：active ${counts.active} · done ${counts.done} · archived ${counts.archived}，用 status 参数切换。`)
+    // 计数是全量口径，不随本页过滤变化，因此不能写成「另有」（那会被读成还有多少张没显示）
+    notes.push(`${where}：active ${counts.active} · done ${counts.done} · archived ${counts.archived}，用 status 参数切换。`)
   }
   return [header, ...blocks, ...(notes.length > 0 ? ['', ...notes] : [])].join('\n')
 }

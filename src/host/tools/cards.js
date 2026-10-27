@@ -246,9 +246,11 @@ function cardMeta(scope, cards) {
  * 创建 `create_card` 工具定义。
  * @param {object} options - 工具选项
  * @param {{ create: (input: object) => Promise<object> }} options.store - 卡片存储
+ * @param {(sessionId: string | undefined) => Promise<object | undefined>} [options.resolveProject] -
+ *   解析调用方会话所属项目；卡片按项目归属，模型不传项目参数
  * @returns {object} dsh 工具定义
  */
-export function createCreateCardTool({ store }) {
+export function createCreateCardTool({ store, resolveProject }) {
   return {
     name: 'create_card',
     description:
@@ -302,6 +304,9 @@ export function createCreateCardTool({ store }) {
       const links = input.links === undefined ? undefined : normalizeLinks(input.links)
       const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
       const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
+      // 卡片归属项目由宿主按调用方会话判定，模型不传项目参数：模型未必知道自己是
+      // 在哪个项目的语境里调用工具，判据交给会话这一侧的事实更可靠。
+      const project = await resolveProject?.(exec.agent?.id)
       const card = await store.create({
         title: input.title.trim(),
         ...spec === undefined ? {} : { spec },
@@ -309,6 +314,8 @@ export function createCreateCardTool({ store }) {
         ...slots === undefined ? {} : { slots },
         ...checkpoint === undefined ? {} : { checkpoint },
         updatedBy: exec.agent?.id,
+        ...project === undefined ? {} : { projectId: project.id },
+        ...exec.agent?.id === undefined ? {} : { createdBy: exec.agent.id },
       })
       return { card }
     },
@@ -319,13 +326,15 @@ export function createCreateCardTool({ store }) {
  * 创建 `update_card` 工具定义。
  * @param {object} options - 工具选项
  * @param {{ update: (input: object) => Promise<object> }} options.store - 卡片存储
+ * @param {(sessionId: string | undefined) => Promise<object | undefined>} [options.resolveProject] -
+ *   解析调用方会话所属项目；跨项目改卡会被拒绝
  * @returns {object} dsh 工具定义
  */
-export function createUpdateCardTool({ store }) {
+export function createUpdateCardTool({ store, resolveProject }) {
   return {
     name: 'update_card',
     description:
-      '更新一张任务看板卡片。带 expectedRevision 时做乐观并发校验，版本不符即报错，需重新读卡再改。归档是终态，不能再改。',
+      '更新一张任务看板卡片。带 expectedRevision 时做乐观并发校验，版本不符即报错，需重新读卡再改。归档是终态，不能再改。卡片按项目归属，只能改本项目的卡。',
     parameters: {
       type: 'object',
       properties: {
@@ -385,6 +394,18 @@ export function createUpdateCardTool({ store }) {
       const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
       const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
       const sortOrder = optionalNumber(input.sortOrder, 'sortOrder')
+      // 卡片按项目归属：改别人项目的卡要拒绝。无归属的存量卡不拦——没有归属可
+      // 冲突，拦下来只会让存量卡永远改不动。
+      //
+      // 调用方自己的范围就是它所在的项目（不在任何项目里就是空串）。这条判据
+      // 同时挡住两种越权：在 A 项目里改 B 项目的卡，以及在项目外改某个项目的卡。
+      const project = await resolveProject?.(exec.agent?.id)
+      const existing = await store.get(input.id.trim())
+      const owner = typeof existing?.projectId === 'string' ? existing.projectId : ''
+      const scope = typeof project?.id === 'string' ? project.id : ''
+      if (owner !== '' && owner !== scope) {
+        throw new Error(`update_card: 卡片 ${input.id.trim()} 属于另一个项目，不能跨项目改卡`)
+      }
       const card = await store.update({
         id: input.id.trim(),
         ...input.expectedRevision === undefined ? {} : { expectedRevision: input.expectedRevision },
@@ -409,15 +430,20 @@ export function createUpdateCardTool({ store }) {
  * 投影——看板要按全量卡片重建视图，不能被分页与状态过滤裁掉。因此工具返回全量
  * 卡片，分页只发生在模型可见的文本上。
  *
+ * 卡片按项目归属：默认只列调用方所在项目的卡（一个项目一个看板，模型看到的与
+ * 看板看到的同一份）。`scope: 'all'` 才跨项目列全库。
+ *
  * @param {object} options - 工具选项
  * @param {{ list: (filter?: object) => Promise<object[]> }} options.store - 卡片存储
+ * @param {(sessionId: string | undefined) => Promise<object | undefined>} [options.resolveProject] -
+ *   解析调用方会话所属项目
  * @returns {object} dsh 工具定义
  */
-export function createListCardsTool({ store }) {
+export function createListCardsTool({ store, resolveProject }) {
   return {
     name: 'list_cards',
     description:
-      '按最近更新倒序列出任务看板卡片（默认只列 active，20 张一页）；传 cardId 读取单卡完整规格、链接与检查点。',
+      '按最近更新倒序列出任务看板卡片（默认只列本项目的 active 卡，20 张一页）；传 cardId 读取单卡完整规格、链接与检查点。',
     parameters: {
       type: 'object',
       properties: {
@@ -429,6 +455,11 @@ export function createListCardsTool({ store }) {
           type: 'string',
           enum: ['active', 'done', 'archived', 'all'],
           description: '状态过滤，默认 active；查历史卡用 done / archived / all',
+        },
+        scope: {
+          type: 'string',
+          enum: ['project', 'all'],
+          description: '范围，默认 project（本项目的卡）；all 跨项目列全库',
         },
         limit: {
           type: 'number',
@@ -450,16 +481,17 @@ export function createListCardsTool({ store }) {
             properties: {
               cardId: { type: 'string' },
               status: { type: 'string' },
+              scope: { type: 'string' },
               limit: { type: 'number' },
               offset: { type: 'number' },
             },
-            required: ['status', 'limit', 'offset'],
+            required: ['status', 'scope', 'limit', 'offset'],
           },
         },
         required: ['cards', 'query'],
       },
       render(args, value) {
-        const result = /** @type {{ cards: object[], query: { cardId?: string, status: string, limit: number, offset: number } }} */ (value)
+        const result = /** @type {{ cards: object[], query: { cardId?: string, status: string, scope: string, limit: number, offset: number } }} */ (value)
         return [{ type: 'text', text: renderCardList(result.cards, result.query) }]
       },
       presentationMeta(args, value) {
@@ -467,9 +499,15 @@ export function createListCardsTool({ store }) {
         return cardMeta('all', result.cards)
       },
     },
-    async execute(args) {
+    async execute(args, exec) {
       const query = parseListQuery(args)
-      const cards = await store.list()
+      // 单卡查询不受范围限制：模型拿着 cardId 来读，要的就是那张卡。
+      if (query.scope === 'all' || query.cardId !== undefined) {
+        const cards = await store.list()
+        return { cards, query }
+      }
+      const project = await resolveProject?.(exec.agent?.id)
+      const cards = await store.list({ projectId: project?.id ?? '' })
       return { cards, query }
     },
   }

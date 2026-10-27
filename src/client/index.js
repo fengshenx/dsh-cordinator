@@ -18,6 +18,7 @@ import { BoardBody } from './board.js'
 import { ProjectPanel } from './project-panel.js'
 import { mountCoordinatorView, watchCoordinatorSessions } from './coordinator-view.js'
 import { callProjectRemote, mountProjectRemote, reportProjectRemoteError } from './project-remote.js'
+import { mountProjectBoardMonitor } from './project-board-monitor.js'
 import { WORKER_REPORT_NODE_KIND, workerReportDefinition } from './worker-report-definition.js'
 import { WorkerReportView } from './worker-report-view.js'
 
@@ -55,6 +56,7 @@ export function apply(ctx) {
     inject: () => ({
       getSessions: () => ctx.sessions,
       getUiWorkspace: () => ctx.get('uiWorkspace'),
+      callRemote: (method, args) => callProjectRemote(ctx, method, args),
     }),
   }, BoardBody)), 'dsh-coordinator 看板面板')
 
@@ -96,7 +98,32 @@ export function apply(ctx) {
     })
     // 协调者会话名单走同一条通道：填充不挂在项目面板上，侧栏收起时面板会卸载。
     watchCoordinatorSessions(remoteCtx)
+    // 建卡后自动打开右栏看板：监视器要走项目通道取卡片，通道没挂好就开不了。
+    mountBoardMonitor(ctx)
   })
+}
+
+/**
+ * 挂载看板监视器：建卡后自动打开（或聚焦）右栏的看板 tab。
+ *
+ * `sidebarRight` 惰性取：它由官方右栏 bundle 提供，缺服务时监视器不启动，
+ * 插件其余部分照常工作。
+ *
+ * @param {object} ctx - 客户端 Cordis 上下文
+ * @returns {void}
+ */
+function mountBoardMonitor(ctx) {
+  const sidebarRight = ctx.get('sidebarRight')
+  if (sidebarRight === undefined || sidebarRight === null) {
+    ctx.logger?.warn?.('dsh-coordinator: 当前宿主没有右栏服务，建卡后不自动打开看板')
+    return
+  }
+  const stop = mountProjectBoardMonitor({
+    sidebarRight,
+    callRemote: (method, args) => callProjectRemote(ctx, method, args),
+    logger: (message) => { ctx.logger?.warn?.(message) },
+  })
+  ctx.effect(() => stop, 'dsh-coordinator 看板监视器')
 }
 
 /**

@@ -12,6 +12,30 @@
  */
 
 /**
+ * 槽位会话的保留目标。
+ *
+ * 子代理会话在客户端会话目录里可能没有独立条目，裸 id 认不出来，要靠
+ * `{ parentSessionId, childSessionId }` 地址才找得到。宿主给了地址就用它；
+ * 没给时用建卡会话兜一个 `unknown` 模式的地址——模式只影响宿主怎么配置子代理，
+ * 不影响能不能认出这个会话。
+ *
+ * 两者都拿不到时返回 `undefined`，调用方据此把原始错误抛回去，不要静默降级。
+ *
+ * @param {object} sessions - 会话服务
+ * @param {string} sessionId - 槽位绑定的会话 id
+ * @param {string} fatherSessionId - 建卡会话 id，作为父会话兜底
+ * @returns {object | undefined} `SubagentAddress` 或 `undefined`
+ */
+export function retainTargetOf(sessions, sessionId, fatherSessionId) {
+  const address = typeof sessions.subagentAddress === 'function'
+    ? sessions.subagentAddress(sessionId)
+    : undefined
+  if (address !== undefined) return address
+  if (typeof fatherSessionId !== 'string' || fatherSessionId === '') return undefined
+  return { parentSessionId: fatherSessionId, childSessionId: sessionId, mode: 'unknown' }
+}
+
+/**
  * 槽位会话保留器。
  */
 export class SlotRetention {
@@ -22,13 +46,17 @@ export class SlotRetention {
    * @param {(sessionId: string, state: object) => void} options.onState - 读到会话
    *   快照时的回调
    * @param {(sessionId: string) => void} options.onDrop - 会话不再被保留时的回调
+   * @param {(message: string) => void} [options.onError] - 保留失败时的报告出口
    */
-  constructor({ retain, onState, onDrop }) {
+  constructor({ retain, onState, onDrop, onError }) {
     this.retain = retain
     this.onState = onState
     this.onDrop = onDrop
+    this.onError = onError ?? ((message) => console.warn(message))
     /** @type {Map<string, { reference: object, unsubscribe?: () => void }>} */
     this.entries = new Map()
+    /** 已报告过的失败：同一个槽位只报一次，不随每次同步重复刷。 */
+    this.reported = new Set()
   }
 
   /**
@@ -60,8 +88,10 @@ export class SlotRetention {
     let reference
     try {
       reference = this.retain(sessionId)
-    } catch {
-      // 宿主不认识这个会话 id：状态保持未知，不谎称空闲
+    } catch (error) {
+      // 宿主不认识这个会话（已删、从未存在、或地址解析不出）：状态保持未知，
+      // 不谎称空闲。这条要说出来——槽位上只表现为一个空心圈，没有日志就查不到。
+      this.report(sessionId, `看板无法保留会话 ${sessionId}，槽位状态未知：${error instanceof Error ? error.message : String(error)}`)
       return
     }
     const entry = { reference, unsubscribe: undefined }
@@ -80,9 +110,21 @@ export class SlotRetention {
         read()
         entry.unsubscribe = binding.session.subscribe(read)
       })
-      .catch(() => {
+      .catch((error) => {
         // 保留失败：状态表里不出现这一项，槽位显示为未知
+        this.report(sessionId, `看板打开会话 ${sessionId} 失败，槽位状态未知：${error instanceof Error ? error.message : String(error)}`)
       })
+  }
+
+  /**
+   * 报告一次保留失败，同一个会话只报一次。
+   * @param {string} sessionId - 会话 id
+   * @param {string} message - 报告内容
+   */
+  report(sessionId, message) {
+    if (this.reported.has(sessionId)) return
+    this.reported.add(sessionId)
+    this.onError(message)
   }
 
   /**

@@ -21,6 +21,18 @@
  *
  * 本模块不新增 session event 类型（仓外插件的硬约束），完成通知走自有落盘队列。
  *
+ * 续聊（`message_worker`）走宿主的 `subagents.sendMessage()`：worker 已结算时宿主
+ * 从持久化日志冷恢复（子会话描述符按 `continuable` 快照，本地 provider 天然可续）。
+ * 冷恢复的 activation 由宿主固定为 `parent` 交付——结算时宿主会自动给父会话投一条
+ * 英文结算通知。插件的完成通知体系（落盘队列 + next-turn 投递 + worker 报告渲染）
+ * 是既定交付形态，续聊轮也走它：宿主通知在进入 inbox 的瞬间被移除（`agent/inbox/
+ * inserted` 事件里 `inbox.remove()`），移除失败则放行宿主通知兜底、本轮不再自发，
+ * 避免同一件事报两遍。
+ *
+ * 续聊轮的完成信号是宿主的 `subagent/end` 生命周期事件（`activation.result` 只在
+ * 首轮的 `startActivation` 返回值里拿得到）：事件早于 promise 结算，首轮事件到达时
+ * 派工记录仍在在飞表里，据此区分首轮与续聊轮。
+ *
  * @module dsh-coordinator/host/dispatch
  */
 
@@ -83,11 +95,33 @@ export function buildWorkerReport(outcome) {
 }
 
 /**
+ * 把宿主的终态原因判成通知用的终态。
+ *
+ * 宿主对 child-level 失败是 **resolve 而非 reject**（`subagent/src/types.ts` 的
+ * `activation.result` 契约，注释原文：非 `completed` 的原因意味着 output 可能不完整），
+ * 所以「promise 没抛错」不等于「活干成了」。只有 `completed` 算完成：
+ * `error` / `aborted` / `refusal` 是没干成活，`max-tokens` 的产出是被截断的，
+ * 当完整产物交给协调者验收会漏掉返工。
+ *
+ * @param {{ stopReason?: unknown, output?: unknown }} result - 宿主终态负载
+ * @returns {{ ok: true, result: object } | { ok: false, error: Error }} 通知终态
+ */
+export function judgeTerminal(result) {
+  const stopReason = typeof result?.stopReason === 'string' && result.stopReason !== ''
+    ? result.stopReason
+    : 'completed'
+  if (stopReason === 'completed') return { ok: true, result }
+  return { ok: false, error: new Error(`worker 以 ${stopReason} 结束，产出可能不完整`) }
+}
+
+/**
  * 创建派工与唤醒器。
  *
  * @param {object} options - 选项
  * @param {object} options.ctx - Cordis 上下文
  * @param {object} options.store - 通知落盘队列
+ * @param {object} options.workers - worker 登记表（见 `worker-registry.js`）
+ * @param {object} options.coordinatorIndex - 项目注册表（提供 `awaitIndex` 与 `isCoordinatorSession`）
  * @param {string} [options.provider] - subagent provider 名，默认 `spawn`
  * @param {number} [options.autoResumeLimit] - 连续自动续行上限
  * @param {(parentSessionId: string) => string | undefined} [options.resolveWorkerCwd] - 取 worker 的工作目录
@@ -97,11 +131,18 @@ export function buildWorkerReport(outcome) {
 export function createDispatcher({
   ctx,
   store,
+  workers,
+  coordinatorIndex,
   provider = 'spawn',
   autoResumeLimit = DEFAULT_AUTO_RESUME_LIMIT,
   resolveWorkerCwd,
   logger = () => {},
 }) {
+  // 派工校验依赖它，漏传就整段静默跳过——宁可装配时报错，也不要悄悄少一道闸。
+  if (typeof coordinatorIndex?.awaitIndex !== 'function'
+    || typeof coordinatorIndex?.isCoordinatorSession !== 'function') {
+    throw new Error('dsh-coordinator: createDispatcher 缺少 coordinatorIndex，无法校验协调者身份')
+  }
   /** @type {Map<string, object>} 派工记录，key 为子会话 id */
   const inflight = new Map()
   /** @type {Map<string, number>} 每个父会话的连续自动续行次数 */
@@ -112,6 +153,10 @@ export function createDispatcher({
   const disposed = new Set()
   /** @type {Map<string, object[]>} 等待父会话空闲的通知，按父会话分组 */
   const waiting = new Map()
+  /** @type {Map<string, object>} 续聊在飞的 worker，key 为子会话 id；值兼作结算时的通知记录 */
+  const continuations = new Map()
+  /** @type {Map<string, 'swallowed' | 'host-noticed'>} 续聊轮宿主结算通知的去向，key 为子会话 id */
+  const noticeStates = new Map()
   /** @type {ReturnType<typeof setInterval> | undefined} 空闲检测定时器 */
   let idleTimer = undefined
   /** @type {Set<string>} 正在投递的通知 id：同一条通知只投一次。 */
@@ -361,7 +406,7 @@ export function createDispatcher({
   }
 
   /**
-   * 处理子会话终态：落盘通知并唤醒父会话。
+   * 处理子会话首轮终态：落盘通知并唤醒父会话。
    * @param {string} childId - 子会话 id
    * @param {{ ok: boolean, result?: object, error?: unknown }} outcome - 终态
    * @returns {Promise<void>} 处理完成
@@ -370,10 +415,20 @@ export function createDispatcher({
     const record = inflight.get(childId)
     if (record === undefined) return
     inflight.delete(childId)
+    await emitNotification(record, outcome)
+  }
+
+  /**
+   * 落盘一条完成通知并投递。首轮与续聊轮共用：通知形态、投递时机、护栏都一样。
+   * @param {object} record - 通知记录源（首轮派工记录或续聊登记）
+   * @param {{ ok: boolean, result?: object, error?: unknown }} outcome - 终态
+   * @returns {Promise<void>} 处理完成
+   */
+  async function emitNotification(record, outcome) {
     const text = buildNotificationText(record, outcome)
     const notification = {
-      id: `note-${childId}-${record.startedAt}`,
-      childId,
+      id: `note-${record.childId}-${record.startedAt}`,
+      childId: record.childId,
       parentSessionId: record.parentSessionId,
       label: record.label,
       text,
@@ -385,6 +440,117 @@ export function createDispatcher({
     }
     await store.enqueue(notification)
     await deliver(notification, record.parent)
+  }
+
+  /**
+   * 给已派出的 worker 发后续消息。
+   *
+   * worker 还在跑时消息并入当前执行（宿主走同一 activation，结算仍是首轮那份
+   * `activation.result`）；已结算时宿主冷恢复子会话，完成信号换 `subagent/end`。
+   *
+   * @param {object} options - 续聊参数
+   * @param {object} options.parent - 调用方 agent（宿主要求精确活对象）
+   * @param {string} options.childId - worker 子会话 id
+   * @param {string} options.message - 消息正文
+   * @param {AbortSignal} options.signal - 取消信号
+   * @returns {Promise<{ code: 'merged' | 'sent', label: string }>} 投递结果与任务标签
+   */
+  async function message({ parent, childId, message, signal }) {
+    const subagents = ctx.get('subagents')
+    if (subagents === undefined) {
+      throw new Error('dsh-coordinator: 当前组合未启用 subagents 服务，无法给 worker 发消息')
+    }
+    const running = inflight.get(childId)
+    if (running !== undefined) {
+      // 先把记录取到局部变量：`sendMessage` 的往返期间 worker 可能结算，
+      // `settle` 会把这条从 `inflight` 里删掉，回来再查表就是 undefined。
+      // 那种情况下消息其实已经投进去了，不能说没发出去让模型重发。
+      await subagents.sendMessage(parent, childId, [{ type: 'text', text: message }], { signal })
+      return { code: 'merged', label: running.label }
+    }
+    const worker = await workers.get(childId)
+    if (worker === undefined) {
+      throw new Error(`message_worker: 没有子会话 ${childId} 的派工记录，它不是本协调体系派出的 worker`)
+    }
+    if (worker.parentSessionId !== parent.id) {
+      throw new Error('message_worker: 该 worker 是别的会话派的，不能跨会话给它发消息')
+    }
+    const record = {
+      childId,
+      parentSessionId: worker.parentSessionId,
+      parent,
+      label: typeof worker.label === 'string' ? worker.label : childId,
+      startedAt: Date.now(),
+    }
+    // 先登记再发：冷恢复的结算事件随时可能到，登记晚一步就对不上号。
+    continuations.set(childId, record)
+    try {
+      await subagents.sendMessage(parent, childId, [{ type: 'text', text: message }], { signal })
+    } catch (error) {
+      continuations.delete(childId)
+      throw error
+    }
+    return { code: 'sent', label: record.label }
+  }
+
+  /**
+   * 消费宿主 `subagent/end` 生命周期事件。
+   *
+   * 首轮的结算由 `startActivation` 的 result promise 收口：续聊登记只在首轮结算
+   * 之后发生，首轮事件到这里查表自然落空。续聊轮的 `activation.result` 拿不到
+   * （`sendMessage` 只返回消息 id），只能靠这个事件收口。
+   * @param {{ id?: unknown, stopReason?: string, lastAssistantMessage?: object[] }} info - 事件负载
+   * @returns {void}
+   */
+  function onSubagentEnd(info) {
+    const childId = info?.id
+    if (typeof childId !== 'string') return
+    const record = continuations.get(childId)
+    if (record === undefined) return
+    continuations.delete(childId)
+    void (async () => {
+      // 宿主结算通知没移除成（已投出）时本轮不自发：同一件事报两遍比换一种
+      // 文案更糟，宿主通知就当兜底。没有记录说明宿主没发通知（parent 非活对象
+      // 等早退路径），照常自发。
+      if (noticeStates.get(childId) === 'host-noticed') {
+        noticeStates.delete(childId)
+        return
+      }
+      noticeStates.delete(childId)
+      // 宿主 `subagent/end` 在非正常结束时也发，负载带 `stopReason` 与最后一次
+      // assistant 输出。首轮与续聊轮共用同一套判据。
+      await emitNotification(record, judgeTerminal({
+        stopReason: info.stopReason,
+        output: Array.isArray(info.lastAssistantMessage) ? info.lastAssistantMessage : [],
+      }))
+    })().catch((error) => {
+      // 读盘失败等异常兜在这里：宿主对未处理拒绝是致命退出，一次抖动不该带走 dsh。
+      logger(`dsh-coordinator: 续聊结算失败：${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /**
+   * 拦截续聊轮宿主自动投给父会话的结算通知。
+   *
+   * 宿主把冷恢复轮固定为 `parent` 交付，结算时会投一条英文通知；本插件的完成
+   * 通知体系是既定交付形态，宿主那份进 inbox 的瞬间移除。移除失败（消息已被
+   * 消费）时放行宿主通知兜底，本轮不再自发。
+   *
+   * @param {object} agent - 收到消息的 agent
+   * @param {{ id: string, source?: { kind?: string, senderSessionId?: unknown } }} message - 进入 inbox 的消息
+   * @returns {boolean} 是否已处理（调用方据此跳过后续的外部输入逻辑）
+   */
+  function maybeSwallowSettlementNotice(agent, message) {
+    const source = message?.source
+    if (source?.kind !== 'subagent-settled') return false
+    const childId = source.senderSessionId
+    if (typeof childId !== 'string' || !continuations.has(childId)) return false
+    const removed = agent?.inbox?.remove?.(message.id) === true
+    noticeStates.set(childId, removed ? 'swallowed' : 'host-noticed')
+    if (!removed) {
+      logger(`dsh-coordinator: 子会话 ${childId} 的宿主结算通知已投出，无法移除，由宿主通知兜底`)
+    }
+    return true
   }
 
   /**
@@ -401,6 +567,24 @@ export function createDispatcher({
     const subagents = ctx.get('subagents')
     if (subagents === undefined) {
       throw new Error('dsh-coordinator: 当前组合未启用 subagents 服务，无法派工')
+    }
+    // 派工是唯一会真的拉起一个会话的操作，不能建立在「索引没就绪就先放行」的
+    // 宽松判定上：注册表读不出来时，任何会话都会被当成协调者。这里等一次重建
+    // 结果，读不出来就拒绝，并要求调用方确实是项目协调者。
+    const ready = await coordinatorIndex.awaitIndex()
+    if (!ready) {
+      throw new Error('spawn_worker: 项目注册表尚未读出，无法确认协调者身份，暂不能派工')
+    }
+    if (!coordinatorIndex.isCoordinatorSession(parent.id)) {
+      throw new Error('spawn_worker: 只有项目协调者能派工，请先 add_project 或用项目协调者会话')
+    }
+    // 续聊是 worker 的既定能力：缺持久化后端（日志不落盘）或查询后端（冷恢复
+    // 读不了日志）时 worker 只能跑一轮，拒绝派工而不是静默降级成一次性 worker。
+    if (ctx.get('sessionPersistence') === undefined) {
+      throw new Error('dsh-coordinator: 当前组合缺少会话持久化后端，worker 无法续聊，拒绝派工')
+    }
+    if (ctx.get('sessionQuery') === undefined) {
+      throw new Error('dsh-coordinator: 当前组合缺少会话查询后端，worker 无法冷恢复续聊，拒绝派工')
     }
     // worker 的工作目录由项目决定：协调者不能指定 worker 跑在哪，也不该让
     // worker 跑到项目外面去。项目目录是绝对路径，subagent 直接采用。
@@ -426,15 +610,38 @@ export function createDispatcher({
       startedAt: Date.now(),
     }
     inflight.set(record.childId, record)
+    // 结算回调必须先挂上：子会话已经启动，内核不管登记成不成功都会跑到底并结算。
+    // 先登记后挂回调时，登记一失败（home 只读、磁盘满）回调就永远注册不上，
+    // 子会话白跑一遍、通知既不入盘也不投递。登记失败只记日志——子会话回滚不了。
     void activation.result.then(
-      (result) => settle(record.childId, { ok: true, result }),
+      // 宿主对 child-level 失败是 resolve 而非 reject，不能只看 promise 有没有抛。
+      (result) => settle(record.childId, judgeTerminal(result)),
       (error) => settle(record.childId, { ok: false, error }),
-    )
+    ).catch((error) => {
+      // 落盘失败等异常兜在这里：宿主对未处理拒绝是致命退出，一次磁盘抖动不该
+      // 带走整个 dsh 进程，通知留在下一轮结算或人工补投。
+      logger(`dsh-coordinator: 首轮结算失败：${error instanceof Error ? error.message : String(error)}`)
+    })
+    // 派工落登记表：协调者可能在任何时刻（含本进程重启后）续聊，归属与父会话
+    // 映射不能只活在内存里。
+    try {
+      await workers.register({
+        childId: record.childId,
+        parentSessionId: parent.id,
+        label,
+        task,
+      })
+    } catch (error) {
+      logger(`dsh-coordinator: worker ${record.childId} 登记失败，续聊与归属查询会落空：${error instanceof Error ? error.message : String(error)}`)
+    }
     return record
   }
 
   return {
     dispatch,
+    message,
+    onSubagentEnd,
+    maybeSwallowSettlementNotice,
 
     /**
      * 补投队列里属于某个父会话的通知。

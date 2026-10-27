@@ -91,12 +91,39 @@ export function createProjectService({
     ?? ((sessionId) => sessionExistsWithCtx(ctx, sessionId))
 
   /**
-   * 协调者会话 id → 项目目录的内存镜像。
+   * 协调者会话 id → 项目的内存镜像（值是 `{ projectId, directory }`）。
    *
    * 项目注册表是异步落盘的，而提示词组装与派工都需要**同步**拿到「这个会话属于
    * 哪个项目」。卡片库用的是同一手法：落盘是真源，内存镜像是读路径。
    */
   const coordinatorIndex = new Map()
+
+  /**
+   * 项目目录 canonical 路径 → 项目 id 的内存镜像。
+   *
+   * 项目目录建好后不再变（目录是身份的一部分），canonical 路径算一次就够：
+   * 判断会话归属时每次都要 realpath，重复算纯属浪费。反向索引（目录找项目）
+   * 是「会话按 cwd 归属项目」这条判据的读路径。canonical 化本身由共享的
+   * 归一器缓存（`createCanonicalizer`），这里不再重复缓存一份。
+   */
+  const canonicalDirectoryIndex = new Map()
+
+  /**
+   * 索引重建的 promise。
+   *
+   * 卡片归属要等索引就绪才能判：启动瞬间（`loadIndex()` 还没把项目读回内存）
+   * 就建卡的话，卡片会静悄悄地归不到任何项目——那既丢数据又查不出原因。
+   * 判定前先等这个 promise。
+   */
+  let indexReady = Promise.resolve()
+
+  /**
+   * 索引是否已从注册表重建完成。
+   *
+   * 重建前内存镜像是空的，「这个会话是不是协调者」问不出真话；工具面分配要
+   * 同步拿到答案，等不了 promise，只能靠这个标志区分「没有协调者」与「还不知道」。
+   */
+  let indexLoaded = false
 
   // 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。
 
@@ -128,14 +155,68 @@ export function createProjectService({
      * @returns {Promise<Map<string, string>>} 重建后的索引
      */
     async loadIndex() {
-      const projects = await store.list()
-      coordinatorIndex.clear()
-      for (const project of projects) {
-        if (typeof project.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
-          coordinatorIndex.set(project.coordinatorSessionId, project.directory)
+      const rebuilding = (async () => {
+        const projects = await store.list()
+        coordinatorIndex.clear()
+        canonicalDirectoryIndex.clear()
+        for (const project of projects) {
+          if (typeof project.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
+            coordinatorIndex.set(project.coordinatorSessionId, {
+              projectId: project.id,
+              directory: project.directory,
+            })
+          }
+          const canonical = await canonicalize(project.directory)
+          // 两个项目指向同一目录时先注册的那个保留归属，与项目会话归组同一口径：
+          // 重叠是用户的误操作，不该让后注册的项目悄悄接管前者的卡片。
+          if (!canonicalDirectoryIndex.has(canonical)) {
+            canonicalDirectoryIndex.set(canonical, project.id)
+          }
         }
-      }
-      return coordinatorIndex
+        return coordinatorIndex
+      })()
+      // 重建成功才算就绪：失败时索引仍是空的，`isCoordinatorSession()` 继续走
+      // 保守放行，而不是把协调者的工具面判没。失败事实仍由返回值传播给调用方。
+      indexReady = rebuilding.then(
+        () => {
+          indexLoaded = true
+        },
+        () => undefined,
+      )
+      return rebuilding
+    },
+
+    /**
+     * 等协调者索引就绪，并报告它到底有没有读出来。
+     *
+     * `isCoordinatorSession()` 在索引未就绪时一律放行——那是为了保证协调者首轮
+     * 不至于没有工具，但放行意味着**任何**会话都拿到编排工具。派工这类高危操作
+     * 不能建立在这个宽松判定上：执行前等一次重建结果，读不出来就拒绝。
+     *
+     * @returns {Promise<boolean>} 索引是否可用
+     */
+    async awaitIndex() {
+      await indexReady
+      return indexLoaded
+    },
+
+    /**
+     * 同步判定某个会话是不是项目协调者。
+     *
+     * 协调者身份在建项目时就写进注册表（`coordinatorSessionId`），工具面据此
+     * 分配——不必等会话跑起来再从会话内容里推断。
+     *
+     * 索引重建完成前一律返回 true：那时注册表还没读回内存，返回 false 会让
+     * 协调者首轮看不到编排工具，活直接干不成。这个宽松只对读类工具安全——派工
+     * 走 `awaitIndex()` 再判一次，不能靠这里兜。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {boolean} 是否项目协调者
+     */
+    isCoordinatorSession(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return false
+      if (!indexLoaded) return true
+      return coordinatorIndex.has(sessionId)
     },
 
     /**
@@ -145,7 +226,44 @@ export function createProjectService({
      */
     directoryOfCoordinator(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return undefined
-      return coordinatorIndex.get(sessionId)
+      return coordinatorIndex.get(sessionId)?.directory
+    },
+
+    /**
+     * 解析某个会话所属的项目。
+     *
+     * 判据两条，先命中先用：
+     *
+     * - **协调者会话** → 项目注册表里的那条指针（`coordinatorSessionId`）；
+     * - **其它会话** → 会话 cwd 的 canonical 路径与项目目录的 canonical 路径相等。
+     *   worker 会话的 cwd 就是项目目录，用户在项目目录里手动开的会话也是——它们
+     *   做的都是这个项目的事。
+     *
+     * 会话 cwd 从宿主的会话注册表读（`sessions.get(id).header.cwd`）。读不到就
+     * 明确说「不归属任何项目」，不猜：把卡挂到猜出来的项目上，比不挂更难查。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory }`）；不归属时 undefined
+     */
+    async resolveProjectOfSession(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return undefined
+      // 索引是进程内的镜像，启动时异步重建。重建完成前判定归属会得到「不归属
+      // 任何项目」，卡片就会静悄悄地丢归属——等索引就绪再判。
+      await indexReady
+      const coordinator = coordinatorIndex.get(sessionId)
+      if (coordinator !== undefined) {
+        const project = await store.get(coordinator.projectId)
+        if (project !== undefined) {
+          return { id: project.id, name: project.name, directory: project.directory }
+        }
+      }
+      const cwd = ctx.get('sessions')?.get?.(sessionId)?.header?.cwd
+      if (typeof cwd !== 'string' || cwd === '') return undefined
+      const projectId = canonicalDirectoryIndex.get(await canonicalize(cwd))
+      if (projectId === undefined) return undefined
+      const project = await store.get(projectId)
+      if (project === undefined) return undefined
+      return { id: project.id, name: project.name, directory: project.directory }
     },
 
     /**
@@ -175,7 +293,14 @@ export function createProjectService({
       let inserted
       try {
         inserted = await store.insert(draft)
-        coordinatorIndex.set(coordinatorSessionId, normalizedDirectory)
+        coordinatorIndex.set(coordinatorSessionId, {
+          projectId: inserted.id,
+          directory: normalizedDirectory,
+        })
+        const canonical = await canonicalize(normalizedDirectory)
+        if (!canonicalDirectoryIndex.has(canonical)) {
+          canonicalDirectoryIndex.set(canonical, inserted.id)
+        }
       } catch (error) {
         await abandonCoordinatorSession(coordinatorSessionId)
         throw error
@@ -372,7 +497,10 @@ export function createProjectService({
         if (typeof project.coordinatorSessionId === 'string') {
           coordinatorIndex.delete(project.coordinatorSessionId)
         }
-        coordinatorIndex.set(coordinatorSessionId, project.directory)
+        coordinatorIndex.set(coordinatorSessionId, {
+          projectId: id,
+          directory: project.directory,
+        })
       } catch (error) {
         await abandonCoordinatorSession(coordinatorSessionId)
         throw error
@@ -393,6 +521,18 @@ export function createProjectService({
       const removed = await store.remove(id)
       if (removed !== undefined && typeof removed.coordinatorSessionId === 'string') {
         coordinatorIndex.delete(removed.coordinatorSessionId)
+      }
+      if (removed !== undefined) {
+        // 目录索引要重建而不是直接删：两个项目可能指向同一目录，删掉其中一个时
+        // 另一个仍占着这个目录，它的卡片还得能归到它名下。
+        const canonical = await canonicalize(removed.directory)
+        canonicalDirectoryIndex.delete(canonical)
+        for (const project of await store.list()) {
+          const other = await canonicalize(project.directory)
+          if (other === canonical && !canonicalDirectoryIndex.has(canonical)) {
+            canonicalDirectoryIndex.set(canonical, project.id)
+          }
+        }
       }
       return removed
     },

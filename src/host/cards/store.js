@@ -10,6 +10,10 @@
  * - **乐观并发**：带 `expectedRevision` 时校验版本，版本不符即冲突，不落盘。
  * - **archived 是终态**：归档后不可再改；`active ⇄ done` 可逆。
  *
+ * 卡片归属项目：一个项目一个看板，看板按项目取卡。归属由宿主按建卡会话判定
+ * （协调者会话 → 它的项目；其它会话 → cwd 与项目目录相同者），模型不传参。
+ * 存量卡片没有归属，不出现在任何项目看板里。
+ *
  * 落盘位置在 dsh home 下的自有目录，不占用 session 事件流——仓外插件不得新增
  * session event 类型。
  *
@@ -144,9 +148,11 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
      * @param {object} [input.slots] - 槽位绑定
      * @param {object} [input.checkpoint] - 检查点（维护者与时间由宿主补写）
      * @param {string} [input.updatedBy] - 维护者会话 id
+     * @param {string} [input.projectId] - 所属项目 id；宿主按调用方会话判定
+     * @param {string} [input.createdBy] - 建卡会话 id
      * @returns {Promise<object>} 新建的卡片
      */
-    async create({ title, spec, links, slots, checkpoint, updatedBy }) {
+    async create({ title, spec, links, slots, checkpoint, updatedBy, projectId, createdBy }) {
       return serialize(async () => {
         const store = await readStore(file, recoverFromCorruption, io)
         const now = clock()
@@ -162,6 +168,8 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
           ...checkpoint === undefined
             ? {}
             : { checkpoint: withCheckpointMeta(checkpoint, updatedBy, now) },
+          ...projectId === undefined ? {} : { projectId },
+          ...createdBy === undefined ? {} : { createdBy },
           createdAt: now,
           updatedAt: now,
         }
@@ -277,12 +285,15 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
      * 列出卡片，按编号升序。
      * @param {object} [filter] - 过滤条件
      * @param {string} [filter.status] - 只返回该状态的卡片
+     * @param {string} [filter.projectId] - 只返回该项目的卡片；空串表示无归属的卡片
      * @returns {Promise<object[]>} 卡片列表
      */
-    async list({ status } = {}) {
+    async list({ status, projectId } = {}) {
       const store = await readStore(file, recoverFromCorruption, io)
       const cards = [...store.cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
-      return status === undefined ? cards : cards.filter((card) => card.status === status)
+      return cards
+        .filter((card) => status === undefined || card.status === status)
+        .filter((card) => projectId === undefined || projectIdOf(card) === projectId)
     },
   }
 }
@@ -310,6 +321,19 @@ function rebuildSlotIndex(cards, target) {
       target.set(sessionId, name)
     }
   }
+}
+
+/**
+ * 取卡片的项目归属。
+ *
+ * 存量卡片没有 `projectId` 字段，一律算无归属（空串）——它们的创建会话没被
+ * 记下来，无法可靠反推是哪个项目的。
+ *
+ * @param {object} card - 卡片
+ * @returns {string} 项目 id；无归属时是空串
+ */
+function projectIdOf(card) {
+  return typeof card?.projectId === 'string' ? card.projectId : ''
 }
 
 /**

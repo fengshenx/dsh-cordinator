@@ -2,116 +2,16 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   STALLED_THRESHOLD_MS,
-  applyEventChange,
   cardSignal,
-  collectCards,
   fitLinkChips,
   formatDuration,
   isCardStalled,
-  loadHistory,
   mergeSessionState,
   slotBindingsOf,
   slotViewsForCard,
   sortActiveCards,
   sortDoneCards,
 } from '../src/client/board-projection.js'
-
-/**
- * 造一条带卡片投影的 `tool/result` 事件条目。
- * @param {string} scope - 投影范围
- * @param {object[]} cards - 投影的卡片
- * @returns {object} 事件窗口条目
- */
-function cardEvent(scope, cards) {
-  return {
-    type: 'event',
-    event: {
-      type: 'tool/result',
-      data: { meta: { kind: 'dsh-coordinator-cards', scope, cards } },
-    },
-  }
-}
-
-test('单卡投影按 id 覆盖同 id 的卡片，全量投影清空视图', () => {
-  const entries = [
-    cardEvent('card', [{ id: 'a', number: 1, title: '一' }]),
-    cardEvent('card', [{ id: 'b', number: 2, title: '二' }]),
-    cardEvent('card', [{ id: 'a', number: 1, title: '一改' }]),
-  ]
-  assert.deepEqual(
-    collectCards(entries).map((card) => card.title),
-    ['一改', '二'],
-  )
-  const withAll = [...entries, cardEvent('all', [{ id: 'c', number: 3, title: '三' }])]
-  assert.deepEqual(collectCards(withAll).map((card) => card.title), ['三'])
-})
-
-test('卡片按编号升序排列，无关事件被忽略', () => {
-  const entries = [
-    { type: 'event', event: { type: 'assistant/message', data: {} } },
-    { type: 'transient', event: { type: 'assistant/message' } },
-    cardEvent('card', [{ id: 'b', number: 5, title: '五' }]),
-    cardEvent('card', [{ id: 'a', number: 2, title: '二' }]),
-  ]
-  assert.deepEqual(collectCards(entries).map((card) => card.number), [2, 5])
-})
-
-test('缺 kind 标记的 meta 不被当作卡片投影', () => {
-  const entries = [
-    { type: 'event', event: { type: 'tool/result', data: { meta: { kind: '别的投影', cards: [] } } } },
-    { type: 'event', event: { type: 'tool/result', data: {} } },
-  ]
-  assert.deepEqual(collectCards(entries), [])
-})
-
-test('历史已加载完时不再翻页', async () => {
-  let calls = 0
-  const binding = {
-    eventSource: { getSnapshot: () => ({ hasMore: false }) },
-    session: { loadOlder: async () => { calls += 1 } },
-  }
-  assert.equal(await loadHistory(binding), true)
-  assert.equal(calls, 0)
-})
-
-test('还有更早历史时逐页加载到没有为止', async () => {
-  let calls = 0
-  const binding = {
-    eventSource: {
-      getSnapshot: () => ({ hasMore: calls < 3 }),
-    },
-    session: {
-      loadOlder: async () => { calls += 1 },
-    },
-  }
-  assert.equal(await loadHistory(binding), true)
-  assert.equal(calls, 3)
-})
-
-test('翻页到上限仍有更早历史时，如实报告未加载完', async () => {
-  let calls = 0
-  const binding = {
-    eventSource: { getSnapshot: () => ({ hasMore: true }) },
-    session: { loadOlder: async () => { calls += 1 } },
-  }
-  assert.equal(await loadHistory(binding, 3), false)
-  assert.equal(calls, 3)
-})
-
-test('loadOlder 失败会抛出，不打断加载流程，也不无限循环', async () => {
-  let calls = 0
-  const binding = {
-    eventSource: { getSnapshot: () => ({ hasMore: true }) },
-    session: {
-      loadOlder: async () => {
-        calls += 1
-        throw new Error('宿主加载失败')
-      },
-    },
-  }
-  await assert.rejects(() => loadHistory(binding, 2), /宿主加载失败/)
-  assert.equal(calls, 1)
-})
 
 /**
  * 造一张带槽位绑定的卡。
@@ -410,80 +310,4 @@ test('链接 chip 排布：间距非法时全量展示，不藏链接', () => {
     overflowWidth: 20,
     gap: -1,
   }), 2)
-})
-
-test('事件增量：append 只处理新增条目，不重放整扇窗口', () => {
-  const first = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
-  const second = cardEvent('card', [{ id: 'b', number: 2, revision: 1 }])
-  const initial = applyEventChange(new Map(), { kind: 'append', entries: [first] }, [first])
-  assert.deepEqual([...initial.cards.keys()], ['a'])
-  const next = applyEventChange(initial.cards, { kind: 'append', entries: [second] }, [first, second])
-  assert.deepEqual([...next.cards.keys()], ['a', 'b'])
-  assert.equal(next.changed, true)
-})
-
-test('事件增量：卡片表为空时全量重建', () => {
-  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
-  const result = applyEventChange(new Map(), { kind: 'append', entries: [] }, entries)
-  assert.deepEqual([...result.cards.keys()], ['a'])
-})
-
-test('事件增量：prepend 与 replace 全量重建，窗口靠后的版本作数', () => {
-  const older = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
-  const newer = cardEvent('card', [{ id: 'a', number: 1, revision: 2 }])
-  const base = applyEventChange(new Map(), { kind: 'replace', entries: [newer] }, [newer])
-  const prepended = applyEventChange(base.cards, { kind: 'prepend', entries: [older] }, [older, newer])
-  assert.equal(prepended.cards.get('a').revision, 2)
-  const replaced = applyEventChange(base.cards, { kind: 'replace', entries: [older] }, [older])
-  assert.equal(replaced.cards.get('a').revision, 1)
-})
-
-test('事件增量：settle-assistant 不改卡片表', () => {
-  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
-  const base = applyEventChange(new Map(), { kind: 'replace', entries }, entries)
-  const settled = applyEventChange(base.cards, { kind: 'settle-assistant', attemptId: 'a1' }, entries)
-  assert.equal(settled.changed, false)
-  assert.equal(settled.cards, base.cards)
-})
-
-test('事件增量：settle-assistant 带 entry 时仍保持原表引用', () => {
-  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
-  const base = applyEventChange(new Map(), { kind: 'replace', entries }, entries)
-  const settled = applyEventChange(
-    base.cards,
-    { kind: 'settle-assistant', attemptId: 'a1', entry: { type: 'event', event: { type: 'assistant/message' } } },
-    entries,
-  )
-  assert.equal(settled.changed, false)
-  assert.equal(settled.cards, base.cards)
-})
-
-test('事件增量：增量里没有卡片投影时保持原表引用', () => {
-  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
-  const base = applyEventChange(new Map(), { kind: 'replace', entries }, entries)
-  const appended = applyEventChange(
-    base.cards,
-    { kind: 'append', entries: [{ type: 'event', event: { type: 'assistant/attempt' } }] },
-    entries,
-  )
-  assert.equal(appended.changed, false)
-  assert.equal(appended.cards, base.cards)
-})
-
-test('事件增量：全量投影清空此前的视图', () => {
-  const one = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
-  const all = cardEvent('all', [{ id: 'b', number: 2, revision: 1 }])
-  const base = applyEventChange(new Map(), { kind: 'replace', entries: [one] }, [one])
-  const result = applyEventChange(base.cards, { kind: 'append', entries: [all] }, [one, all])
-  assert.deepEqual([...result.cards.keys()], ['b'])
-})
-
-test('事件增量：同一 revision 的卡片不重复写入，transient 条目被跳过', () => {
-  const one = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
-  const base = applyEventChange(new Map(), { kind: 'replace', entries: [one] }, [one])
-  const again = applyEventChange(base.cards, { kind: 'append', entries: [one] }, [one, one])
-  assert.equal(again.changed, false)
-  const transient = { type: 'transient', event: { type: 'assistant/live-chunk' } }
-  const skipped = applyEventChange(new Map(), { kind: 'append', entries: [transient] }, [transient])
-  assert.equal(skipped.cards.size, 0)
 })

@@ -16,6 +16,7 @@ import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'rea
 import { createPortal } from 'react-dom'
 import { productIcon } from './icons.js'
 import { buildProjectMenuItems, isProjectOpenable, selectProjectSessionRows } from './project-panel-logic.js'
+import { foldSessions, nextWatermark } from './session-watermark.js'
 
 const STYLE_ID = 'dsh-coordinator-project-section'
 
@@ -313,6 +314,26 @@ const STYLE_TEXT = `
   border-radius: 50%;
   animation: dsh-coordinator-spin 0.8s linear infinite;
 }
+/* 展开/收起按钮：外观照官方工作区树的 overflow 按钮（12px、三级标签色、
+   与会话行同样的行高与内边距，悬停时提亮到二级色）。 */
+.dsh-coordinator-session-overflow {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px 0 20px;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 28px;
+  text-align: left;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .dsh-coordinator-session-overflow:hover {
+    color: var(--dsw-alias-label-secondary);
+  }
+}
 @keyframes dsh-coordinator-spin {
   to { transform: rotate(360deg); }
 }
@@ -515,6 +536,10 @@ function ProjectRow(props) {
     sessionRows,
     coordinatorSessionId: project.coordinatorSessionId,
   })
+  // 会话列表按水位折叠：默认露出 5 条，点「展开其余」再加一页。状态留在组件
+  // 本地（宿主也不持久化它），每个项目各算各的。
+  const [watermark, setWatermark] = useState(0)
+  const folded = foldSessions(childSessions, watermark)
 
   const menuItems = buildProjectMenuItems(project, {
     open: openable,
@@ -638,11 +663,35 @@ function ProjectRow(props) {
                 { className: 'dsh-coordinator-project-notice' },
                 '该项目下还没有会话。',
               )
-            : childSessions.map((row) => createElement(SessionRow, {
-                key: row.id,
-                row,
-                onOpenSession,
-              })),
+            : [
+                ...folded.rows.map((row) => createElement(SessionRow, {
+                  key: row.id,
+                  row,
+                  onOpenSession,
+                })),
+                folded.hiddenCount === 0 && !folded.expanded
+                  ? null
+                  : createElement(
+                      'button',
+                      {
+                        key: 'overflow',
+                        type: 'button',
+                        className: 'dsh-coordinator-session-overflow',
+                        'aria-expanded': folded.expanded,
+                        onClick: () => {
+                          if (folded.expanded) {
+                            setWatermark(0)
+                            return
+                          }
+                          setWatermark((value) => nextWatermark(
+                            folded.hiddenCount,
+                            Math.max(value, childSessions.length - folded.hiddenCount),
+                          ))
+                        },
+                      },
+                      folded.expanded ? '收起' : folded.expandLabel,
+                    ),
+              ],
         )
       : null,
     menuOpen && menuAnchor !== null
