@@ -20,14 +20,27 @@ import { join } from 'node:path'
 const REGISTRY_VERSION = 1
 
 /**
+ * 登记表保留的最大条数。
+ *
+ * 记录永不主动删除，而每条都带任务正文——不设上限时文件随派工次数无界增长，
+ * 每次登记又要整表读改写。子会话被宿主销毁后老记录本来也续不了，留最近一批够用。
+ */
+const DEFAULT_MAX_WORKERS = 500
+
+/**
  * 创建 worker 登记表。
  *
  * @param {object} options - 选项
  * @param {string} [options.home] - dsh home 目录
+ * @param {number} [options.maxWorkers] - 保留的最大条数
  * @param {(message: string) => void} [options.logger] - 日志输出
  * @returns {object} 登记表接口
  */
-export function createWorkerRegistry({ home, logger = () => {} } = {}) {
+export function createWorkerRegistry({
+  home,
+  maxWorkers = DEFAULT_MAX_WORKERS,
+  logger = () => {},
+} = {}) {
   const directory = join(home, 'dsh-coordinator')
   const file = join(directory, 'workers.json')
   const temporary = join(directory, 'workers.json.tmp')
@@ -93,7 +106,6 @@ export function createWorkerRegistry({ home, logger = () => {} } = {}) {
      * @param {string} worker.parentSessionId - 父会话 id
      * @param {string} worker.label - 任务标签
      * @param {string} [worker.task] - 任务正文
-     * @param {string} [worker.projectId] - 所属项目 id
      * @returns {Promise<object>} 登记后的记录
      */
     async register(worker) {
@@ -107,22 +119,12 @@ export function createWorkerRegistry({ home, logger = () => {} } = {}) {
         }
         const record = { ...worker, registeredAt: Date.now() }
         registry.workers.push(record)
-        return record
-      })
-    },
-
-    /**
-     * 更新一个 worker 的状态字段。
-     *
-     * @param {string} childId - 子会话 id
-     * @param {object} patch - 要更新的字段
-     * @returns {Promise<object | undefined>} 更新后的记录；没有这条记录时 undefined
-     */
-    async update(childId, patch) {
-      return serialize((registry) => {
-        const record = registry.workers.find((item) => item.childId === childId)
-        if (record === undefined) return undefined
-        Object.assign(record, patch, { updatedAt: Date.now() })
+        if (registry.workers.length > maxWorkers) {
+          // 按登记时间留最近的一批。`sort` 是稳定的，同毫秒登记时保持原顺序，
+          // 淘汰的仍是更早那条。
+          registry.workers.sort((left, right) => (left.registeredAt ?? 0) - (right.registeredAt ?? 0))
+          registry.workers.splice(0, registry.workers.length - maxWorkers)
+        }
         return record
       })
     },
@@ -136,32 +138,6 @@ export function createWorkerRegistry({ home, logger = () => {} } = {}) {
     async get(childId) {
       const registry = await read()
       return registry.workers.find((item) => item.childId === childId)
-    },
-
-    /**
-     * 列某个父会话的 worker，按登记时间倒序。
-     *
-     * @param {string} parentSessionId - 父会话 id
-     * @returns {Promise<object[]>} worker 记录
-     */
-    async listByParent(parentSessionId) {
-      const registry = await read()
-      return registry.workers
-        .filter((item) => item.parentSessionId === parentSessionId)
-        .sort((left, right) => (right.registeredAt ?? 0) - (left.registeredAt ?? 0))
-    },
-
-    /**
-     * 列某个项目的 worker。
-     *
-     * @param {string} projectId - 项目 id
-     * @returns {Promise<object[]>} worker 记录
-     */
-    async listByProject(projectId) {
-      const registry = await read()
-      return registry.workers
-        .filter((item) => item.projectId === projectId)
-        .sort((left, right) => (right.registeredAt ?? 0) - (left.registeredAt ?? 0))
     },
   }
 }

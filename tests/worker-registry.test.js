@@ -22,28 +22,26 @@ test('同 id 重复登记是更新不是追加', async () => {
   await registry.register({ childId: 'child-1', parentSessionId: 'parent-1', label: '新' })
   const record = await registry.get('child-1')
   assert.equal(record.label, '新')
-  const byParent = await registry.listByParent('parent-1')
-  assert.equal(byParent.length, 1)
+  const { readFile } = await import('node:fs/promises')
+  const stored = JSON.parse(await readFile(`${home}/dsh-coordinator/workers.json`, 'utf8'))
+  assert.equal(stored.workers.length, 1)
 })
 
-test('按父会话与按项目筛选互不串扰', async () => {
+test('超出上限时淘汰最早的记录，文件不无界增长', async () => {
   const home = await makeTempDir('dsh-coordinator-registry-')
-  const registry = createWorkerRegistry({ home })
-  await registry.register({ childId: 'child-1', parentSessionId: 'parent-1', label: 'A', projectId: 'p1' })
-  await registry.register({ childId: 'child-2', parentSessionId: 'parent-2', label: 'B', projectId: 'p1' })
-  await registry.register({ childId: 'child-3', parentSessionId: 'parent-1', label: 'C', projectId: 'p2' })
-  assert.deepEqual(
-    (await registry.listByParent('parent-1')).map((item) => item.childId).sort(),
-    ['child-1', 'child-3'],
-  )
-  assert.deepEqual(
-    (await registry.listByProject('p1')).map((item) => item.childId).sort(),
-    ['child-1', 'child-2'],
-  )
+  const registry = createWorkerRegistry({ home, maxWorkers: 2 })
+  await registry.register({ childId: 'child-1', parentSessionId: 'parent-1', label: '一' })
+  await registry.register({ childId: 'child-2', parentSessionId: 'parent-1', label: '二' })
+  await registry.register({ childId: 'child-3', parentSessionId: 'parent-1', label: '三' })
+  assert.equal(await registry.get('child-1'), undefined)
+  assert.equal((await registry.get('child-2')).label, '二')
+  assert.equal((await registry.get('child-3')).label, '三')
+  const { readFile } = await import('node:fs/promises')
+  const stored = JSON.parse(await readFile(`${home}/dsh-coordinator/workers.json`, 'utf8'))
+  assert.deepEqual(stored.workers.map((item) => item.childId), ['child-2', 'child-3'])
 })
 
-test('跨实例读同一份落盘（进程重启后续聊找得到工）', async () => {
-  const home = await makeTempDir('dsh-coordinator-registry-')
+test('跨实例读同一份落盘（进程重启后续聊找得到工）', async () => {  const home = await makeTempDir('dsh-coordinator-registry-')
   await createWorkerRegistry({ home }).register({ childId: 'child-1', parentSessionId: 'parent-1', label: '工' })
   const reloaded = await createWorkerRegistry({ home }).get('child-1')
   assert.equal(reloaded.label, '工')
