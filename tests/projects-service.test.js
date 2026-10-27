@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { mkdtemp, mkdir, realpath } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { after, test } from 'node:test'
+import { mkdir, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createProjectStore } from '../src/host/projects/store.js'
 import {
@@ -9,14 +8,17 @@ import {
   createProjectService,
   isSessionAttachedToWorkspace,
 } from '../src/host/projects/service.js'
+import { cleanupTempDirs, makeTempDir } from './helpers/temp-dir.js'
+
+after(cleanupTempDirs)
 
 /**
  * 造一套临时 home 与项目目录。
  * @returns {Promise<{ home: string, workspace: string }>} 路径
  */
 async function makeWorkspace() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-projects-'))
-  const workspace = await mkdtemp(join(tmpdir(), 'dsh-coordinator-work-'))
+  const home = await makeTempDir('dsh-coordinator-projects-')
+  const workspace = await makeTempDir('dsh-coordinator-work-')
   return { home, workspace }
 }
 

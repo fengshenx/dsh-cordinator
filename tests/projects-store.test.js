@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { after, test } from 'node:test'
+import { readFile, writeFile } from 'node:fs/promises'
 import { createProjectStore } from '../src/host/projects/store.js'
+import { cleanupTempDirs, makeTempDir } from './helpers/temp-dir.js'
+
+after(cleanupTempDirs)
 
 /**
  * 造一个临时 home 目录。
  * @returns {Promise<string>} 目录路径
  */
 async function makeHome() {
-  return mkdtemp(join(tmpdir(), 'dsh-coordinator-projects-'))
+  return makeTempDir('dsh-coordinator-projects-')
 }
 
 test('项目记录落盘后可读回，字段齐全', async () => {
