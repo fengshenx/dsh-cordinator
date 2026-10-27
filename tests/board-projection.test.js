@@ -446,6 +446,30 @@ test('事件增量：settle-assistant 不改卡片表', () => {
   assert.equal(settled.cards, base.cards)
 })
 
+test('事件增量：settle-assistant 带 entry 时仍保持原表引用', () => {
+  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
+  const base = applyEventChange(new Map(), { kind: 'replace', entries }, entries)
+  const settled = applyEventChange(
+    base.cards,
+    { kind: 'settle-assistant', attemptId: 'a1', entry: { type: 'event', event: { type: 'assistant/message' } } },
+    entries,
+  )
+  assert.equal(settled.changed, false)
+  assert.equal(settled.cards, base.cards)
+})
+
+test('事件增量：增量里没有卡片投影时保持原表引用', () => {
+  const entries = [cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])]
+  const base = applyEventChange(new Map(), { kind: 'replace', entries }, entries)
+  const appended = applyEventChange(
+    base.cards,
+    { kind: 'append', entries: [{ type: 'event', event: { type: 'assistant/attempt' } }] },
+    entries,
+  )
+  assert.equal(appended.changed, false)
+  assert.equal(appended.cards, base.cards)
+})
+
 test('事件增量：全量投影清空此前的视图', () => {
   const one = cardEvent('card', [{ id: 'a', number: 1, revision: 1 }])
   const all = cardEvent('all', [{ id: 'b', number: 2, revision: 1 }])

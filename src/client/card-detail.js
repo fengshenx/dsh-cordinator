@@ -14,7 +14,7 @@
 
 import { createElement, useEffect } from 'react'
 import { ModalShell } from './modal-shell.js'
-import { detailSections, statusLabel } from './card-detail-view.js'
+import { DETAIL_SPEC_EMPTY, detailSections, statusLabel } from './card-detail-view.js'
 import { isJumpableLink, linkRowKey } from './link-row.js'
 import { productIcon } from './icons.js'
 import { ensureBoardStyles } from './board-styles.js'
@@ -105,7 +105,7 @@ export function CardDetail({ card, onClose, restoreFocus = null }) {
               createElement('div', { className: 'dsh-coordinator-card-detail-section-title' }, '说明'),
               createElement('div', { className: 'dsh-coordinator-card-detail-text' }, sections.spec),
             )
-          : createElement('div', { className: 'dsh-coordinator-card-detail-muted' }, '这张卡还没有写说明。'),
+          : createElement('div', { className: 'dsh-coordinator-card-detail-muted' }, DETAIL_SPEC_EMPTY),
         sections.checkpoint.map((section) => createElement(DetailSection, {
           key: section.title,
           title: section.title,

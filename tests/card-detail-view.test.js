@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { detailSections, statusLabel } from '../src/client/card-detail-view.js'
+import { DETAIL_SPEC_EMPTY, detailSections, statusLabel } from '../src/client/card-detail-view.js'
+
+test('卡片没写说明时用统一的占位文案', () => {
+  assert.equal(DETAIL_SPEC_EMPTY, '这张卡还没有写说明。')
+  assert.equal(detailSections({}).spec, null)
+})
 
 test('状态徽章按卡片状态给中文名', () => {
   assert.equal(statusLabel('done'), '已完成')

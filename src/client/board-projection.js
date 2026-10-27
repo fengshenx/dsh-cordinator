@@ -143,6 +143,9 @@ export function applyEventChange(previous, change, entries) {
   if (delta.length === 0) return { cards: previous, changed: false }
   const cards = new Map(previous)
   const changed = applyEntries(cards, delta)
+  // 增量条目里没有卡片投影时保持原引用：换了引用等于告诉渲染层「卡片变了」，
+  // 整棵看板会白重渲染一次。settle-assistant 带 entry 的情形正是如此。
+  if (!changed) return { cards: previous, changed: false }
   return { cards, changed }
 }
 
