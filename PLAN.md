@@ -377,7 +377,7 @@ dsh 侧实现：
 | 建卡 | 通过 | 模型调 `create_card` → 落盘 `#1「实现派工」`，`counter: 1`，`revision: 0`，`status: active` |
 | 改卡 | 通过 | 模型调 `update_card` → `revision: 0 → 1`，`status: done` 且 `doneAt` 已记；`checkpoint.updatedBy` 被宿主补成调用方会话 id |
 | 并发改卡触发版本冲突 | 通过 | 带过期 `expectedRevision: 0` 调用 → 报错「卡片版本冲突：期望 0，当前 1；请重新读取卡片后判断」，且**未落盘**（revision 仍 1、title 未变） |
-| 查卡 | 通过 | `list_cards` 返回精简视图「共 1 张卡片：#1 实现派工（done）」给模型；归档卡默认排除，`includeArchived` 才返回 |
+| 查卡 | 通过 | `list_cards` 给模型的是列表视图：按最近更新倒序、默认只列 active、一页 20 张，每卡一行标题加「spec/links/checkpoint 有无」与槽位；规格与检查点全文只在传 `cardId` 的单卡查询出现；输出有 6000 字符预算，超出按卡截断并给续页位置 |
 | 客户端取数通道 | 通过 | 工具的 `output.presentationMeta` 投影的 `meta` 随 `tool/result` 事件持久化；实测事件 `meta` 携带完整卡片对象，`content` 仍是给模型的精简文本 |
 | 右栏看板 Tab（client 侧） | 通过 | web profile 实测：boot manifest 含 `dsh-coordinator` 条目（71 条目），浏览器右栏出现「看板」Tab，点开显示空态文案；面板订阅本会话事件窗口重放卡片投影（`ctx.sessions.retain` → `binding.eventSource`），`tool/result` 事件的 `meta` 投影被还原为卡片 |
 | 信号灯投影 | **未完成** | 依赖看板 UI 一并落地（纯投影，不落盘） |

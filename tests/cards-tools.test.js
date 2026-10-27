@@ -103,16 +103,17 @@ test('改卡工具拒绝空 id', async () => {
   }
 })
 
-test('查卡工具默认不含归档卡，显式要求时返回', async () => {
+test('查卡工具默认只列 active，归档卡要显式要', async () => {
   const { home, tools } = await createTools()
   try {
     const created = await tools.create_card.execute({ title: '任务' }, exec)
     await tools.update_card.execute({ id: created.card.id, status: 'archived' }, exec)
     const listed = await tools.list_cards.execute({}, exec)
-    assert.equal(listed.cards.length, 0)
-    assert.match(tools.list_cards.output.render({}, listed)[0].text, /当前没有任务卡片/)
-    const withArchived = await tools.list_cards.execute({ includeArchived: true }, exec)
-    assert.equal(withArchived.cards.length, 1)
+    // 工具值是全量卡片：客户端看板要按全量重建视图，不能被状态过滤裁掉
+    assert.equal(listed.cards.length, 1)
+    assert.match(tools.list_cards.output.render({}, listed)[0].text, /项目当前没有 active 卡/)
+    const withArchived = await tools.list_cards.execute({ status: 'all' }, exec)
+    assert.match(tools.list_cards.output.render({}, withArchived)[0].text, /任务 \[archived\]/)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -126,8 +127,10 @@ test('查卡工具按状态过滤，模型视图列出编号与标题', async ()
     const listed = await tools.list_cards.execute({}, exec)
     assert.equal(listed.cards.length, 2)
     const rendered = tools.list_cards.output.render({}, listed)[0].text
-    assert.match(rendered, /#1 一（active）/)
-    assert.match(rendered, /#2 二（active）/)
+    assert.match(rendered, /# #1 一 \[active\]/)
+    assert.match(rendered, /# #2 二 \[active\]/)
+    // 最近更新的排前面：协调者关心的是正在动的卡
+    assert.ok(rendered.indexOf('# #2 二') < rendered.indexOf('# #1 一'))
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -301,7 +304,7 @@ test('建卡工具拒绝类型不符的链接字段', async () => {
   }
 })
 
-test('查卡工具拒绝非法状态与非布尔的 includeArchived', async () => {
+test('查卡工具拒绝非法状态与非法的分页参数', async () => {
   const { home, tools } = await createTools()
   try {
     await assert.rejects(
@@ -309,8 +312,12 @@ test('查卡工具拒绝非法状态与非布尔的 includeArchived', async () =
       /status 非法/,
     )
     await assert.rejects(
-      () => tools.list_cards.execute({ includeArchived: 'true' }, exec),
-      /includeArchived 必须是布尔值/,
+      () => tools.list_cards.execute({ limit: 0 }, exec),
+      /limit 必须是正整数/,
+    )
+    await assert.rejects(
+      () => tools.list_cards.execute({ offset: -1 }, exec),
+      /offset 必须是非负整数/,
     )
   } finally {
     await rm(home, { recursive: true, force: true })
