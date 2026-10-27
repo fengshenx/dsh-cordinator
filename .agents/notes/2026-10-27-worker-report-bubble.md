@@ -29,6 +29,14 @@ Telov 的做法是：worker 回报用**助手侧的形态**渲染——身份头
 
 取值与官方一致：回合首步（`location.kind === 'step' && location.step.step === 1`）开启新 exchange，其余留在 `'input'`。写死 `'input'` 也能显示，但连续多次 worker 回报会全落进上一个 exchange——它是被 `followup` 唤醒的新 turn 的第一条输入，语义上该开启新 exchange。
 
+**界面渲染与模型读的事实分开**：消息正文保留完整协议字段（任务、子会话 id、状态、产物摘要、下一步）给模型读；界面只渲染 worker **最后一次回报的内容**——成功是产物摘要，失败是失败原因。内容单独放在 `source.worker.report` 里（`outcome` 记终态），界面与模型各取所需，用户不必读协议口吻。
+
+**气泡底用前景色混出的极淡一层**：`color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent)`。浅色主题下是几乎看不出的灰，深色主题下是微亮——比 `--dsw-alias-bg-layer-1`（浅色主题下是纯白，与页面同色）更有层次，又不至于抢正文。
+
+**名字是按钮，点击下钻到 worker 的子会话**。`uiWorkspace.openSession(childSessionId)`：宿主 `SessionTarget = SessionId | SubagentAddress`，传子会话 id 即可。`uiWorkspace` 只挂在 web-app bundle 上，必须惰性获取（`ctx.get('uiWorkspace')`），不能写进 `inject`（缺服务会让整个插件挂起）。
+
+**气泡下方一行是时间与复制按钮**，与官方消息的底部 chrome 同形：时间按宿主 `formatMessageClock` 的口径（今天 `HH:MM`，往日带日期）；复制按钮自己实现——宿主 `useClipboardCopy` 在 UI 包里，不可 import。
+
 **头像用 `minidenticons`（Telov 同款），种子取 worker 的身份名**。FNV-1a 哈希取模落到 63 个内置 seed，同名恒同图；底色与图案同色相、底色明度压到 36% 以过非文本 3:1 基线。种子必须用身份名（派工 label）而不是显示文案：显示文案由任务描述派生、随任务变，用它做种子同一 worker 会跨任务换脸。
 
 **只认领追加到转录尾部的事件**（`surfaceOp === 'append'`）。替换副本只应留在模型侧，不该出现在人类转录里——宿主的 `isAppendSurfaceEvent` 判的就是这个，官方两个同类定义都带这一条。本仓的消息由 `followup` 注入，落盘实测带 `surfaceOp: 'append'`。
@@ -38,14 +46,15 @@ Telov 的做法是：worker 回报用**助手侧的形态**渲染——身份头
 ## 边界
 
 - **回报不进会话标题、turn 摘要与 markdown 转录导出**：宿主只把 `source.kind === 'user'` 的消息算作真人输入。这是自定义 kind 的代价，换来的是它不会被误当成用户说的话。
-- **历史消息不追溯**：改造前发出的通知在 session log 里就是普通用户消息，重放时仍是老形态（右对齐、无头像）。
+- **历史消息不追溯**：改造前发出的通知在 session log 里就是普通用户消息，重放时仍是老形态（右对齐、无头像）。改造后但带 `report` 之前落盘的消息没有回报正文，气泡退回显示整条正文。
 - **降级形态**：本仓的定义没注册上（或宿主改了 claim 语义）时，这条消息退化成官方渲染——因为 source 不是 `'user'`，它会渲染成上下文注入行，而不是右对齐的用户气泡；内容不会丢。
-- **深色主题下头像轮廓弱**（与 Telov 同款取舍）：气泡底是中性深色，36% 的蓝紫色相落上去只有 1.35:1（hue 240），块的外轮廓看不出边界；头像本身仍可辨（图案对底色 3.4846:1）。不描边、不加容器环、不提亮底色——补救层在 20px 尺寸下显得又脏又重。浅色主题下气泡底是 `--dsw-alias-bg-layer-1`（白底）。
+- **深色主题下头像轮廓弱**（与 Telov 同款取舍）：气泡底是前景色混出的 4% 一层（深色主题下即微亮的中性深色），36% 的蓝紫色相落上去只有 1.35:1（hue 240），块的外轮廓看不出边界；头像本身仍可辨（图案对底色 3.4846:1）。不描边、不加容器环、不提亮底色——补救层在 20px 尺寸下显得又脏又重。
 - **头像会撞图**：池子只有 63 个 seed，3 个 worker 至少一次撞图约 4.7%，5 个约 15%（生日悖论）；200 个名字命中 61 个 seed，分布够开。撞图不影响身份识别——名字就在头像旁边。与 Telov 同池，属既定取舍。
 - **渲染器组件本身没有单测**：本仓不引 React 依赖与 jsdom，组件进不了单测；可判定的逻辑（source 判型、正文取文本、头像种子、定义的 match/start/buildViewNode）已全部抽成纯模块并覆盖。与看板浮层同一处境。
 - 客户端 bundle 多了唯一运行时依赖 `minidenticons`（纯 JS、无传递依赖），打进产物约 30 KB。
 
 ## 证据
 
-- 单测 259 例全绿（新增 `tests/worker-report.test.js` 10 例：source 构造与逐层判型、正文取文本、通知正文无前缀、头像种子确定性与分布、节点定义只认带标记的消息、不认领替换副本、视图节点字段含 `groupTree`、按官方口径条件式给分组位置、notice 摘要压到 120 字符）。
+- 单测 279 例全绿（`tests/worker-report.test.js` 覆盖 source 构造与逐层判型、正文取文本、通知正文无前缀、头像种子确定性与分布、节点定义只认带标记的消息、不认领替换副本、视图节点字段含 `groupTree`、按官方口径条件式给分组位置、notice 摘要压到 120 字符，以及本轮新增的 source 带回报内容与终态、界面正文取回报内容（没有就退回正文）、节点状态带回报内容与终态）。
 - 真实实例（隔离 mock profile + mock LLM）：协调者真实派工，worker 收工后通知注入父会话；session log 里该条 `user/message` 的 `source.kind` 为 `dsh-coordinator/worker-report`、正文无前缀；界面上出现带头像与「mock worker」名字的左侧气泡，用户自己的输入仍是右侧气泡，console 无报错。
+- 气泡形态复查（同一实例）：气泡正文只有「mock worker 收工。」，没有协议字段；底色计算值 `color(srgb 0.058 0.066 0.082 / 0.04)`；名字是 `BUTTON`；下方有时间「19:38」与复制按钮；点复制后剪贴板内容为「mock worker 收工。」、按钮文案变「已复制」；点名字跳到 worker 子会话（面包屑「跑一下 mock worker / mock worker」）。
