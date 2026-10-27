@@ -32,6 +32,13 @@ const NOTIFICATION_LIMIT = 4000
 /** 空闲检测的轮询间隔（毫秒）。 */
 const IDLE_POLL_MS = 500
 
+/** 投递结果：已投出。 */
+const DELIVERED = 'delivered'
+/** 投递结果：可重试——父会话忙、暂时失败或别处正在投同一条。 */
+const RETRYABLE = 'retryable'
+/** 投递结果：不可重试——已达自动续行上限，再投也是同一个结果。 */
+const EXHAUSTED = 'exhausted'
+
 /**
  * 构造完成通知正文。
  * @param {object} record - 派工记录
@@ -148,11 +155,11 @@ export function createDispatcher({
    *
    * @param {object} notification - 通知记录
    * @param {object} agent - 父会话的 agent 活对象
-   * @returns {Promise<boolean>} 是否已投递
+   * @returns {Promise<string>} 投递结果：`delivered` / `retryable` / `exhausted`
    */
   async function deliverNow(notification, agent) {
     // 幂等闸：轮询重入、补投与轮询并发时，同一条通知只投一次。
-    if (delivering.has(notification.id)) return false
+    if (delivering.has(notification.id)) return RETRYABLE
     delivering.add(notification.id)
     try {
       return await deliverOnce(notification, agent)
@@ -166,17 +173,14 @@ export function createDispatcher({
    *
    * @param {object} notification - 通知记录
    * @param {object} agent - 父会话的 agent 活对象
-   * @returns {Promise<boolean>} 是否已投递
+   * @returns {Promise<string>} 投递结果：`delivered` / `retryable` / `exhausted`
    */
   async function deliverOnce(notification, agent) {
     const used = resumeCounts.get(notification.parentSessionId) ?? 0
     if (used >= autoResumeLimit) {
-      await store.markUndelivered(notification.id, `连续自动续行已达上限 ${autoResumeLimit}`)
-      logger(
-        `dsh-coordinator: 父会话 ${notification.parentSessionId} 的自动续行已达上限 ${autoResumeLimit}，`
-        + `通知 ${notification.id} 留待人工处理`,
-      )
-      return false
+      // 不可重试：上限不会自己涨，再试一次也是同一个结果。写盘与日志交给调用方，
+      // 那里知道还有多少条在等。
+      return EXHAUSTED
     }
     const message = createUserMessage(
       [{ type: 'text', text: notification.text }],
@@ -200,10 +204,28 @@ export function createDispatcher({
         notification.id,
         `投递失败：${error instanceof Error ? error.message : String(error)}`,
       )
-      return false
+      return RETRYABLE
     }
     await store.markDelivered(notification.id)
-    return true
+    return DELIVERED
+  }
+
+  /**
+   * 记录一条不可重试的投递失败：已达自动续行上限。
+   *
+   * 原因里带上积压条数——积压本身在界面上没有任何提示，这条记录是唯一的线索。
+   *
+   * @param {object} notification - 通知记录
+   * @param {number} pendingCount - 当前落盘队列里的待投条数
+   * @returns {Promise<void>} 写盘完成
+   */
+  async function markExhausted(notification, pendingCount) {
+    const reason = `连续自动续行已达上限 ${autoResumeLimit}，当前有 ${pendingCount} 条完成通知待投`
+    await store.markUndelivered(notification.id, reason)
+    logger(
+      `dsh-coordinator: 父会话 ${notification.parentSessionId} 的${reason}，`
+      + `通知 ${notification.id} 留待人工处理`,
+    )
   }
 
   /**
@@ -215,21 +237,21 @@ export function createDispatcher({
    *
    * @param {object} notification - 通知记录
    * @param {object} [parentAgent] - 派工时持有的父 agent 活对象
-   * @returns {Promise<boolean>} 是否已投递
+   * @returns {Promise<string>} 投递结果：`delivered` / `retryable` / `exhausted`
    */
   async function deliver(notification, parentAgent) {
     if (closed) {
       await store.markUndelivered(notification.id, '插件已卸载，等待下次启动后补投')
-      return false
+      return RETRYABLE
     }
     if (disposed.has(notification.parentSessionId)) {
       await store.markUndelivered(notification.id, '父会话已销毁，等待重新打开后补投')
-      return false
+      return RETRYABLE
     }
     const agent = await resolveParentAgent(notification.parentSessionId, parentAgent)
     if (agent === undefined) {
       await store.markUndelivered(notification.id, '父会话当前不可达')
-      return false
+      return RETRYABLE
     }
     if (agent.status !== 'idle') {
       const list = waiting.get(notification.parentSessionId) ?? []
@@ -240,9 +262,13 @@ export function createDispatcher({
       waiting.set(notification.parentSessionId, list)
       await store.markUndelivered(notification.id, '父会话正忙，等待空闲后投递')
       ensureIdleTimer()
-      return false
+      return RETRYABLE
     }
-    return deliverNow(notification, agent)
+    const result = await deliverNow(notification, agent)
+    if (result === EXHAUSTED) {
+      await markExhausted(notification, (await store.listPending()).length)
+    }
+    return result
   }
 
   /**
@@ -291,7 +317,16 @@ export function createDispatcher({
           remaining.push(item)
           continue
         }
-        if (!await deliverNow(notification, agent)) remaining.push(item)
+        const result = await deliverNow(notification, agent)
+        if (result === RETRYABLE) {
+          remaining.push(item)
+          continue
+        }
+        if (result === EXHAUSTED) {
+          // 不可重试：回填也只会每 500ms 再撞一次同样的上限，白烧读盘与日志。
+          await markExhausted(notification, pending.length)
+          continue
+        }
       }
       if (remaining.length > 0) {
         // 合并而不是覆盖：投递期间新到的通知也在这个等待表里。
@@ -394,7 +429,7 @@ export function createDispatcher({
       let delivered = 0
       for (const notification of pending) {
         if (notification.parentSessionId !== agent.id) continue
-        if (await deliver(notification, agent)) delivered += 1
+        if (await deliver(notification, agent) === DELIVERED) delivered += 1
       }
       // 补投通道已经处理过这个父会话的待投通知，等待表里的同一批不要再留
       if (delivered > 0) waiting.delete(agent.id)
