@@ -267,6 +267,12 @@ export function createDispatcher({
     const result = await deliverNow(notification, agent)
     if (result === EXHAUSTED) {
       await markExhausted(notification, (await store.listPending()).length)
+      // 条目留在等待表里并打标记：上限复位后还能重新投，不能就此丢掉。
+      const list = waiting.get(notification.parentSessionId) ?? []
+      if (!list.some((item) => item.notification.id === notification.id)) {
+        list.push({ notification, agent, exhausted: true })
+      }
+      waiting.set(notification.parentSessionId, list)
     }
     return result
   }
@@ -308,8 +314,14 @@ export function createDispatcher({
     for (const [parentSessionId, list] of [...waiting]) {
       // 先摘后投：投递期间等待表里没有这些条目，轮询重入也拿不到同一条。
       waiting.delete(parentSessionId)
+      /** 已达上限、等人工介入复位的条目：不投、不写盘、不记日志，但留在表里。 */
+      const kept = []
       const remaining = []
       for (const item of list) {
+        if (item.exhausted === true) {
+          kept.push(item)
+          continue
+        }
         const { notification } = item
         if (!pending.some((entry) => entry.id === notification.id)) continue
         const agent = await resolveParentAgent(parentSessionId, item.agent)
@@ -323,14 +335,20 @@ export function createDispatcher({
           continue
         }
         if (result === EXHAUSTED) {
-          // 不可重试：回填也只会每 500ms 再撞一次同样的上限，白烧读盘与日志。
+          // 不可重试：再投一次也是同一个结果。条目留在等待表里并打标记——
+          // 上限复位后（用户开口）还要能重新投出去，不能就此丢掉。
           await markExhausted(notification, pending.length)
+          kept.push({ ...item, exhausted: true })
           continue
         }
       }
-      if (remaining.length > 0) {
+      if (kept.length > 0 || remaining.length > 0) {
         // 合并而不是覆盖：投递期间新到的通知也在这个等待表里。
-        waiting.set(parentSessionId, [...(waiting.get(parentSessionId) ?? []), ...remaining])
+        waiting.set(parentSessionId, [
+          ...kept,
+          ...remaining,
+          ...(waiting.get(parentSessionId) ?? []),
+        ])
       }
     }
     if (waiting.size === 0 && idleTimer !== undefined) {
@@ -456,6 +474,19 @@ export function createDispatcher({
      */
     resetResumeCount(parentSessionId) {
       resumeCounts.delete(parentSessionId)
+      // 上限复位了，此前被标记为「已达上限」的条目要能重新投：清掉标记，
+      // 并让空闲检测重新跑起来。
+      const list = waiting.get(parentSessionId)
+      if (list === undefined) return
+      let released = false
+      const next = list.map((item) => {
+        if (item.exhausted !== true) return item
+        released = true
+        return { ...item, exhausted: false }
+      })
+      if (!released) return
+      waiting.set(parentSessionId, next)
+      ensureIdleTimer()
     },
 
     /**

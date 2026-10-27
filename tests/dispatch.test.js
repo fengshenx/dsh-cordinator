@@ -448,6 +448,45 @@ test('撞续行上限后不再每轮重试', async () => {
   }
 })
 
+test('上限复位后被挡下的通知能重新投出', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const store = createNotificationStore({ home })
+  const dispatcher = createDispatcher({ ctx: fixture.ctx, store, autoResumeLimit: 1 })
+  try {
+    const parent = createParent('parent-1', fixture.delivered, 'running')
+    fixture.agents.set('parent-1', parent)
+
+    for (let index = 0; index < 2; index += 1) {
+      await dispatcher.dispatch({
+        parent,
+        task: '做一件事',
+        label: `工 ${index}`,
+        signal: new AbortController().signal,
+      })
+      fixture.activations[index].settle({ stopReason: 'completed', output: [] })
+    }
+    await waitFor(async () => (await store.listPending()).length === 2)
+
+    // 转空闲：第一条投出，第二条撞上限被挡下
+    parent.status = 'idle'
+    await waitFor(() => fixture.delivered.length === 1, 5000)
+    await waitFor(async () => {
+      const pending = await store.listPending()
+      return pending.some((item) => typeof item.lastError === 'string' && item.lastError.includes('上限'))
+    }, 5000)
+    assert.equal(fixture.delivered.length, 1)
+
+    // 用户开口：上限复位 → 被挡下的那条要能重新投出
+    dispatcher.resetResumeCount('parent-1')
+    await waitFor(() => fixture.delivered.length === 2, 5000)
+    assert.equal(fixture.delivered.length, 2)
+    assert.equal((await store.listPending()).length, 0)
+  } finally {
+    dispatcher.dispose()
+  }
+})
+
 test('外部输入重置自动续行计数', async () => {
   const fixture = createFixture()
   const home = await makeTempDir('dsh-coordinator-dispatch-')
