@@ -445,14 +445,14 @@ dsh 侧实现：
 
 | 验收项 | 结果 | 证据 |
 |---|---|---|
-| active 卡三层 / done 卡单行变体 | 通过 | `src/client/board-card.js`；浏览器实测（见 `docs/evidence/2026-10-27-看板卡片-改后.png`） |
+| active 卡三层 / done 卡单行变体 | 通过 | `src/client/board-card.js`；浏览器实测（见 PR #4 评论「证据」条的改后图） |
 | 视觉走宿主令牌 | 通过 | `src/client/board-styles.js` 全部取 `--dsw-*` 变量与宿主数值，不引 Tailwind、不 import 宿主 UI 包 |
 | 链接 chip 按实测宽度排布 | 通过 | `fitLinkChips` 与 Telov `board-link-fit.ts` 逐行同构（不可见测量层 + `ResizeObserver`）；实测 3 个 chip 全展示，放不下时收进「+N」 |
 | 信号灯五档 | 通过 | `attention / running / idle / unknown / none`；槽位状态取自 `ctx.sessions.retain` 后的 `SessionSnapshot`，保留失败即「状态未知」 |
 | 停滞判定 | 通过 | 24 小时阈值，基于卡片自身 `updatedAt`；无绑定会话不计时（没开始不是卡住），名下会话在跑也不计时（在跑不是卡住） |
 | 交互三语义 | 通过 | 点卡面开详情浮层、点链接 chip 新标签打开、点槽位 chip 打开该槽位会话；键盘 Enter/Space 只在事件来自卡面根时触发 |
-| 只读详情浮层 | 通过 | `card-detail.js` + 共用的 `modal-shell.js`；遮罩 / Escape / Tab 焦点陷阱 / 初始焦点 / 关闭回焦齐备（见 `2026-10-27-看板卡片-详情浮层.png`） |
-| 已完成折叠区 | 通过 | Linear 风格折叠区，默认收起，计数胶囊；展开后 done 单行变体（见 `2026-10-27-看板卡片-已完成区展开.png`） |
+| 只读详情浮层 | 通过 | `card-detail.js` + 共用的 `modal-shell.js`；遮罩 / Escape / Tab 焦点陷阱 / 初始焦点 / 关闭回焦齐备（见 PR #4 评论「证据」条） |
+| 已完成折叠区 | 通过 | Linear 风格折叠区，默认收起，计数胶囊；展开后 done 单行变体（见 PR #4 评论「证据」条） |
 | 确认弹窗行为不变 | 通过 | `confirm-dialog.js` 改为复用浮层外壳，单测与真实实例均通过 |
 | 卡片写操作（完成/置顶/重命名/删除） | **未做** | 客户端无通用写通道，需新增宿主远程方法（见 capability-gaps 第 36 条） |
 | 信号灯「等你输入 / 未看」两档 | **未做** | 宿主未暴露 pending 审批与未读投影（见 capability-gaps 第 35 条） |

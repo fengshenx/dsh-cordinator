@@ -133,4 +133,4 @@ Typert 侧的关键发现是：**宿主 gateway 在 strict 生成描述符缺失
 - **没有欢迎页闪烁（逐帧 rAF 采样）**：逐帧记录 `data-phase` 与欢迎页存在性，点击时刻（Δ0ms）还是点击前的「未选会话」hero，点击后第一帧（Δ31ms）已是 `active`，中间没有「会话已打开但仍是 hero」的帧——layout effect 激活方案成立。
 - **普通空白会话不受影响（反例实测）**：用官方「New session in Default workspace」建出的空白会话仍是 `data-phase="hero"`、欢迎页在、输入框居中（top=451 / bottom=503 / h=52）——机制只作用于协调者会话。
 - **输入框位置与官方 active 布局一致（逐元素 dump）**：空白协调者会话的 composer 座位是 `top=794 bottom=900`，输入框 `top=802 bottom=838 h=36`；同一实例里发过消息的会话座位是 `top=772 bottom=900`，输入框 `top=780 bottom=816 h=36`——两者的 22px 差是宿主自己的**用量统计条**（座位文本里的「3 turns 3 steps·31500 tok/s 93 tok·Cache hit 0%」，跑过 turn 的会话才有），与本机制无关。
-- **截图证据**：`docs/evidence/2026-10-26-协调者空白会话-底部停靠输入框.png`（隔离 mock 实例，点项目行打开空白协调者会话后；画面是官方标题栏 + Chat/Trajectory tab + 空白会话区 + 底部官方 composer，无欢迎页）。
+- **截图证据**：PR #3 的评论「截图证据」条（图片以附件形式给出，不入仓库）——隔离 mock 实例，点项目行打开空白协调者会话后拍摄；画面是官方标题栏 + Chat/Trajectory tab + 空白会话区 + 底部官方 composer，无欢迎页。

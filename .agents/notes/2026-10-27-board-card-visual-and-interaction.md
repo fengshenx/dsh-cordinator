@@ -52,4 +52,4 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 单测 209 例全绿（新增 9 例：槽位绑定提取、槽位视图、信号档位、active 排序、done 排序、停滞判定（含「会话在跑不算停滞」）、时长格式化、链接排布）。
 
-真实实例取证用隔离 mock profile（`DSH_HOME=/tmp/dsh-mock`）：mock provider 发 `create_card` / `update_card` 工具调用，**真实卡片工具执行** → 投影进 session log → 看板渲染，全程不触达真实 API。截图见 `docs/evidence/`：`2026-10-27-看板卡片-改前.png`（P2 旧卡面）、`2026-10-27-看板卡片-改后.png`、`2026-10-27-看板卡片-详情浮层.png`、`2026-10-27-看板卡片-悬停态.png`、`2026-10-27-看板卡片-已完成区展开.png`。改前/改后取自同一会话的同一批卡片。
+真实实例取证用隔离 mock profile（`DSH_HOME=/tmp/dsh-mock`）：mock provider 发 `create_card` / `update_card` 工具调用，**真实卡片工具执行** → 投影进 session log → 看板渲染，全程不触达真实 API。截图不入仓库（证据图不进 git），见 PR #4 的评论「证据」条：改前（P2 旧卡面）、改后、详情浮层、悬停态、已完成区展开五张。改前/改后取自同一会话的同一批卡片（5 张，覆盖 idle / none / unknown 三种信号）。
