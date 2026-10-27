@@ -38,18 +38,40 @@ export function boundSummary(summary) {
  * 官方上下文行里会直接显示一行摘要。我们的渲染接管失败而降级时，它显示的
  * 是「任务「X」已结束。」而不是 source 的原始 kind 字符串。
  *
+ * `worker.report` 是 worker 最后一次回报的内容（产物摘要或失败原因）。消息正文
+ * 是给模型读的事实（含子会话 id、状态、下一步这些协议字段），界面只渲染
+ * `report`——两者分开，读的人各取所需。
+ *
  * @param {string} label - worker 的任务标签（身份名，头像与名字都用它）
  * @param {string} childSessionId - worker 子会话 id
  * @param {string} summary - 一行摘要
- * @returns {{ kind: string, form: string, summary: string, worker: { label: string, childSessionId: string } }} source
+ * @param {string} [report] - worker 最后一次回报的内容
+ * @param {string} [outcome] - 终态：`completed` 或 `failed`
+ * @returns {{ kind: string, form: string, summary: string, worker: { label: string, childSessionId: string, report: string, outcome: string } }} source
  */
-export function workerReportSource(label, childSessionId, summary) {
+export function workerReportSource(label, childSessionId, summary, report = '', outcome = 'completed') {
   return {
     kind: WORKER_REPORT_SOURCE_KIND,
     form: 'notice',
     summary: boundSummary(summary),
-    worker: { label, childSessionId },
+    worker: { label, childSessionId, report, outcome },
   }
+}
+
+/**
+ * 取界面要渲染的正文。
+ *
+ * worker 最后一次回报的内容（`report`）是界面显示的东西；消息正文（`text`）是给
+ * 模型读的事实。改造之前落盘的消息没有 `report`，退回整条正文。
+ *
+ * @param {{ report?: string, text?: string } | null | undefined} state - 节点状态
+ * @returns {string} 要渲染的正文
+ */
+export function workerReportBody(state) {
+  if (state === null || typeof state !== 'object') return ''
+  const report = state.report
+  if (typeof report === 'string' && report !== '') return report
+  return typeof state.text === 'string' ? state.text : ''
 }
 
 /**
@@ -86,7 +108,7 @@ function isRecord(value) {
  * 自己判型：盘上事件里的 source 是 `unknown`。
  *
  * @param {unknown} source - 消息的 source
- * @returns {{ label: string, childSessionId: string } | null} worker 信息；不是 worker 回报时为 null
+ * @returns {{ label: string, childSessionId: string, report: string, outcome: string } | null} worker 信息；不是 worker 回报时为 null
  */
 export function readWorkerReportSource(source) {
   if (!isRecord(source) || source.kind !== WORKER_REPORT_SOURCE_KIND) return null
@@ -95,5 +117,8 @@ export function readWorkerReportSource(source) {
   const label = worker.label
   const childSessionId = worker.childSessionId
   if (typeof label !== 'string' || typeof childSessionId !== 'string') return null
-  return { label, childSessionId }
+  // report 与 outcome 是后加的字段：改造之前落盘的消息没有它们，读时按缺省处理。
+  const report = typeof worker.report === 'string' ? worker.report : ''
+  const outcome = typeof worker.outcome === 'string' ? worker.outcome : 'completed'
+  return { label, childSessionId, report, outcome }
 }

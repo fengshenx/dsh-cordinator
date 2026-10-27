@@ -7,6 +7,7 @@ import {
   WORKER_REPORT_SOURCE_KIND,
   boundSummary,
   readWorkerReportSource,
+  workerReportBody,
   workerReportSource,
   workerReportText,
 } from '../src/shared/worker-report.js'
@@ -20,10 +21,49 @@ test('worker 回报的 source 记着身份名与子会话', () => {
   assert.equal(source.form, 'notice')
 })
 
+test('source 记着最后一次回报的内容与终态', () => {
+  const source = workerReportSource('前端 worker', 'child-1', '任务结束。', '改完了', 'completed')
+  assert.equal(source.worker.report, '改完了')
+  assert.equal(source.worker.outcome, 'completed')
+  const failed = workerReportSource('前端 worker', 'child-1', '任务失败。', '失败：模型不可用', 'failed')
+  assert.equal(failed.worker.outcome, 'failed')
+  // 缺省时是空回报与成功终态：改造之前的调用点不必改。
+  assert.equal(workerReportSource('a', 'b', 'c').worker.report, '')
+})
+
+test('界面渲染最后一次回报的内容，没有就退回正文', () => {
+  assert.equal(workerReportBody({ report: '改完了', text: '任务「x」已结束。' }), '改完了')
+  assert.equal(workerReportBody({ report: '', text: '任务「x」已结束。' }), '任务「x」已结束。')
+  assert.equal(workerReportBody({ text: '正文' }), '正文')
+  assert.equal(workerReportBody({}), '')
+  assert.equal(workerReportBody(null), '')
+})
+
+test('节点状态带着回报内容与终态', () => {
+  const event = {
+    type: 'user/message',
+    seq: 7,
+    time: 1700000000000,
+    surfaceOp: 'append',
+    data: {
+      id: 'm-1',
+      content: [{ type: 'text', text: '任务「前端 worker」已结束。' }],
+      source: workerReportSource('前端 worker', 'child-1', '任务结束。', '改完了', 'completed'),
+    },
+  }
+  const match = workerReportDefinition.match(event)
+  assert.notEqual(match, null)
+  const state = workerReportDefinition.start({}, { event, location: { kind: 'turn' } })
+  assert.equal(state.report, '改完了')
+  assert.equal(state.outcome, 'completed')
+  assert.equal(state.childSessionId, 'child-1')
+  assert.equal(state.text, '任务「前端 worker」已结束。')
+})
+
 test('读 worker 回报的 source 时逐层判型', () => {
   assert.deepEqual(
     readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { label: 'a', childSessionId: 'b' } }),
-    { label: 'a', childSessionId: 'b' },
+    { label: 'a', childSessionId: 'b', report: '', outcome: 'completed' },
   )
   assert.equal(readWorkerReportSource({ kind: 'user', worker: { label: 'a', childSessionId: 'b' } }), null)
   assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND }), null)

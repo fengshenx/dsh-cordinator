@@ -50,6 +50,10 @@ export const workerReportDefinition = {
       text: workerReportText(event.data.content),
       label: source.label,
       childSessionId: source.childSessionId,
+      // 最后一次回报的内容：界面渲染它，协议字段（子会话 id、状态、下一步）
+      // 留在 text 里给模型读。
+      report: source.report,
+      outcome: source.outcome,
     }
   },
   update: (context) => context.state,

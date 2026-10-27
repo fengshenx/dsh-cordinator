@@ -9,6 +9,16 @@
  * wake the driver」，父会话空闲时由此开新 turn。这补上了 dsh 原生缺失的一环：
  * 「worker 结束 → 协调者自动被唤醒并继续」。
  *
+ * 完成通知走 **next-turn** 边界（`followup`）：它是「下一个 turn 的一次输入」，
+ * 语义上就该排进下一轮，而不是插进协调者当前这一步里。
+ *
+ * 投递时机是「父会话空闲时」：宿主输入框上方的「消息队列」面板显示的是 inbox 的
+ * next-turn 未消费项（`ui-conversation` 的 QueueDock 读 `inbox['next-turn']`）。
+ * 协调者正忙时把通知投进去，它就会以「一条待发消息」的形态挂在那里——那是用户的
+ * 输入队列，不是后台通知该待的地方。改为忙时先不投（通知留在落盘队列），检测到
+ * 空闲再投：投递即被消费，队列面板不会看到它，唤醒时机与排进 next-turn 也几乎
+ * 一样（两者都要等当前 turn 结束）。
+ *
  * 本模块不新增 session event 类型（仓外插件的硬约束），完成通知走自有落盘队列。
  *
  * @module dsh-coordinator/host/dispatch
@@ -19,6 +29,8 @@ import { workerReportSource } from '../shared/worker-report.js'
 
 const DEFAULT_AUTO_RESUME_LIMIT = 8
 const NOTIFICATION_LIMIT = 4000
+/** 空闲检测的轮询间隔（毫秒）。 */
+const IDLE_POLL_MS = 500
 
 /**
  * 构造完成通知正文。
@@ -43,6 +55,24 @@ export function buildNotificationText(record, outcome) {
   }
   lines.push('下一步：按协调者协议判断验收、返工或派新工。')
   return lines.join('\n').slice(0, NOTIFICATION_LIMIT)
+}
+
+/**
+ * 构造 worker 最后一次回报的内容（界面渲染用）。
+ *
+ * 消息正文是给模型读的事实，含子会话 id、状态、下一步这些协议字段；界面只渲染
+ * worker 真正产出的内容——成功是产物摘要，失败是失败原因。
+ *
+ * @param {{ ok: boolean, result?: object, error?: unknown }} outcome - 终态
+ * @returns {string} 最后一次回报的内容
+ */
+export function buildWorkerReport(outcome) {
+  if (!outcome.ok) {
+    const reason = outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+    return `失败：${reason}`.slice(0, NOTIFICATION_LIMIT)
+  }
+  const summary = blocksToText(outcome.result?.output ?? [])
+  return (summary === '' ? '（worker 未产出文本）' : summary).slice(0, NOTIFICATION_LIMIT)
 }
 
 /**
@@ -71,15 +101,19 @@ export function createDispatcher({
   const resumeCounts = new Map()
   /** @type {Set<string>} 本进程注入过的通知消息 id，用于区分外部输入 */
   const injected = new Set()
-  /** @type {Set<string>} 已销毁的会话 id。失活的 agent 会静默接受 followup，投递前必须排除。 */
+  /** @type {Set<string>} 已销毁的会话 id。失活的 agent 会静默接受投递，投递前必须排除。 */
   const disposed = new Set()
+  /** @type {Map<string, object[]>} 等待父会话空闲的通知，按父会话分组 */
+  const waiting = new Map()
+  /** @type {ReturnType<typeof setInterval> | undefined} 空闲检测定时器 */
+  let idleTimer = undefined
 
   /**
    * 解析父会话的 agent。
    *
    * 优先走 `sessionController.resolveAgent()`：它给出活 agent 并确保会话的 inbox
    * 投影处于激活状态。缺失该服务时回退到派工时持有的父 agent 活对象——实测只要
-   * 父 agent 尚未被销毁，对空闲 agent 调 `followup()` 就能唤醒它开新 turn。
+   * 父 agent 尚未被销毁，对空闲 agent 调 `steer()` 就能唤醒它开新 turn。
    *
    * 真正让唤醒落空的是父 agent 已被销毁（headless 一次性 CLI 会在 turn 结束后
    * dispose 会话）。这类通知留在队列里，等父会话重新打开时补投。
@@ -102,21 +136,15 @@ export function createDispatcher({
   }
 
   /**
-   * 向父会话投递完成通知。
+   * 把一条通知投进父会话的下一个 turn。
+   *
+   * 走 `followup`：通知是「下一个 turn 的一次输入」，语义上就该排进下一轮。
+   *
    * @param {object} notification - 通知记录
-   * @param {object} [parentAgent] - 派工时持有的父 agent 活对象
+   * @param {object} agent - 父会话的 agent 活对象
    * @returns {Promise<boolean>} 是否已投递
    */
-  async function deliver(notification, parentAgent) {
-    if (disposed.has(notification.parentSessionId)) {
-      await store.markUndelivered(notification.id, '父会话已销毁，等待重新打开后补投')
-      return false
-    }
-    const agent = await resolveParentAgent(notification.parentSessionId, parentAgent)
-    if (agent === undefined) {
-      await store.markUndelivered(notification.id, '父会话当前不可达')
-      return false
-    }
+  async function deliverNow(notification, agent) {
     const used = resumeCounts.get(notification.parentSessionId) ?? 0
     if (used >= autoResumeLimit) {
       await store.markUndelivered(notification.id, `连续自动续行已达上限 ${autoResumeLimit}`)
@@ -128,7 +156,13 @@ export function createDispatcher({
     }
     const message = createUserMessage(
       [{ type: 'text', text: notification.text }],
-      workerReportSource(notification.label, notification.childId, notification.text.split('\n')[0] ?? ''),
+      workerReportSource(
+        notification.label,
+        notification.childId,
+        notification.summary,
+        notification.report,
+        notification.outcome,
+      ),
     )
     injected.add(message.id)
     resumeCounts.set(notification.parentSessionId, used + 1)
@@ -147,6 +181,85 @@ export function createDispatcher({
   }
 
   /**
+   * 向父会话投递完成通知。
+   *
+   * 父会话正忙时不投：通知排在 inbox 的 next-turn 队列里，会以「一条待发消息」的
+   * 形态出现在宿主输入框上方的消息队列面板——那是用户的输入队列，不是后台通知
+   * 该待的地方。改为留在落盘队列里等空闲，检测到空闲再投：投递即被消费。
+   *
+   * @param {object} notification - 通知记录
+   * @param {object} [parentAgent] - 派工时持有的父 agent 活对象
+   * @returns {Promise<boolean>} 是否已投递
+   */
+  async function deliver(notification, parentAgent) {
+    if (disposed.has(notification.parentSessionId)) {
+      await store.markUndelivered(notification.id, '父会话已销毁，等待重新打开后补投')
+      return false
+    }
+    const agent = await resolveParentAgent(notification.parentSessionId, parentAgent)
+    if (agent === undefined) {
+      await store.markUndelivered(notification.id, '父会话当前不可达')
+      return false
+    }
+    if (agent.status !== 'idle') {
+      const list = waiting.get(notification.parentSessionId) ?? []
+      // 记下当时的 agent 活对象：空闲检测里没有第二个入口能拿到它
+      if (!list.some((item) => item.notification.id === notification.id)) {
+        list.push({ notification, agent })
+      }
+      waiting.set(notification.parentSessionId, list)
+      await store.markUndelivered(notification.id, '父会话正忙，等待空闲后投递')
+      ensureIdleTimer()
+      return false
+    }
+    return deliverNow(notification, agent)
+  }
+
+  /**
+   * 启动空闲检测定时器。
+   * @returns {void}
+   */
+  function ensureIdleTimer() {
+    if (idleTimer !== undefined) return
+    idleTimer = setInterval(() => {
+      void flushWaiting()
+    }, IDLE_POLL_MS)
+    // 空闲检测不该拖住进程退出：dsh 退出时通知仍在落盘队列里，重启后补投。
+    idleTimer.unref?.()
+  }
+
+  /**
+   * 把等待中的通知投给已经空闲的父会话。
+   *
+   * 投递前先看通知还在不在落盘队列里：父会话重新打开时补投通道（`redeliverPending`）
+   * 可能已经投过同一条，重复投会让协调者收到两遍。
+   *
+   * @returns {Promise<void>} 处理完成
+   */
+  async function flushWaiting() {
+    const pending = await store.listPending()
+    for (const [parentSessionId, list] of [...waiting]) {
+      const remaining = []
+      for (const item of list) {
+        const { notification } = item
+        if (!pending.some((entry) => entry.id === notification.id)) continue
+        const agent = await resolveParentAgent(parentSessionId, item.agent)
+        if (agent === undefined || agent.status !== 'idle') {
+          remaining.push(item)
+          continue
+        }
+        if (!await deliverNow(notification, agent)) remaining.push(item)
+      }
+      if (remaining.length > 0) waiting.set(parentSessionId, remaining)
+      else waiting.delete(parentSessionId)
+    }
+    if (waiting.size === 0 && idleTimer !== undefined) {
+      clearInterval(idleTimer)
+      idleTimer = undefined
+    }
+  }
+
+  /**
    * 处理子会话终态：落盘通知并唤醒父会话。
    * @param {string} childId - 子会话 id
    * @param {{ ok: boolean, result?: object, error?: unknown }} outcome - 终态
@@ -156,12 +269,16 @@ export function createDispatcher({
     const record = inflight.get(childId)
     if (record === undefined) return
     inflight.delete(childId)
+    const text = buildNotificationText(record, outcome)
     const notification = {
       id: `note-${childId}-${record.startedAt}`,
       childId,
       parentSessionId: record.parentSessionId,
       label: record.label,
-      text: buildNotificationText(record, outcome),
+      text,
+      summary: text.split('\n')[0] ?? '',
+      report: buildWorkerReport(outcome),
+      outcome: outcome.ok ? 'completed' : 'failed',
       createdAt: Date.now(),
       attempts: 0,
     }
@@ -234,7 +351,21 @@ export function createDispatcher({
         if (notification.parentSessionId !== agent.id) continue
         if (await deliver(notification, agent)) delivered += 1
       }
+      // 补投通道已经处理过这个父会话的待投通知，等待表里的同一批不要再留
+      if (delivered > 0) waiting.delete(agent.id)
       return delivered
+    },
+
+    /**
+     * 释放定时器。
+     * @returns {void}
+     */
+    dispose() {
+      if (idleTimer !== undefined) {
+        clearInterval(idleTimer)
+        idleTimer = undefined
+      }
+      waiting.clear()
     },
 
     /**
