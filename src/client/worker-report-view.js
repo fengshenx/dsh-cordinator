@@ -9,7 +9,7 @@
  * @module dsh-coordinator/client/worker-report-view
  */
 
-import { createElement } from 'react'
+import { createElement, useEffect } from 'react'
 import { agentAvatarDataUri } from './worker-report-avatar.js'
 import { ensureWorkerReportStyles } from './worker-report-styles.js'
 
@@ -21,7 +21,11 @@ import { ensureWorkerReportStyles } from './worker-report-styles.js'
  * @returns {object} React 元素
  */
 export function WorkerReportView({ node }) {
-  ensureWorkerReportStyles()
+  // 样式在副作用里注入，不在渲染期：渲染期做 DOM 查询是副作用，会在并发渲染下
+  // 与 React 的渲染阶段交错（与看板面板的处理一致）。
+  useEffect(() => {
+    ensureWorkerReportStyles()
+  }, [])
   const data = node?.data
   if (data === undefined) return null
   return createElement(

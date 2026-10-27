@@ -5,6 +5,7 @@ import { WORKER_REPORT_NODE_KIND, workerReportDefinition } from '../src/client/w
 import { buildNotificationText } from '../src/host/dispatch.js'
 import {
   WORKER_REPORT_SOURCE_KIND,
+  boundSummary,
   readWorkerReportSource,
   workerReportSource,
   workerReportText,
@@ -66,11 +67,27 @@ test('头像按名字定种子，同名恒同图', () => {
 test('节点定义只认带 worker 标记的用户消息', () => {
   const marked = {
     type: 'user/message',
+    surfaceOp: 'append',
     data: { id: 'm1', source: workerReportSource('worker a', 'child-1', '摘要'), content: [] },
   }
   assert.deepEqual(workerReportDefinition.match(marked), { id: 'm1', role: 'start', exclusive: true })
-  assert.equal(workerReportDefinition.match({ type: 'user/message', data: { id: 'm2', source: { kind: 'user' } } }), null)
+  assert.equal(workerReportDefinition.match({ type: 'user/message', surfaceOp: 'append', data: { id: 'm2', source: { kind: 'user' } } }), null)
   assert.equal(workerReportDefinition.match({ type: 'assistant/message', data: {} }), null)
+})
+
+test('节点定义不认领替换副本', () => {
+  // 替换副本只应留在模型侧，不该出现在人类转录里（宿主的 isAppendSurfaceEvent
+  // 判的就是 surfaceOp === 'append'，官方两个同类定义都带这一条）
+  const replace = {
+    type: 'user/message',
+    surfaceOp: 'replace',
+    data: { id: 'm1', source: workerReportSource('worker a', 'child-1', '摘要'), content: [] },
+  }
+  assert.equal(workerReportDefinition.match(replace), null)
+  assert.equal(workerReportDefinition.match({
+    type: 'user/message',
+    data: { id: 'm1', source: workerReportSource('worker a', 'child-1', '摘要'), content: [] },
+  }), null)
 })
 
 test('节点定义把回报事实装进视图节点', () => {
@@ -103,4 +120,31 @@ test('节点定义把回报事实装进视图节点', () => {
   assert.equal(node.visibility, 'visible')
   assert.equal(node.groupTree, 'input')
   assert.equal(node.data.label, 'worker a')
+})
+
+test('节点定义按官方口径给分组位置：回合首步开启新 exchange', () => {
+  const state = { seq: 1, time: 1, messageId: 'm1', text: 'x', label: 'a', childSessionId: 'c' }
+  const first = workerReportDefinition.buildViewNode({
+    key: 'k',
+    id: 'm1',
+    start: { location: { kind: 'step', turn: { turn: 1 }, step: { step: 1 } } },
+    state,
+  })
+  assert.equal(first.groupTree, 'exchange')
+  const later = workerReportDefinition.buildViewNode({
+    key: 'k',
+    id: 'm1',
+    start: { location: { kind: 'step', turn: { turn: 1 }, step: { step: 2 } } },
+    state,
+  })
+  assert.equal(later.groupTree, 'input')
+})
+
+test('notice 摘要压到 120 字符', () => {
+  // 宿主把长度约束写在生产者身上：摘要的输入是调用方文本（任务标签等），没有长度上限
+  const long = '长'.repeat(200)
+  const source = workerReportSource('worker a', 'child-1', long)
+  assert.equal(source.summary.length, 120)
+  assert.equal(source.summary.endsWith('…'), true)
+  assert.equal(boundSummary('短'), '短')
 })

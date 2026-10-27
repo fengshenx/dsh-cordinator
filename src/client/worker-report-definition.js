@@ -31,6 +31,10 @@ export const workerReportDefinition = {
   target: 'chat',
   match: (event) => {
     if (event.type !== 'user/message') return null
+    // 只认追加到转录尾部的事件：替换副本只应留在模型侧，不该出现在人类转录里
+    // （宿主的 `isAppendSurfaceEvent` 判的就是 `surfaceOp === 'append'`）。
+    // 官方两个同类定义都带这一条。
+    if (event.surfaceOp !== 'append') return null
     if (readWorkerReportSource(event.data?.source) === null) return null
     return { id: String(event.data.id), role: 'start', exclusive: true }
   },
@@ -51,18 +55,19 @@ export const workerReportDefinition = {
   update: (context) => context.state,
   buildViewNode: (context) => {
     if (context.state === undefined) return null
+    const location = context.start?.location ?? { kind: 'unresolved' }
     return {
       key: context.key,
       kind: WORKER_REPORT_NODE_KIND,
       id: context.id,
       target: 'chat',
       anchorSeq: context.state.seq,
-      location: context.start?.location ?? { kind: 'unresolved' },
+      location,
       visibility: 'visible',
-      // `input` 是这条回报的分组位置：它是被注入到会话里的一次输入（role=user、
-      // 唤醒父会话），与官方用户输入同类。没有这个位置，节点会落进回合的「过程
-      // 折叠区」，被默认隐藏——worker 就在说话，却看不见它说话。
-      groupTree: 'input',
+      // 分组位置与官方一致：回合的首步开启新 exchange，其余留在 input。
+      // 位置不能省——没有它，节点会落进回合的「过程折叠区」被默认隐藏，
+      // worker 就在说话，却看不见它说话。
+      groupTree: location.kind === 'step' && location.step.step === 1 ? 'exchange' : 'input',
       data: context.state,
     }
   },

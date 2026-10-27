@@ -13,6 +13,24 @@
 /** worker 回报消息的 source kind。 */
 export const WORKER_REPORT_SOURCE_KIND = 'dsh-coordinator/worker-report'
 
+/** `notice` 摘要的长度上限，与宿主的 `CONTEXT_SUMMARY_MAX_CHARS` 同值。 */
+export const CONTEXT_SUMMARY_MAX_CHARS = 120
+
+/**
+ * 把 `notice` 摘要压到长度上限。
+ *
+ * 宿主把这条约束写在生产者身上：摘要的输入（任务标签、目标、工具参数）是调用方
+ * 文本，本身没有长度上限。本仓刻意不 peer 依赖 dsh 内部包，等价实现放这里。
+ *
+ * @param {string} summary - 一行摘要
+ * @returns {string} 压到上限后的摘要
+ */
+export function boundSummary(summary) {
+  return summary.length <= CONTEXT_SUMMARY_MAX_CHARS
+    ? summary
+    : `${summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS - 1)}…`
+}
+
 /**
  * 构造 worker 回报消息的 source。
  *
@@ -29,7 +47,7 @@ export function workerReportSource(label, childSessionId, summary) {
   return {
     kind: WORKER_REPORT_SOURCE_KIND,
     form: 'notice',
-    summary,
+    summary: boundSummary(summary),
     worker: { label, childSessionId },
   }
 }
