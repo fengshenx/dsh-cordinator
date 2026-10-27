@@ -242,6 +242,13 @@ export function createProjectStore({ home, logger = () => {} } = {}) {
         for (const key of MUTABLE_FIELDS) {
           if (Object.hasOwn(updates, key)) next[key] = updates[key]
         }
+        // 重命名也要查重：建项时自动避让只是名字唯一性的一半，改名同样能撞上，
+        // 列表里会重新出现两个一模一样的项目。这里不偷偷加序号——用户明明打了
+        // 这个名字，被改成「X-2」比报错让他改更意外。
+        if (next.name !== current.name
+          && store.projects.some((item) => item.id !== id && item.name === next.name)) {
+          throw new Error(`项目名「${next.name}」已被占用`)
+        }
         next.updatedAt = Date.now()
         store.projects[index] = next
         await writeStore(store)

@@ -35,7 +35,6 @@ import { createPortal } from 'react-dom'
 import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import {
-  basenameOf,
   defaultProjectName,
   isProjectOpenable,
   openCoordinatorSession,
@@ -180,6 +179,9 @@ export function ProjectPanel(props) {
 
   const startAdd = useCallback(async () => {
     if (busy) return
+    // 重新点「加项目」就是放弃上一个待建项：上一次可能停在改名框上，留着它会让
+    // 这次建完项目后还挂着一个指向别的目录的输入块。
+    setNaming(null)
     const uiWorkspace = getUiWorkspace?.()
     if (uiWorkspace === undefined) {
       setNotice('目录选择器不可用：请在终端里用 add_project 建项目。')

@@ -151,3 +151,36 @@ test('并发建同名项目也只有一个拿到原名', async () => {
 
   assert.deepEqual(names, ['repo', 'repo-2', 'repo-3'])
 })
+
+test('改名撞上已有项目名时报错，不偷偷加序号', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const alpha = await store.insert(store.draft({ name: 'alpha', directory: '/work/a' }))
+  await store.insert(store.draft({ name: 'repo', directory: '/work/b' }))
+
+  await assert.rejects(() => store.update(alpha.id, { name: 'repo' }), /已被占用/)
+  assert.equal((await store.get(alpha.id)).name, 'alpha')
+})
+
+test('把项目改成它自己当前的名字不算撞名', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const alpha = await store.insert(store.draft({ name: 'alpha', directory: '/work/a' }))
+
+  const updated = await store.update(alpha.id, { name: 'alpha', coordinatorSessionId: 'session-9' })
+  assert.equal(updated.name, 'alpha')
+  assert.equal(updated.coordinatorSessionId, 'session-9')
+})
+
+test('只改协调者会话时不查名字，两个同名项目仍可各自改绑', async () => {
+  const home = await makeHome()
+  const store = createProjectStore({ home })
+  const first = await store.insert(store.draft({ name: 'alpha', directory: '/work/a' }))
+  const second = await store.insert(store.draft({ name: 'beta', directory: '/work/b' }))
+
+  await store.update(first.id, { coordinatorSessionId: 'session-1' })
+  const rebound = await store.update(second.id, { coordinatorSessionId: 'session-2' })
+
+  assert.equal(rebound.name, 'beta')
+  assert.equal(rebound.coordinatorSessionId, 'session-2')
+})
