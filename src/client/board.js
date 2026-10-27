@@ -133,6 +133,8 @@ function useSlotStates(cards, getSessions, useSessionStatus) {
     sameStatuses,
   )
 
+  // 构造本身没有副作用（只是建一张账本表），所以在渲染期惰性创建即可——放进
+  // effect 反而要多一个「尚未就绪」的分支。
   if (retention.current === undefined) {
     retention.current = new SlotRetention({
       retain: (sessionId) => {
@@ -233,6 +235,8 @@ function BoardEmpty({ allDone }) {
  * @returns {object} React 元素
  */
 function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }) {
+  // 卡片表不随 sessionId 变化重置：宿主的 `RightbarRoot` 按 `key={view.sessionId}`
+  // 渲染每个会话的子树，切会话等于换一棵子树，面板随之重新挂载。
   const [cards, setCards] = useState(() => new Map())
   const [error, setError] = useState(null)
   const [history, setHistory] = useState('loading')
