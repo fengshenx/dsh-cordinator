@@ -147,16 +147,6 @@ const STYLE_TEXT = `
     transition: none;
   }
 }
-.dsh-coordinator-project-meta {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-tertiary);
-}
 .dsh-coordinator-project-actions {
   flex: none;
   display: none;
@@ -243,16 +233,6 @@ const STYLE_TEXT = `
   justify-content: center;
   color: inherit;
 }
-.dsh-coordinator-project-draft-action {
-  padding: 4px 10px;
-  border: none;
-  border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-alias-button-elevated-fill);
-  color: var(--dsw-alias-label-primary);
-  font-size: 12px;
-  line-height: 18px;
-  cursor: pointer;
-}
 .dsh-coordinator-project-notice {
   padding: 4px 8px;
   font-size: 12px;
@@ -335,8 +315,8 @@ function ensureStyles() {
  */
 export function ProjectSection(props) {
   const {
-    projects, busy, notice, draft,
-    onAdd, onConfirmAdd, onCancelAdd, onDraftName,
+    projects, busy, notice,
+    onAdd,
     onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
     sessionsByProject, sessionRows, expandedProjects,
     onToggleExpand, onOpenSession,
@@ -392,40 +372,6 @@ export function ProjectSection(props) {
             onClick: onAdd,
           },
           productIcon('project-add-outline'),
-        ),
-      ),
-    ),
-    draft === null ? null : createElement(
-      'div',
-      { style: { padding: '4px 8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
-      createElement(
-        'div',
-        { className: 'dsh-coordinator-project-meta' },
-        draft.directory,
-      ),
-      createElement('input', {
-        type: 'text',
-        className: 'dsh-coordinator-project-rename',
-        value: draft.name,
-        autoFocus: true,
-        onChange: (event) => onDraftName(event.target.value),
-        onKeyDown: (event) => {
-          if (event.key === 'Enter') onConfirmAdd()
-          if (event.key === 'Escape') onCancelAdd()
-        },
-      }),
-      createElement(
-        'div',
-        { style: { display: 'flex', gap: '4px' } },
-        createElement(
-          'button',
-          { type: 'button', disabled: busy, onClick: onConfirmAdd, className: 'dsh-coordinator-project-draft-action' },
-          '注册',
-        ),
-        createElement(
-          'button',
-          { type: 'button', onClick: onCancelAdd, className: 'dsh-coordinator-project-draft-action' },
-          '取消',
         ),
       ),
     ),

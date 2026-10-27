@@ -4,18 +4,20 @@
  * 宿主侧的项目注册表是唯一真源，浏览器侧只做呈现与操作：列项目、加项目、打开
  * 项目的协调者会话、改名、换新协调者、注销项目。
  *
- * **加项目**：选目录 → 起名 → 注册。注册时宿主会在该目录里建一个协调者会话并
- * 与项目绑定，所以「加完项目」就已经有一个可用的协调者会话在等用户。
+ * **加项目**：选目录 → 直接建好。宿主在选中的目录里建一个协调者会话并与项目
+ * 绑定，项目名默认取目录名（要改随时用行上的「重命名」）。建完就在列表里，不多
+ * 一步确认——注册流程要用户再点一次才生效，凭空多一道手续。
  *
  * **打开项目**：点项目名就打开它的协调者会话——项目的切换就是会话的切换，会话
  * 的工作目录在创建时定死。
  *
- * **项目树**：点项目行展开或收起该项目目录下的会话（协调者不在其中，它的入口在
- * 行的「更多」菜单里）。会话归属由宿主按目录判定——浏览器侧没有文件系统，做不了
- * 路径归一。
+ * **项目树**：点项目行展开或收起该项目的 worker 会话。归属由宿主判定——浏览器侧
+ * 没有文件系统，做不了路径归一；worker 身份看会话头的 `origin`。
  *
- * **与官方工作区树并行**：项目下的会话不在官方工作区树里重复出现。官方没有
- * 「按项目排除会话」的扩展点，这层排除走渲染层（见 `workspace-exclusion.js`）。
+ * **与官方工作区树并行**：项目的 worker 与协调者会话不在官方工作区树里重复出现。
+ * 官方没有「按项目排除会话」的扩展点，这层排除走渲染层（见
+ * `workspace-exclusion.js`）。项目目录本身的工作区不隐藏：用户在项目目录里手动
+ * 开的会话不属于项目，隐藏工作区会让它们无处可寻。
  *
  * **位置**：宽侧栏里区块插在「自动化任务」面板行之下、工作区列表之上。左栏正文
  * 区只有 `sidebar.workspaces` 一个槽且已被官方工作区浏览占用，slot 机制没有装饰
@@ -42,7 +44,6 @@ import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from '
 import { createWorkspaceExclusion } from './workspace-exclusion.js'
 import { ConfirmDialog } from './confirm-dialog.js'
 import { describeWorkspaceRemoval } from './project-panel-logic.js'
-import { createWorkspaceHiding } from './workspace-hiding.js'
 
 /**
  * 项目区块。
@@ -57,7 +58,6 @@ export function ProjectPanel(props) {
   const { wide, callRemote, getUiWorkspace, getSessions } = props
   const [projects, setProjects] = useState([])
   const [notice, setNotice] = useState('')
-  const [draft, setDraft] = useState(null)
   const [busy, setBusy] = useState(false)
   const [floating, setFloating] = useState(false)
   /** 项目 id 到该项目的会话 id 列表。 */
@@ -153,30 +153,28 @@ export function ProjectPanel(props) {
     }
   }, [getSessions, refreshSessionIndex])
 
-  // 项目下的会话不在官方工作区树里重复出现。
+  // 项目的 worker 与协调者会话不在官方工作区树里重复出现：它们由项目区块
+  // 呈现。用户在项目目录里手动开的会话不属于项目，留在官方树里。
   useEffect(() => {
     const exclusion = createWorkspaceExclusion()
     const excluded = new Set()
     for (const sessionIds of sessionsByProject.values()) {
       for (const sessionId of sessionIds) excluded.add(sessionId)
     }
+    for (const project of projects) {
+      if (typeof project.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
+        excluded.add(project.coordinatorSessionId)
+      }
+    }
     exclusion.update(excluded)
     return () => exclusion.dispose()
-  }, [sessionsByProject])
-
-  // 项目目录在宿主里必须有个工作区（官方 UI 才能打开协调者会话），那些工作区
-  // 属于「项目」语境，不摆在官方工作区树里。
-  useEffect(() => {
-    const hiding = createWorkspaceHiding()
-    hiding.update(projects.map((project) => project.workspaceId).filter((id) => typeof id === 'string'))
-    return () => hiding.dispose()
-  }, [projects])
+  }, [sessionsByProject, projects])
 
   const startAdd = useCallback(async () => {
     if (busy) return
     const uiWorkspace = getUiWorkspace?.()
     if (uiWorkspace === undefined) {
-      setNotice('目录选择器不可用：请在终端里用 add_project 注册项目。')
+      setNotice('目录选择器不可用：请在终端里用 add_project 建项目。')
       return
     }
     setBusy(true)
@@ -184,33 +182,18 @@ export function ProjectPanel(props) {
     try {
       const directory = await uiWorkspace.pickDirectory()
       if (typeof directory !== 'string' || directory === '') return
-      setDraft({ directory, name: basenameOf(directory) })
-    } catch (error) {
-      setNotice(`选择目录失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setBusy(false)
-    }
-  }, [busy, getUiWorkspace])
-
-  const confirmAdd = useCallback(async () => {
-    if (draft === null || busy) return
-    const check = validateProjectName(draft.name)
-    if (!check.ok) {
-      setNotice(check.error)
-      return
-    }
-    setBusy(true)
-    setNotice('')
-    try {
-      await callRemote('create', [draft.directory, draft.name])
-      setDraft(null)
+      // 名字默认取目录名：用户挑完目录就想看到项目建好，再让他填一遍名字、
+      // 再点一次确认，都是多余的手续。名字要改随时用行上的「重命名」。
+      const name = basenameOf(directory)
+      await callRemote('create', [directory, name])
       await refresh()
+      setNotice(`已建项目「${name}」，目录 ${directory}。`)
     } catch (error) {
-      setNotice(`注册项目失败：${error instanceof Error ? error.message : String(error)}`)
+      setNotice(`建项目失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setBusy(false)
     }
-  }, [busy, callRemote, draft, refresh])
+  }, [busy, callRemote, getUiWorkspace, refresh])
 
   const openProject = useCallback(async (project) => {
     if (!isProjectOpenable(project)) {
@@ -324,11 +307,7 @@ export function ProjectPanel(props) {
     notice: isProjectRemoteReady()
       ? notice
       : `项目通道未就绪。${projectRemoteError()}${notice}`,
-    draft,
     onAdd: () => { void startAdd() },
-    onConfirmAdd: () => { void confirmAdd() },
-    onCancelAdd: () => setDraft(null),
-    onDraftName: (name) => setDraft((current) => (current === null ? current : { ...current, name })),
     onOpen: openProject,
     onRename: (project, name) => { void renameProject(project, name) },
     onReplace: (project) => { void replaceCoordinator(project) },
