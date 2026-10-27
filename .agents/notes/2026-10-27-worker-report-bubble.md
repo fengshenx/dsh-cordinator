@@ -25,19 +25,27 @@ Telov 的做法是：worker 回报用**助手侧的形态**渲染——身份头
 - 路径 B（DOM 后处理）不可行：DOM 上没有 source / messageId / role，识别不出插件注入的消息，且 React 会覆盖外部 DOM 修改，否决。
 - 路径 C：注册独立 kind 的 `ConversationNodeDefinition`，`match` 只认带本仓 source 标记的 `user/message`，返回 `exclusive: true`；再按 kind 注册 keyed renderer。影响面只有 worker 回报这一类消息，普通用户气泡零影响。宿主提供的官方样板是 `packages/client/ui-user-questions/src/client/question-reply.ts`（它同样接管一条官方也会匹配的 `user/message`）。
 
-**`groupTree` 必须给 `'input'`**。这是本轮踩到的真问题：节点建好后渲染出来却**看不见**——宿主把「回合内、答案之前」的节点归进回合的**过程折叠区**并默认隐藏（`data-turn-process-hidden="true"` + `hidden="until-found"`）。判定看 `isAtOrOutside(node, 'turn')`，没有 `groupTree` 的节点一律落入过程区。官方给注入型消息（`waking`）的 `groupTree` 就是 `'input'`，本仓照抄。
+**`groupTree` 必须给，且按官方口径条件式**。这是本轮踩到的真问题：节点建好后渲染出来却**看不见**——宿主把「回合内、答案之前」的节点归进回合的**过程折叠区**并默认隐藏（`data-turn-process-hidden="true"` + `hidden="until-found"`）。判定看 `isAtOrOutside(node, 'turn')`，没有 `groupTree` 的节点一律落入过程区。
+
+取值与官方一致：回合首步（`location.kind === 'step' && location.step.step === 1`）开启新 exchange，其余留在 `'input'`。写死 `'input'` 也能显示，但连续多次 worker 回报会全落进上一个 exchange——它是被 `followup` 唤醒的新 turn 的第一条输入，语义上该开启新 exchange。
 
 **头像用 `minidenticons`（Telov 同款），种子取 worker 的身份名**。FNV-1a 哈希取模落到 63 个内置 seed，同名恒同图；底色与图案同色相、底色明度压到 36% 以过非文本 3:1 基线。种子必须用身份名（派工 label）而不是显示文案：显示文案由任务描述派生、随任务变，用它做种子同一 worker 会跨任务换脸。
+
+**只认领追加到转录尾部的事件**（`surfaceOp === 'append'`）。替换副本只应留在模型侧，不该出现在人类转录里——宿主的 `isAppendSurfaceEvent` 判的就是这个，官方两个同类定义都带这一条。本仓的消息由 `followup` 注入，落盘实测带 `surfaceOp: 'append'`。
+
+**`notice` 摘要压到 120 字符**。宿主把这条约束写在生产者身上（`CONTEXT_SUMMARY_MAX_CHARS`，摘要的输入是调用方文本、没有长度上限），并要求生产者自己调 `boundContextSummary`。本仓刻意不 peer 依赖 dsh 内部包，在 `shared/worker-report.js` 里等价实现。
 
 ## 边界
 
 - **回报不进会话标题、turn 摘要与 markdown 转录导出**：宿主只把 `source.kind === 'user'` 的消息算作真人输入。这是自定义 kind 的代价，换来的是它不会被误当成用户说的话。
 - **历史消息不追溯**：改造前发出的通知在 session log 里就是普通用户消息，重放时仍是老形态（右对齐、无头像）。
 - **降级形态**：本仓的定义没注册上（或宿主改了 claim 语义）时，这条消息退化成官方渲染——因为 source 不是 `'user'`，它会渲染成上下文注入行，而不是右对齐的用户气泡；内容不会丢。
-- **深色主题未实测**：气泡底色用 `--dsw-alias-bg-layer-1`，浅色主题下是白底；深色主题下的对比度没有实际截图验证。
+- **深色主题下头像轮廓弱**（与 Telov 同款取舍）：气泡底是中性深色，36% 的蓝紫色相落上去只有 1.35:1（hue 240），块的外轮廓看不出边界；头像本身仍可辨（图案对底色 3.4846:1）。不描边、不加容器环、不提亮底色——补救层在 20px 尺寸下显得又脏又重。浅色主题下气泡底是 `--dsw-alias-bg-layer-1`（白底）。
+- **头像会撞图**：池子只有 63 个 seed，3 个 worker 至少一次撞图约 4.7%，5 个约 15%（生日悖论）；200 个名字命中 61 个 seed，分布够开。撞图不影响身份识别——名字就在头像旁边。与 Telov 同池，属既定取舍。
+- **渲染器组件本身没有单测**：本仓不引 React 依赖与 jsdom，组件进不了单测；可判定的逻辑（source 判型、正文取文本、头像种子、定义的 match/start/buildViewNode）已全部抽成纯模块并覆盖。与看板浮层同一处境。
 - 客户端 bundle 多了唯一运行时依赖 `minidenticons`（纯 JS、无传递依赖），打进产物约 30 KB。
 
 ## 证据
 
-- 单测 269 例全绿（新增 `tests/worker-report.test.js` 7 例：source 构造与逐层判型、正文取文本、通知正文无前缀、头像种子确定性与分布、节点定义只认带标记的消息、视图节点字段含 `groupTree: 'input'`）。
+- 单测 259 例全绿（新增 `tests/worker-report.test.js` 10 例：source 构造与逐层判型、正文取文本、通知正文无前缀、头像种子确定性与分布、节点定义只认带标记的消息、不认领替换副本、视图节点字段含 `groupTree`、按官方口径条件式给分组位置、notice 摘要压到 120 字符）。
 - 真实实例（隔离 mock profile + mock LLM）：协调者真实派工，worker 收工后通知注入父会话；session log 里该条 `user/message` 的 `source.kind` 为 `dsh-coordinator/worker-report`、正文无前缀；界面上出现带头像与「mock worker」名字的左侧气泡，用户自己的输入仍是右侧气泡，console 无报错。
