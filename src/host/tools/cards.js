@@ -11,7 +11,12 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { CARD_STATUSES } from '../cards/store.js'
+import {
+  LIST_DEFAULT_LIMIT,
+  LIST_MAX_LIMIT,
+  parseListQuery,
+  renderCardList,
+} from '../cards/card-list-view.js'
 
 /**
  * 校验可选字符串字段。
@@ -42,20 +47,6 @@ function optionalNumber(value, label) {
   if (value === undefined) return undefined
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(`卡片工具: ${label} 必须是数字`)
-  }
-  return value
-}
-
-/**
- * 校验可选布尔字段。
- * @param {unknown} value - 字段值
- * @param {string} label - 字段名，用于报错
- * @returns {boolean | undefined} 原值
- */
-function optionalBoolean(value, label) {
-  if (value === undefined) return undefined
-  if (typeof value !== 'boolean') {
-    throw new Error(`卡片工具: ${label} 必须是布尔值`)
   }
   return value
 }
@@ -413,65 +404,73 @@ export function createUpdateCardTool({ store }) {
 
 /**
  * 创建 `list_cards` 工具定义。
+ *
+ * 模型读 `render` 的列表视图（摘要 + 分页），客户端读 `presentationMeta` 的全量
+ * 投影——看板要按全量卡片重建视图，不能被分页与状态过滤裁掉。因此工具返回全量
+ * 卡片，分页只发生在模型可见的文本上。
+ *
  * @param {object} options - 工具选项
- * @param {{ list: (filter: object) => Promise<object[]> }} options.store - 卡片存储
+ * @param {{ list: (filter?: object) => Promise<object[]> }} options.store - 卡片存储
  * @returns {object} dsh 工具定义
  */
 export function createListCardsTool({ store }) {
   return {
     name: 'list_cards',
     description:
-      '列出任务看板卡片，按编号升序。默认只返回未归档的卡片；需要看归档卡时传 includeArchived，或用 status 指定 archived。',
+      '按最近更新倒序列出任务看板卡片（默认只列 active，20 张一页）；传 cardId 读取单卡完整规格、链接与检查点。',
     parameters: {
       type: 'object',
       properties: {
+        cardId: {
+          type: 'string',
+          description: '可选，只读指定卡片的完整当前事实（spec / links / checkpoint 全文）；单卡查询忽略 status 与分页参数',
+        },
         status: {
           type: 'string',
-          enum: ['active', 'done', 'archived'],
-          description: '只返回该状态的卡片。显式指定 archived 时直接返回归档卡，无需再传 includeArchived。不传则返回全部未归档卡片。',
+          enum: ['active', 'done', 'archived', 'all'],
+          description: '状态过滤，默认 active；查历史卡用 done / archived / all',
         },
-        includeArchived: {
-          type: 'boolean',
-          description: '连同归档卡一起返回。',
+        limit: {
+          type: 'number',
+          description: `单页张数，默认 ${LIST_DEFAULT_LIMIT}，上限 ${LIST_MAX_LIMIT}`,
+        },
+        offset: {
+          type: 'number',
+          description: '从第几张开始（按最近更新倒序），翻页用',
         },
       },
     },
     output: {
       schema: {
         type: 'object',
-        properties: { cards: { type: 'array', items: cardSchema() } },
-        required: ['cards'],
+        properties: {
+          cards: { type: 'array', items: cardSchema() },
+          query: {
+            type: 'object',
+            properties: {
+              cardId: { type: 'string' },
+              status: { type: 'string' },
+              limit: { type: 'number' },
+              offset: { type: 'number' },
+            },
+            required: ['status', 'limit', 'offset'],
+          },
+        },
+        required: ['cards', 'query'],
       },
       render(args, value) {
-        const cards = /** @type {{ cards: { number: number, title: string, status: string }[] }} */ (value).cards
-        if (cards.length === 0) return [{ type: 'text', text: '当前没有任务卡片。' }]
-        const lines = cards.map(
-          (card) => `#${card.number} ${card.title}（${card.status}）`,
-        )
-        return [{ type: 'text', text: `共 ${cards.length} 张卡片：\n${lines.join('\n')}` }]
+        const result = /** @type {{ cards: object[], query: { cardId?: string, status: string, limit: number, offset: number } }} */ (value)
+        return [{ type: 'text', text: renderCardList(result.cards, result.query) }]
       },
       presentationMeta(args, value) {
-        const cards = /** @type {{ cards: object[] }} */ (value).cards
-        return cardMeta('all', cards)
+        const result = /** @type {{ cards: object[] }} */ (value)
+        return cardMeta('all', result.cards)
       },
     },
     async execute(args) {
-      const input = /** @type {{ status?: string, includeArchived?: boolean }} */ (args)
-      if (input.status !== undefined && !CARD_STATUSES.includes(input.status)) {
-        throw new Error(`list_cards: status 非法：${String(input.status)}`)
-      }
-      optionalBoolean(input.includeArchived, 'includeArchived')
-      const all = await store.list(
-        input.status === undefined ? {} : { status: input.status },
-      )
-      // 显式指定 status 时以它为准：再套默认的归档排除，会让 status='archived'
-      // 恒返回空，把「查不到」呈现成「没有归档卡」，误导后续决策。
-      const cards = input.status !== undefined
-        ? all
-        : input.includeArchived === true
-          ? all
-          : all.filter((card) => card.status !== 'archived')
-      return { cards }
+      const query = parseListQuery(args)
+      const cards = await store.list()
+      return { cards, query }
     },
   }
 }
