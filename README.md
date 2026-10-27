@@ -78,7 +78,7 @@ dsh plugin --profile dev add dsh-coordinator
 
 1. **让模型加载协议层**：`skill` 工具会列出 `coordinator-mode`。协调者会话先读 `playbooks/program.md`，再按阶段读对应 playbook。
 2. **初始化项目**：调用 `init_project`，参数 `path` 指向项目目录。约定写入项目的 `AGENTS.md` 受管区块，dsh 读取 `AGENTS.md` 作为系统提示段落，因此写入即对模型生效。重复调用只替换受管区块，不动项目已有内容。
-3. **派工**：调用 `spawn_worker`，参数 `task` 必填、`label` 可选。工具立即返回子会话 id；worker 结束后，协调者会被自动唤醒，收到一条「【worker 回报】」完成通知（任务、子会话、状态、产物摘要、下一步）。
+3. **派工**：调用 `spawn_worker`，参数 `task` 必填、`label` 可选。工具立即返回子会话 id；worker 结束后，协调者会被自动唤醒，收到一条完成通知（任务、子会话、状态、产物摘要、下一步）。通知在会话里渲染成 **worker 的发言**：左侧气泡，气泡上方是头像与 worker 名字，正文里没有「谁在说话」的前缀——和用户自己的输入（右侧气泡）区分得开。
 4. **记任务事实**：调用 `create_card` 建卡（`title` 必填），`update_card` 改卡（`id` 必填，改内容带 `expectedRevision` 做乐观并发），`list_cards` 查卡（默认只列 active，一页 20 张；传 `cardId` 读单卡完整规格、链接与检查点）。卡片落盘在 `$DSH_HOME/dsh-coordinator/cards.json`，编号全局递增不复用。
 5. **看交付看板**：浏览器右栏打开「看板」Tab。卡片不另存一份——卡片工具把卡片结构投影到 `tool/result` 事件的 `meta` 上，与 session log 一起持久化；面板重放本会话的投影还原看板。因此**卡片要在同一个会话里产生**才会出现在该会话的看板上。卡面只做信息与导航：点卡面开只读详情（说明 / 进展 / 阻塞 / 链接），点链接 chip 新标签打开，点槽位 chip 打开该槽位绑定的会话。信号灯由槽位会话状态实时投影（不落盘），七档为「等你输入 / 需注意 / 执行中 / 未读 / 空闲 / 状态未知 / 无信号」——运行态与未读读宿主的会话状态存储（worker 跑完停下、且没在主视图看过，就是「未读」），「状态未知」表示读不到该会话，不谎称空闲。
 6. **管理项目**：项目是显式注册的实体，不是目录。`add_project` 在目标目录里建好协调者会话并与项目绑定，`list_projects` 列出全部项目，`switch_project` 给出目标项目的协调者会话 id，`remove_project` 注销项目（协调者会话保留）。浏览器左栏有「项目」区块（在「自动化任务」之下、工作区之上）：点标题「项目」收起或展开整个列表，点项目行打开该项目的协调者会话（主区域切到该会话），点行首槽位展开或收起该目录下的会话（协调者不在其中），行的「更多」菜单里是打开协调者会话、重命名、换新协调者、从 dsh 移除工作区（有插件注册的工作区时才有）、注销项目；「从 dsh 移除工作区」会先弹二次确认，讲清文件夹与会话记录都会保留。项目名后面不跟路径（悬停可见）。这些会话不再出现在官方工作区树里。行的形态照官方工作区行：行首平时是目录图标，鼠标悬停整行时换成展开箭头（展开时箭头朝下），「更多」在行右端、悬停时出现。打开协调者会话时，它的形态是**输入框停靠底部的对话视图，但转录里一条消息都没有**——dsh 对空会话默认渲染居中大标题的欢迎页，本 bundle 注册一个第三方会话视图目标并在协调者会话打开时激活它（宿主据此把外壳切到 active 形态），不产生任何模型调用，也不往转录里塞任何开场白。
@@ -111,6 +111,10 @@ dsh plugin --profile dev add dsh-coordinator
 - **点项目会把项目目录注册成 dsh 工作区**。dsh 的官方界面只能打开归属工作区的会话（建会话时传目录而不是传工作区，会话不归属任何工作区，官方树里没有它的位置）。本仓因此在打开项目时把协调者会话挂到项目目录对应的工作区上，目录还不是工作区就注册一个（幂等）。
 - **插件注册的工作区从官方工作区树隐藏**。宿主的工作区记录是封闭 schema（`path`/`title`/`sessionIds`/时间戳），没有隐藏位，官方也没有按外部集合隐藏分组的扩展点。因此归属记在本仓的项目注册表里（项目记录多一个 `workspaceId` 字段，只写插件自己注册的工作区），隐藏走渲染层（官方工作区分组行带 `data-row-key="workspace:<id>"`，命中集合的行打标记属性后由样式表隐藏）。官方的工作区标题保持原样——把插件的实现名塞进用户可见标题既无必要，也会让用户以为工作区坏了。复用用户自己加的同目录工作区时不写记录，既不改标题也不隐藏。副作用：隐藏后官方左栏里没法直接删这个工作区，因此项目自己的「更多」菜单里给了「从 dsh 移除工作区」的入口（宿主只删工作区注册，目录与全部会话日志保留，协调者会话仍在，下次打开项目会重新挂上），入口会先弹二次确认。官方的工作区控制器不走 `/api` 通道（`/api/workspaces/list` 与 `/api/workspaces/rename` 都是 404），删除只能经 host 侧的 `workspaceRegistry`。
 - **图标数据与宿主 `artwork.ts` 耦合**。宿主 web 端把图标在构建期内联进产物，运行时 DOM 里没有 sprite 节点，第三方 bundle 在运行时渲染只能自己带路径数据——本仓内联的路径取自宿主 `dsh-client-ui-primitives` 的 `artwork.ts`（regular 字重），宿主改图标时本仓要同步。
+- **worker 回报不进会话标题、turn 摘要与 markdown 转录导出**。宿主只把 `source.kind === 'user'` 的消息算作真人输入；本仓的回报用自定义 source kind（`dsh-coordinator/worker-report`），因此会话自动标题不取它、turn 摘要 prompt 不取它、markdown 转录导出会跳过它。换来的是它不会被误当成用户说的话——标题、摘要、导出这三处都只认真人输入。
+- **worker 回报的渲染依赖宿主的会话节点扩展位**。本仓注册一个独立的 Chat node kind 并用 exclusive claim 接管这类消息（见 [worker 回报气泡](.agents/notes/2026-10-27-worker-report-bubble.md)）。宿主若改了 claim 或分组语义，这条消息会退化成普通的右对齐用户气泡——内容不会丢。
+- **历史消息不追溯**。改造之前发出的通知在 session log 里就是普通用户消息，重放时仍按老形态渲染（右对齐、无头像）。
+- **worker 头像在深色主题下轮廓弱**（与 Telov 同款取舍，不是待修项）。气泡底是中性深色，36% 的蓝紫色相落上去只有 1.35:1，块的外轮廓看不出边界；头像本身仍可辨。头像池只有 63 个 seed，worker 多时会有撞图（3 个约 4.7%，5 个约 15%），名字就在头像旁边，不影响身份识别。
 - **卡片编号是全局的**。卡片不按项目分区，编号跨项目不复用也不分区——将来若要求按项目编号，需迁移存量卡片。
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
 - **浏览器侧 → 宿主侧走 Typert 远程通道**（命名空间 `projects`，经官方 `/api` 共享通道）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 又被官方 gateway 占用；Typert 的 SRC 回退通道允许第三方按协议形状注册服务，但代价是**手写的协议形状与宿主版本耦合**——本仓对齐宿主 `0.2.1-rc.2`（标记属性名、`version:1` 描述符、`typertRemote` 绑定字段、方法形参即 wire 字段名），宿主改契约时本仓要同步改。远程方法名还要避开官方命名空间服务的保留字（撞名会让整个命名空间挂不上）。
@@ -126,14 +130,18 @@ dsh plugin --profile dev add dsh-coordinator
 | [客户端半边的发现与构建约束](.agents/notes/2026-10-23-client-side-findings-and-build-constraints.md) | P2：浏览器侧可用的注入点与构建约束 |
 | [项目作用域与角色槽位](.agents/notes/2026-10-23-project-scope-and-role-slots.md) | P3：项目实体、协调者会话硬绑定、槽位注入 |
 | [看板卡片视觉与交互](.agents/notes/2026-10-27-board-card-visual-and-interaction.md) | P4：卡面三层结构、信号灯档位、交互三语义、详情浮层 |
+| [查卡工具的列表摘要与分页口径](.agents/notes/2026-10-27-list-cards-brief-and-paged.md) | P5：列表给摘要、单卡给全文、分页与输出预算 |
+| [worker 回报气泡的呈现](.agents/notes/2026-10-27-worker-report-bubble.md) | worker 回报的 source 标记、独立会话节点、左侧气泡与头像 |
 
 ## 开发
 
 ```sh
-npm test           # node --test，零依赖
+npm test           # node --test
 npm run check      # 语法检查 + 测试
 npm run build:client  # 构建浏览器侧产物 lib/client.js（esbuild）
 ```
+
+运行时依赖只有 `minidenticons`（worker 头像，与 Telov 同款）；宿主侧代码只用 Node 内置模块。
 
 浏览器侧产物不入库（`.gitignore` 忽略 `lib/`），发布时由 `prepublishOnly` 重建。`cordis.patch.yml` 的插件行名必须是**纯包名**——写成子路径，浏览器侧定位不到包 manifest，宿主便不下发 client bundle。
 

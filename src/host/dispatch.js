@@ -15,6 +15,7 @@
  */
 
 import { createUserMessage, blocksToText } from './message.js'
+import { workerReportSource } from '../shared/worker-report.js'
 
 const DEFAULT_AUTO_RESUME_LIMIT = 8
 const NOTIFICATION_LIMIT = 4000
@@ -28,7 +29,9 @@ const NOTIFICATION_LIMIT = 4000
 export function buildNotificationText(record, outcome) {
   const lines = []
   const status = outcome.ok ? outcome.result?.stopReason ?? 'completed' : 'failed'
-  lines.push(`【worker 回报】任务「${record.label}」已结束。`)
+  // 正文不带「谁在说话」的前缀：说话人由消息的 source 标记，客户端渲染成
+  // 带头像与身份的气泡。前缀写进正文会同时污染模型读的事实与用户看到的界面。
+  lines.push(`任务「${record.label}」已结束。`)
   lines.push(`子会话：${record.childId}`)
   lines.push(`状态：${status}`)
   if (!outcome.ok) {
@@ -123,7 +126,10 @@ export function createDispatcher({
       )
       return false
     }
-    const message = createUserMessage([{ type: 'text', text: notification.text }])
+    const message = createUserMessage(
+      [{ type: 'text', text: notification.text }],
+      workerReportSource(notification.label, notification.childId, notification.text.split('\n')[0] ?? ''),
+    )
     injected.add(message.id)
     resumeCounts.set(notification.parentSessionId, used + 1)
     try {

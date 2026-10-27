@@ -19,7 +19,7 @@ const SAMPLE = {
   childId: 'child-1',
   parentSessionId: 'parent-1',
   label: '实现派工',
-  text: '【worker 回报】任务已结束。',
+  text: '任务「实现派工」已结束。',
   createdAt: 1,
   attempts: 0,
 }
