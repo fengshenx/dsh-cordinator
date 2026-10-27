@@ -392,3 +392,17 @@ test('无归属的存量卡仍可改：没有归属可冲突', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('项目外的会话改不了有归属的卡', async () => {
+  const { home, tools } = await createTools(async () => undefined)
+  try {
+    const store = createCardStore({ home })
+    const owned = await store.create({ title: '某个项目的卡', projectId: 'p1' })
+    await assert.rejects(
+      () => tools.update_card.execute({ id: owned.id, title: '改它' }, exec),
+      /属于另一个项目/,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})

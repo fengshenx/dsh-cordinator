@@ -626,3 +626,42 @@ test('删项目后原会话不再归属任何项目', async () => {
   assert.equal(await service.resolveProjectOfSession(project.coordinatorSessionId), undefined)
   assert.equal(await service.resolveProjectOfSession('session-worker'), undefined)
 })
+
+test('索引重建完成前判定归属：等重建，不静悄悄地丢归属', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const base = createProjectStore({ home })
+  // 先落一条项目记录，再建服务：模拟「进程重启，索引还没重建完」
+  await base.insert({
+    id: 'p-restart',
+    name: '重启前建的项目',
+    directory: workspace,
+    coordinatorSessionId: 'session-restart',
+    createdAt: 1,
+    updatedAt: 1,
+  })
+  // 把 list 卡住：重建在飞，归属判定必须等它
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const store = {
+    list: async () => { await gate; return base.list() },
+    get: (id) => base.get(id),
+    insert: (draft) => base.insert(draft),
+    update: (id, patch) => base.update(id, patch),
+    remove: (id) => base.remove(id),
+    getByCoordinator: (sessionId) => base.getByCoordinator(sessionId),
+  }
+  const sessions = { get: () => ({ header: { cwd: workspace } }) }
+  const service = createProjectService({
+    store,
+    ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  // 重建在飞（不 await），同时问归属
+  const rebuilding = service.loadIndex()
+  const pending = service.resolveProjectOfSession('session-restart')
+  release()
+  await rebuilding
+  const resolved = await pending
+  assert.equal(resolved.id, 'p-restart')
+})

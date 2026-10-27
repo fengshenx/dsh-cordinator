@@ -108,6 +108,15 @@ export function createProjectService({
    */
   const canonicalDirectoryIndex = new Map()
 
+  /**
+   * 索引重建的 promise。
+   *
+   * 卡片归属要等索引就绪才能判：启动瞬间（`loadIndex()` 还没把项目读回内存）
+   * 就建卡的话，卡片会静悄悄地归不到任何项目——那既丢数据又查不出原因。
+   * 判定前先等这个 promise。
+   */
+  let indexReady = Promise.resolve()
+
   // 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。
 
   /**
@@ -138,24 +147,33 @@ export function createProjectService({
      * @returns {Promise<Map<string, string>>} 重建后的索引
      */
     async loadIndex() {
-      const projects = await store.list()
-      coordinatorIndex.clear()
-      canonicalDirectoryIndex.clear()
-      for (const project of projects) {
-        if (typeof project.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
-          coordinatorIndex.set(project.coordinatorSessionId, {
-            projectId: project.id,
-            directory: project.directory,
-          })
+      const rebuilding = (async () => {
+        const projects = await store.list()
+        coordinatorIndex.clear()
+        canonicalDirectoryIndex.clear()
+        for (const project of projects) {
+          if (typeof project.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
+            coordinatorIndex.set(project.coordinatorSessionId, {
+              projectId: project.id,
+              directory: project.directory,
+            })
+          }
+          const canonical = await canonicalize(project.directory)
+          // 两个项目指向同一目录时先注册的那个保留归属，与项目会话归组同一口径：
+          // 重叠是用户的误操作，不该让后注册的项目悄悄接管前者的卡片。
+          if (!canonicalDirectoryIndex.has(canonical)) {
+            canonicalDirectoryIndex.set(canonical, project.id)
+          }
         }
-        const canonical = await canonicalize(project.directory)
-        // 两个项目指向同一目录时先注册的那个保留归属，与项目会话归组同一口径：
-        // 重叠是用户的误操作，不该让后注册的项目悄悄接管前者的卡片。
-        if (!canonicalDirectoryIndex.has(canonical)) {
-          canonicalDirectoryIndex.set(canonical, project.id)
-        }
-      }
-      return coordinatorIndex
+        return coordinatorIndex
+      })()
+      // 重建失败也要让等待者看到「重建过了」，否则它们会永远挂着等一个永远
+      // 不 settle 的 promise。失败的事实由调用方从 `loadIndex()` 的返回值看到。
+      indexReady = rebuilding.then(
+        () => undefined,
+        () => undefined,
+      )
+      return rebuilding
     },
 
     /**
@@ -186,6 +204,9 @@ export function createProjectService({
      */
     async resolveProjectOfSession(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return undefined
+      // 索引是进程内的镜像，启动时异步重建。重建完成前判定归属会得到「不归属
+      // 任何项目」，卡片就会静悄悄地丢归属——等索引就绪再判。
+      await indexReady
       const coordinator = coordinatorIndex.get(sessionId)
       if (coordinator !== undefined) {
         const project = await store.get(coordinator.projectId)

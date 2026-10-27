@@ -394,15 +394,17 @@ export function createUpdateCardTool({ store, resolveProject }) {
       const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
       const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
       const sortOrder = optionalNumber(input.sortOrder, 'sortOrder')
-      // 卡片按项目归属：改别人项目的卡要拒绝。两个项目都不属于的卡（存量卡）
-      // 不拦——没有归属可冲突，拦下来只会让存量卡永远改不动。
+      // 卡片按项目归属：改别人项目的卡要拒绝。无归属的存量卡不拦——没有归属可
+      // 冲突，拦下来只会让存量卡永远改不动。
+      //
+      // 调用方自己的范围就是它所在的项目（不在任何项目里就是空串）。这条判据
+      // 同时挡住两种越权：在 A 项目里改 B 项目的卡，以及在项目外改某个项目的卡。
       const project = await resolveProject?.(exec.agent?.id)
-      if (project !== undefined) {
-        const existing = await store.get(input.id.trim())
-        const owner = typeof existing?.projectId === 'string' ? existing.projectId : ''
-        if (owner !== '' && owner !== project.id) {
-          throw new Error(`update_card: 卡片 ${input.id.trim()} 属于另一个项目，不能跨项目改卡`)
-        }
+      const existing = await store.get(input.id.trim())
+      const owner = typeof existing?.projectId === 'string' ? existing.projectId : ''
+      const scope = typeof project?.id === 'string' ? project.id : ''
+      if (owner !== '' && owner !== scope) {
+        throw new Error(`update_card: 卡片 ${input.id.trim()} 属于另一个项目，不能跨项目改卡`)
       }
       const card = await store.update({
         id: input.id.trim(),
