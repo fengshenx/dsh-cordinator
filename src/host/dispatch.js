@@ -5,9 +5,14 @@
  * 返回 activation，其中 `result` 是子会话的终态 promise。本模块**不等待**该 promise
  * ——工具立即返回，父 turn 正常结束，worker 在后台继续。
  *
- * 唤醒走 dsh 自带的 agent 入口：`agent.followup()` 会「queue a follow-up turn and
- * wake the driver」，父会话空闲时由此开新 turn。这补上了 dsh 原生缺失的一环：
+ * 唤醒走 dsh 自带的 agent 入口：`agent.steer()` 会把消息投到 inbox 的 next-step
+ * 边界并唤醒驱动，父会话空闲时由此开新 turn。这补上了 dsh 原生缺失的一环：
  * 「worker 结束 → 协调者自动被唤醒并继续」。
+ *
+ * 投递用 `steer` 而不是 `followup`：宿主输入框上方的「消息队列」面板只显示 inbox 的
+ * next-turn 队列（`ui-conversation` 的 QueueDock 读 `inbox['next-turn']`），而
+ * next-step 的消息不进那个面板、每个 step 开始时就会被取走。`steer` 带唤醒标志，
+ * 协调者当前 turn 结束后一定会开新 turn 把它取走——通知既不打扰用户，也不会滞留。
  *
  * 本模块不新增 session event 类型（仓外插件的硬约束），完成通知走自有落盘队列。
  *
@@ -71,7 +76,7 @@ export function createDispatcher({
   const resumeCounts = new Map()
   /** @type {Set<string>} 本进程注入过的通知消息 id，用于区分外部输入 */
   const injected = new Set()
-  /** @type {Set<string>} 已销毁的会话 id。失活的 agent 会静默接受 followup，投递前必须排除。 */
+  /** @type {Set<string>} 已销毁的会话 id。失活的 agent 会静默接受投递，投递前必须排除。 */
   const disposed = new Set()
 
   /**
@@ -79,7 +84,7 @@ export function createDispatcher({
    *
    * 优先走 `sessionController.resolveAgent()`：它给出活 agent 并确保会话的 inbox
    * 投影处于激活状态。缺失该服务时回退到派工时持有的父 agent 活对象——实测只要
-   * 父 agent 尚未被销毁，对空闲 agent 调 `followup()` 就能唤醒它开新 turn。
+   * 父 agent 尚未被销毁，对空闲 agent 调 `steer()` 就能唤醒它开新 turn。
    *
    * 真正让唤醒落空的是父 agent 已被销毁（headless 一次性 CLI 会在 turn 结束后
    * dispose 会话）。这类通知留在队列里，等父会话重新打开时补投。
@@ -133,7 +138,7 @@ export function createDispatcher({
     injected.add(message.id)
     resumeCounts.set(notification.parentSessionId, used + 1)
     try {
-      agent.followup(message)
+      agent.steer(message)
     } catch (error) {
       // 失活的 agent 会静默接受或直接拒绝投递，通知必须留在队列里等待补投。
       await store.markUndelivered(

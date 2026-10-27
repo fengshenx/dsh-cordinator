@@ -125,7 +125,7 @@ export function apply(ctx) {
     })
   })
 
-  // 失活的 agent 会静默接受 followup，投递前必须知道会话已销毁。
+  // 失活的 agent 会静默接受投递，投递前必须知道会话已销毁。
   ctx.on('agent/disposed', ({ agent }) => {
     dispatcher.markDisposed(agent.id)
   })

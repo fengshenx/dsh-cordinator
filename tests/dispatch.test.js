@@ -29,7 +29,7 @@ async function waitFor(predicate, timeoutMs = 3000) {
 function createFixture() {
   const activations = []
   const agents = new Map()
-  const followups = []
+  const delivered = []
   let sequence = 0
   const subagents = {
     async startActivation(spec) {
@@ -50,20 +50,24 @@ function createFixture() {
       return undefined
     },
   }
-  return { ctx, activations, agents, followups }
+  return { ctx, activations, agents, delivered }
 }
 
 /**
  * 建一个父 agent 假身。
+ *
+ * 记录走 `steer`：完成通知投到 inbox 的 next-step 边界，这样它不进宿主的
+ * 「消息队列」面板（那里只显示 next-turn 队列）。
+ *
  * @param {string} id - 会话 id
- * @param {object[]} followups - 收到的消息数组
+ * @param {object[]} delivered - 收到的消息数组
  * @returns {object} agent 假身
  */
-function createParent(id, followups) {
+function createParent(id, delivered) {
   return {
     id,
-    followup(message) {
-      followups.push(message)
+    steer(message) {
+      delivered.push(message)
     },
   }
 }
@@ -94,7 +98,7 @@ test('派工立即返回，不等待 worker 完成', async () => {
   try {
     const store = createNotificationStore({ home })
     const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
-    const parent = createParent('parent-1', fixture.followups)
+    const parent = createParent('parent-1', fixture.delivered)
 
     const record = await dispatcher.dispatch({
       parent,
@@ -105,7 +109,7 @@ test('派工立即返回，不等待 worker 完成', async () => {
 
     assert.equal(record.childId, 'child-1')
     assert.equal(dispatcher.inflightCount(), 1)
-    assert.equal(fixture.followups.length, 0)
+    assert.equal(fixture.delivered.length, 0)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -117,7 +121,7 @@ test('worker 完成后通知父会话并从队列移除', async () => {
   try {
     const store = createNotificationStore({ home })
     const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
-    const parent = createParent('parent-1', fixture.followups)
+    const parent = createParent('parent-1', fixture.delivered)
     fixture.agents.set('parent-1', parent)
 
     await dispatcher.dispatch({
@@ -130,12 +134,12 @@ test('worker 完成后通知父会话并从队列移除', async () => {
       stopReason: 'completed',
       output: [{ type: 'text', text: '产物在此' }],
     })
-    await waitFor(() => fixture.followups.length === 1)
+    await waitFor(() => fixture.delivered.length === 1)
     await waitFor(async () => (await store.listPending()).length === 0)
 
-    assert.equal(fixture.followups.length, 1)
-    assert.equal(fixture.followups[0].role, 'user')
-    assert.match(fixture.followups[0].content[0].text, /产物在此/)
+    assert.equal(fixture.delivered.length, 1)
+    assert.equal(fixture.delivered[0].role, 'user')
+    assert.match(fixture.delivered[0].content[0].text, /产物在此/)
     assert.equal((await store.listPending()).length, 0)
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -148,7 +152,7 @@ test('父会话已销毁时通知留在队列等待补投', async () => {
   try {
     const store = createNotificationStore({ home })
     const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
-    const parent = createParent('parent-1', fixture.followups)
+    const parent = createParent('parent-1', fixture.delivered)
     dispatcher.markDisposed('parent-1')
 
     await dispatcher.dispatch({
@@ -160,7 +164,7 @@ test('父会话已销毁时通知留在队列等待补投', async () => {
     fixture.activations[0].settle({ stopReason: 'completed', output: [] })
     await waitFor(async () => (await store.listPending()).length === 1)
 
-    assert.equal(fixture.followups.length, 0)
+    assert.equal(fixture.delivered.length, 0)
     assert.equal((await store.listPending()).length, 1)
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -173,7 +177,7 @@ test('父会话注册后补投队列中的通知', async () => {
   try {
     const store = createNotificationStore({ home })
     const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
-    const parent = createParent('parent-1', fixture.followups)
+    const parent = createParent('parent-1', fixture.delivered)
     dispatcher.markDisposed('parent-1')
 
     await dispatcher.dispatch({
@@ -184,13 +188,13 @@ test('父会话注册后补投队列中的通知', async () => {
     })
     fixture.activations[0].settle({ stopReason: 'completed', output: [] })
     await waitFor(async () => (await store.listPending()).length === 1)
-    assert.equal(fixture.followups.length, 0)
+    assert.equal(fixture.delivered.length, 0)
 
     dispatcher.markAlive('parent-1')
     const delivered = await dispatcher.redeliverPending(parent)
 
     assert.equal(delivered, 1)
-    assert.equal(fixture.followups.length, 1)
+    assert.equal(fixture.delivered.length, 1)
     assert.equal((await store.listPending()).length, 0)
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -203,7 +207,7 @@ test('连续自动续行达到上限后不再唤醒', async () => {
   try {
     const store = createNotificationStore({ home })
     const dispatcher = createDispatcher({ ctx: fixture.ctx, store, autoResumeLimit: 2 })
-    const parent = createParent('parent-1', fixture.followups)
+    const parent = createParent('parent-1', fixture.delivered)
     fixture.agents.set('parent-1', parent)
 
     for (let index = 0; index < 3; index += 1) {
@@ -214,11 +218,11 @@ test('连续自动续行达到上限后不再唤醒', async () => {
         signal: new AbortController().signal,
       })
       fixture.activations[index].settle({ stopReason: 'completed', output: [] })
-      await waitFor(() => fixture.followups.length === Math.min(index + 1, 2))
+      await waitFor(() => fixture.delivered.length === Math.min(index + 1, 2))
     }
     await waitFor(async () => (await store.listPending()).length === 1)
 
-    assert.equal(fixture.followups.length, 2)
+    assert.equal(fixture.delivered.length, 2)
     assert.equal((await store.listPending()).length, 1)
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -231,7 +235,7 @@ test('外部输入重置自动续行计数', async () => {
   try {
     const store = createNotificationStore({ home })
     const dispatcher = createDispatcher({ ctx: fixture.ctx, store, autoResumeLimit: 1 })
-    const parent = createParent('parent-1', fixture.followups)
+    const parent = createParent('parent-1', fixture.delivered)
     fixture.agents.set('parent-1', parent)
 
     await dispatcher.dispatch({
@@ -241,8 +245,8 @@ test('外部输入重置自动续行计数', async () => {
       signal: new AbortController().signal,
     })
     fixture.activations[0].settle({ stopReason: 'completed', output: [] })
-    await waitFor(() => fixture.followups.length === 1)
-    assert.equal(fixture.followups.length, 1)
+    await waitFor(() => fixture.delivered.length === 1)
+    assert.equal(fixture.delivered.length, 1)
 
     dispatcher.resetResumeCount('parent-1')
 
@@ -253,8 +257,8 @@ test('外部输入重置自动续行计数', async () => {
       signal: new AbortController().signal,
     })
     fixture.activations[1].settle({ stopReason: 'completed', output: [] })
-    await waitFor(() => fixture.followups.length === 2)
-    assert.equal(fixture.followups.length, 2)
+    await waitFor(() => fixture.delivered.length === 2)
+    assert.equal(fixture.delivered.length, 2)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -291,7 +295,7 @@ test('spawn_worker 返回子会话 id 且不等待结果', async () => {
 
     const result = await tool.execute(
       { task: '做一件事', label: '实现派工' },
-      { signal: new AbortController().signal, agent: createParent('parent-1', fixture.followups) },
+      { signal: new AbortController().signal, agent: createParent('parent-1', fixture.delivered) },
     )
 
     assert.equal(result.childId, 'child-1')
