@@ -113,7 +113,7 @@ dsh plugin --profile dev add dsh-coordinator
 - **图标数据与宿主 `artwork.ts` 耦合**。宿主 web 端把图标在构建期内联进产物，运行时 DOM 里没有 sprite 节点，第三方 bundle 在运行时渲染只能自己带路径数据——本仓内联的路径取自宿主 `dsh-client-ui-primitives` 的 `artwork.ts`（regular 字重），宿主改图标时本仓要同步。
 - **worker 回报不进会话标题、turn 摘要与 markdown 转录导出**。宿主只把 `source.kind === 'user'` 的消息算作真人输入；本仓的回报用自定义 source kind（`dsh-coordinator/worker-report`），因此会话自动标题不取它、turn 摘要 prompt 不取它、markdown 转录导出会跳过它。换来的是它不会被误当成用户说的话——标题、摘要、导出这三处都只认真人输入。
 - **worker 回报的渲染依赖宿主的会话节点扩展位**。本仓注册一个独立的 Chat node kind 并用 exclusive claim 接管这类消息（见 [worker 回报气泡](.agents/notes/2026-10-27-worker-report-bubble.md)）。宿主若改了 claim 或分组语义，这条消息会退化成普通的右对齐用户气泡——内容不会丢。
-- **worker 回报要等父会话空闲才送达**。完成通知排进 inbox 的 next-turn 边界（下一个 turn 的一次输入），父会话正忙时先不投、留在落盘队列里，检测到空闲再投。这样它不会以「一条待发消息」的形态挂在宿主输入框上方的「消息队列」面板上；代价是协调者正忙时，回报要多等它这一轮结束（见 [worker 回报的投递边界](.agents/notes/2026-10-27-worker-report-delivery-boundary.md)）。
+- **worker 回报要等父会话空闲才送达**。完成通知排进 inbox 的 next-turn 边界（下一个 turn 的一次输入），父会话正忙时先不投、留在落盘队列里，检测到空闲再投。否则它会像用户自己发的消息一样，以「一条待发消息」的形态挂在输入框上方的「消息队列」条里（对照实验：busy 时直接投，面板显示「2 queued messages」，把人的消息和 worker 回报混在一起）。代价是协调者正忙时，回报要多等它这一轮结束（见 [worker 回报的投递边界](.agents/notes/2026-10-27-worker-report-delivery-boundary.md)）。
 - **历史消息不追溯**。改造之前发出的通知在 session log 里就是普通用户消息，重放时仍按老形态渲染（右对齐、无头像）。
 - **worker 头像在深色主题下轮廓弱**（与 Telov 同款取舍，不是待修项）。气泡底是前景色混出的 4% 一层，36% 的蓝紫色相落上去只有 1.35:1，块的外轮廓看不出边界；头像本身仍可辨。头像池只有 63 个 seed，worker 多时会有撞图（3 个约 4.7%，5 个约 15%），名字就在头像旁边，不影响身份识别。
 - **卡片编号是全局的**。卡片不按项目分区，编号跨项目不复用也不分区——将来若要求按项目编号，需迁移存量卡片。
