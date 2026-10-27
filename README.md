@@ -162,6 +162,8 @@ npm run check      # 语法检查 + 测试
 npm run build:client  # 构建浏览器侧产物 lib/client.js（esbuild）
 ```
 
+浏览器侧取证的执行流程（隔离实例、场景标记、断言外部世界、双向验证）见 [浏览器侧取证的执行规范](docs/e2e-testing.md)。
+
 运行时依赖只有 `minidenticons`（worker 头像，与 Telov 同款）；宿主侧代码只用 Node 内置模块。
 
 浏览器侧产物不入库（`.gitignore` 忽略 `lib/`），发布时由 `prepublishOnly` 重建。`cordis.patch.yml` 的插件行名必须是**纯包名**——写成子路径，浏览器侧定位不到包 manifest，宿主便不下发 client bundle。
