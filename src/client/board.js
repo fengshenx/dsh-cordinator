@@ -10,9 +10,11 @@
  * `.agents/notes/2026-10-27-board-card-visual-and-interaction.md`。
  *
  * 信号灯不落存储：等你输入/需注意/执行中/未读/空闲由槽位绑定的会话状态实时
- * 推导。运行态取宿主的会话状态存储（`useSessionStatus`），那是宿主按
- * `api-session/status` 事件维护的权威值；会话列表对未保留的 subagent 子会话给
- * 的是兜底值，据此说「空闲」是撒谎。失败原因只在会话快照里，保留会话取它。
+ * 推导。运行态的权威值是宿主按 `api-session/status` 事件维护的那一份，它只经
+ * `useSessionStatus` 暴露——而本面板所在的 `sidebar.right.pane.tab` 座不注入这个
+ * hook，所以实际拿得到的只有保留会话的快照：执行中与「上次执行失败」成立，
+ * 等你输入与未读在这条路径上无从表达。会话列表对未保留的 subagent 子会话给的
+ * 是兜底值，据此说「空闲」是撒谎，读不到时如实给「状态未知」。
  *
  * @module dsh-coordinator/client/board
  */
@@ -25,7 +27,7 @@ import {
   sortDoneCards,
 } from './board-projection.js'
 import { BOARD_REFRESH_MS, fetchBoardCards, resolveProject } from './project-board-data.js'
-import { SlotRetention } from './slot-retain.js'
+import { SlotRetention, retainTargetOf } from './slot-retain.js'
 import { BoardCard } from './board-card.js'
 import { CardDetail } from './card-detail.js'
 import { ensureBoardStyles } from './board-styles.js'
@@ -92,34 +94,44 @@ function sameStatuses(left, right) {
  * 状态有两个来源，合并后成一个表：
  *
  * - **宿主会话状态**（`useSessionStatus`）：权威运行态、等你输入、未读确认。
- *   运行时状态由宿主的 `api-session/status` 事件驱动，会话列表对未保留的
- *   subagent 子会话给的是兜底值，据此说「空闲」是撒谎。
- * - **保留会话的快照**：最后一次执行失败的原因只在会话快照里，宿主会话状态
- *   不带这一项。保留同时让会话不被宿主回收。
+ *   运行时状态由宿主的 `api-session/status` 事件驱动。
+ * - **保留会话的快照**：运行态与最后一次执行失败的原因。保留同时让会话不被
+ *   宿主回收。
  *
- * 宿主没挂 ui-session 时没有会话状态 hook，退回读会话快照：运行态会不准
- * （子会话给兜底值），等你输入与未读无从表达，此时档位如实收敛。
+ * `sidebar.right.pane.tab` 座只注入 `tabInfo`，不提供 `useSessionStatus`，所以
+ * 实际生产路径上只有快照这一路：执行中与失败成立，等你输入与未读无从表达。
+ * 保留失败时该槽位不会出现在表里，界面上如实显示「状态未知」，不谎称空闲。
  *
  * @param {object[]} cards - 当前卡片
  * @param {() => object | undefined} getSessions - 取会话服务的延迟取值器
- * @param {Function} [useSessionStatus] - 宿主会话状态 hook
+ * @param {Function} [useSessionStatus] - 宿主会话状态 hook，槽位没注入时为 `undefined`
+ * @param {string} parentSessionId - 看板所属会话，卡片没记建卡会话时兜底当父会话
  * @returns {Map<string, object>} 会话 id 到状态
  */
-function useSlotStates(cards, getSessions, useSessionStatus) {
+function useSlotStates(cards, getSessions, useSessionStatus, parentSessionId) {
   const [snapshots, setSnapshots] = useState(() => new Map())
   const retention = useRef(undefined)
   const latest = useRef(getSessions)
   latest.current = getSessions
-
-  const needed = useMemo(() => {
-    const ids = new Set()
+  const parent = useRef(parentSessionId)
+  parent.current = parentSessionId
+  // 建卡会话表：子代理槽位的地址要用真正的父会话，卡片自己记着 `createdBy`。
+  // 表必须按 `cards` 记忆（每次渲染新建会连带 `needed` 变化，把同步效果拖成每
+  // 帧跑一次），保留器的闭包经 ref 读最新值。
+  const parentsNow = useMemo(() => {
+    const table = new Map()
     for (const card of cards) {
+      const creator = typeof card.createdBy === 'string' && card.createdBy !== '' ? card.createdBy : undefined
       for (const binding of slotBindingsOf(card)) {
-        if (binding.sessionId !== '') ids.add(binding.sessionId)
+        if (binding.sessionId !== '' && !table.has(binding.sessionId)) table.set(binding.sessionId, creator)
       }
     }
-    return ids
+    return table
   }, [cards])
+  const parents = useRef(parentsNow)
+  parents.current = parentsNow
+
+  const needed = useMemo(() => new Set(parentsNow.keys()), [parentsNow])
 
   const useStatuses = useSessionStatus ?? useNoSessionStatus
   const statuses = useStatuses(
@@ -141,7 +153,22 @@ function useSlotStates(cards, getSessions, useSessionStatus) {
       retain: (sessionId) => {
         const sessions = latest.current()
         if (sessions === undefined || sessions === null) throw new Error('会话服务不可用')
-        return sessions.retain(sessionId, { source: 'dshCoordinatorBoard' })
+        const options = { source: 'dshCoordinatorBoard' }
+        try {
+          return sessions.retain(sessionId, options)
+        } catch (error) {
+          // 子代理会话在客户端会话目录里可能没有独立条目，裸 id 认不出来。这类
+          // 会话要靠 `{ parentSessionId, childSessionId }` 地址才找得到——父会话
+          // 是建这张卡的会话（worker 由它派出），卡片没记时退回看板所属会话。
+          // 地址也拿不到就把原错误抛回去，由保留器记下「未知」，不静默换成空闲。
+          const target = retainTargetOf(sessions, sessionId, parents.current.get(sessionId) ?? parent.current)
+          if (target === undefined) throw error
+          try {
+            return sessions.retain(target, options)
+          } catch {
+            throw error
+          }
+        }
       },
       onState: (sessionId, state) => {
         setSnapshots((previous) => {
@@ -169,10 +196,11 @@ function useSlotStates(cards, getSessions, useSessionStatus) {
   }
 
   useEffect(() => {
-    // 释放先于保留，且不受会话服务可用与否影响：保留的副作用正是阻止宿主回收
-    // 会话，服务不可用这段时间里也得把不再需要的会话放掉
+    // 依赖只有 needed：`getSessions` 每次渲染都是新函数，带上它会让保存失败的
+    // 槽位在每一帧重试一次 retain（宿主对未知会话是同步抛错），把控制台刷满。
+    // 取值本来就经 `latest` 的 ref，不需要进依赖。
     retention.current.sync(needed)
-  }, [needed, getSessions])
+  }, [needed])
 
   useEffect(() => () => {
     retention.current.dispose()
@@ -311,7 +339,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   }, [project, callRemote])
 
   const cardList = cards
-  const states = useSlotStates(cardList, getSessions, useSessionStatus)
+  const states = useSlotStates(cardList, getSessions, useSessionStatus, sessionId)
 
   const { active, done } = useMemo(() => ({
     active: sortActiveCards(

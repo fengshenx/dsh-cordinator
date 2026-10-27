@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { SlotRetention } from '../src/client/slot-retain.js'
+import { SlotRetention, retainTargetOf } from '../src/client/slot-retain.js'
 
 /**
  * 造一个假的会话引用。
@@ -101,6 +101,59 @@ test('保留期间撤掉槽位：会话已释放就不再订阅它的快照', as
   await flush()
   assert.equal(subscribed, false)
   assert.deepEqual(record.states, [])
+})
+
+test('保留失败要报告，同一个会话只报一次', () => {
+  const errors = []
+  const retention = new SlotRetention({
+    retain: () => { throw new Error('宿主不认识这个会话 id') },
+    onState: () => {},
+    onDrop: () => {},
+    onError: (message) => { errors.push(message) },
+  })
+  retention.sync(new Set(['nope']))
+  retention.sync(new Set(['nope']))
+  retention.sync(new Set(['nope']))
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /nope/)
+  assert.match(errors[0], /宿主不认识这个会话 id/)
+})
+
+test('保留就绪失败也要报告，且撤掉再加回不重复报', async () => {
+  const errors = []
+  const retention = new SlotRetention({
+    retain: () => ({ ready: Promise.reject(new Error('打开失败')), release: () => {} }),
+    onState: () => {},
+    onDrop: () => {},
+    onError: (message) => { errors.push(message) },
+  })
+  retention.sync(new Set(['s1']))
+  await flush()
+  retention.sync(new Set([]))
+  retention.sync(new Set(['s1']))
+  await flush()
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /打开失败/)
+})
+
+test('宿主给了子代理地址就用它', () => {
+  const address = { parentSessionId: 'p1', childSessionId: 'c1', mode: 'continuable' }
+  const sessions = { subagentAddress: () => address }
+  assert.deepEqual(retainTargetOf(sessions, 'c1', 'fallback'), address)
+})
+
+test('宿主没给地址时用建卡会话兜一个未知模式的地址', () => {
+  const sessions = { subagentAddress: () => undefined }
+  assert.deepEqual(retainTargetOf(sessions, 'c1', 'p1'), {
+    parentSessionId: 'p1',
+    childSessionId: 'c1',
+    mode: 'unknown',
+  })
+})
+
+test('既没有地址也没有建卡会话时不编造目标', () => {
+  assert.equal(retainTargetOf({}, 'c1', ''), undefined)
+  assert.equal(retainTargetOf({}, 'c1', undefined), undefined)
 })
 
 test('dispose 释放全部保留的会话，且不再回调状态更新', async () => {
