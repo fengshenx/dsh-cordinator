@@ -1,11 +1,11 @@
 # 派工结算的挂载顺序、索引就绪与看板容错
 
 **状态**：implemented（2026-10-28）
-**范围**：`src/host/dispatch.js`、`src/host/projects/service.js`、`src/host/index.js`、`src/host/worker-registry.js`、`src/client/board.js`、`src/client/project-board-monitor.js`、`tests/dispatch.test.js`、`tests/worker-registry.test.js`
+**范围**：`src/host/dispatch.js`、`src/host/projects/service.js`、`src/host/index.js`、`src/host/worker-registry.js`、`src/client/board.js`、`src/client/project-board-monitor.js`、`tests/dispatch.test.js`、`tests/dispatch-continuation.test.js`、`tests/worker-registry.test.js`
 
 ## 背景
 
-PR #10 第二轮复审提了三类问题：派工链路上「失败被记成成功」的三处（登记失败丢通知、续聊竞态抛错、续聊轮失败报完成）、协调者判定 `fail-open` 却没有执行期兜底、看板一次 RPC 抖动就永久停在错误页。
+PR #10 第二轮复审提了三类问题：派工链路上「失败被记成成功」的三处（登记失败丢通知、续聊竞态抛错、续聊轮失败报完成）、协调者判定 `fail-open` 却没有执行期兜底、看板一次 RPC 抖动就永久停在错误页。第三轮复审指出续聊轮的修法本身站不住：判据只认 `error`，而首轮结算压根没判——同一套终态语义写了两遍、两处都偏。
 
 ## 决策
 
@@ -15,9 +15,13 @@ PR #10 第二轮复审提了三类问题：派工链路上「失败被记成成�
 
 **续聊轮按 `stopReason` 报真实结果**。宿主 `subagent/end` 失败时也发，负载是 `stopReason: 'error'` 加空 output。硬编码 `ok: true` 会把崩溃的续聊轮记成「完成」，气泡上只剩一句「（worker 未产出文本）」，与真的没产出分不开。
 
+**首轮与续聊轮共用 `judgeTerminal(result)`，判据是「非 `completed` 即失败」**。宿主对 child-level 失败是 **resolve 而非 reject**（`subagent/src/types.ts` 的 `activation.result` 契约：非 `completed` 的原因意味着 output 可能不完整），所以「promise 没抛错」不等于「活干成了」——首轮原实现一律记 `ok: true`，而首轮是每次派工必经路径，暴露面比续聊轮更大。`SubagentStopReasonMap` 共五档：只有 `completed` 算完成，`error` / `aborted` / `refusal` 是没干成活，`max-tokens` 的产出是被截断的，当完整产物交给协调者验收会漏掉返工。失败正文保留原始 `stopReason`（`worker 以 max-tokens 结束，产出可能不完整`），不笼统写「以错误结束」；缺 `stopReason` 的旧负载按 `completed` 处理——宿主没给原因不等于它说失败了。首轮与续聊轮判据同源，分开写必然再走偏（上一轮正是只给续聊轮写了 `stopReason === 'error'`）。
+
 **派工不能建立在索引 fail-open 上**。`isCoordinatorSession()` 在索引未就绪时一律返回 true，那是为了让协调者首轮看得到工具（`agent/created` 早于首轮请求组装）。但那个宽松意味着注册表读不出来时**任何**会话都被当成协调者。派工是唯一会真的拉起会话的操作，执行前 `awaitIndex()` 等一次重建结果，读不出来就拒绝，并要求调用方确实是协调者。读类工具继续用同步判定——多给一个读工具的实际危害是「看不到卡片列表」，不是拉起会话。
 
-**索引重建失败退避重试三次**。原实现只在启动时试一次，失败后 `indexLoaded` 永久 false，`awaitIndex()` 会永远返回 false、派工全废。退避 2s / 4s 重试，仍失败则由派工路径明确报错，让用户知道要重启。
+**索引重建失败退避重试三次**。原实现只在启动时试一次，失败后 `indexLoaded` 永久 false，`awaitIndex()` 会永远返回 false、派工全废。退避 2s / 4s 重试，仍失败则由派工路径明确报错，让用户知道要重启。重试定时器与 `disposed` 标志一起进 `ctx.on('dispose')`：插件卸载后不该再排新的重试，也不该继续读索引写日志。
+
+**`coordinatorIndex` 是必需参数，装配时断言**。它原先是可选项，漏传即整段跳过派工校验——那道闸的失效方式是静默的，复审的探针正是靠不传参数跑通的。派工是会真的拉起会话的操作，宁可 `createDispatcher` 当场报错，也不要留一个悄悄少一道闸的入口。测试侧用 `makeDispatcher` helper 提供默认放行实现，避免每个用例重复桩件。
 
 **看板 RPC 抖动不判死**。`resolveProject` 与 `fetchBoardCards` 成功时 `setError(null)`；轮询失败保留已加载的卡片。2 秒轮询本来就是干这个的，把面板永久钉在错误页上等于把自愈能力扔掉。
 
@@ -35,7 +39,7 @@ PR #10 第二轮复审提了三类问题：派工链路上「失败被记成成�
 
 ## 验证
 
-- `npm run check`：339 例全绿；`npm run build:client` 通过。
+- `npm run check`：350 例全绿（含 main 上 #9 并入的用例）；`npm run build:client` 通过。
 - 回归有效性双向验证（撤修复 → 用例红 → 还原 → 绿）逐条做过：
   - 登记失败丢通知：还原为「先登记后挂回调」→ `✖ worker 登记失败仍照常投递完成通知`
   - 续聊竞态：还原为「await 后查表」→ `✖ 消息往返期间 worker 结算，不误报发不出去`
@@ -43,4 +47,6 @@ PR #10 第二轮复审提了三类问题：派工链路上「失败被记成成�
   - 索引未就绪：去掉 `!ready` 分支 → `✖ 项目索引读不出来时拒绝派工，不拉起子会话`
   - 非协调者：去掉 `isCoordinatorSession` 分支 → `✖ 非协调者会话派工被拒绝`
   - 登记表上限：条件加 `false &&` → `✖ 超出上限时淘汰最早的记录，文件不无界增长`
+  - 终态判据：`if (stopReason === 'completed' || true)` → `✖ 宿主终态里只有 completed 算完成，其余原因一律判失败` 与 `✖ 首轮 worker 被 max-tokens 截断时通知判失败`
+  - `coordinatorIndex` 断言：条件加 `false &&` → `✖ 漏传 coordinatorIndex 时装配直接报错，不静默跳过派工校验`
 - React 侧改动（看板清错、卸载关 tab、`needed` 稳定键）进不了单测：本仓刻意不引 React 与 jsdom，靠代码审阅，未做真机取证。

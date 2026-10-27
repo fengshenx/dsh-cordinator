@@ -8,6 +8,14 @@ import { WORKER_REPORT_SOURCE_KIND } from '../src/shared/worker-report.js'
 
 after(cleanupTempDirs)
 
+/** 协调者索引假件：续聊用例都在协调者会话里跑，默认放行。 */
+const coordinatorIndex = {
+  async awaitIndex() {
+    return true
+  },
+  isCoordinatorSession: () => true,
+}
+
 async function waitFor(predicate, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -54,7 +62,7 @@ async function createFixture({ removeSucceeds = true } = {}) {
   const home = await makeTempDir('dsh-coordinator-continuation-')
   const store = createNotificationStore({ home })
   const workers = createWorkerRegistry({ home })
-  const dispatcher = createDispatcher({ ctx, store, workers })
+  const dispatcher = createDispatcher({ ctx, store, workers, coordinatorIndex })
   const parent = {
     id: 'parent-1',
     status: 'idle',
@@ -103,7 +111,7 @@ test('缺会话持久化后端时拒绝派工', async () => {
     },
   }
   const home = await makeTempDir('dsh-coordinator-continuation-')
-  const dispatcher = createDispatcher({ ctx, store: createNotificationStore({ home }), workers: createWorkerRegistry({ home }) })
+  const dispatcher = createDispatcher({ ctx, store: createNotificationStore({ home }), workers: createWorkerRegistry({ home }), coordinatorIndex })
   await assert.rejects(
     () => dispatcher.dispatch({ parent: { id: 'p' }, task: 't', label: 'l', signal: new AbortController().signal }),
     /持久化/,
@@ -120,7 +128,7 @@ test('缺会话查询后端时拒绝派工', async () => {
     },
   }
   const home = await makeTempDir('dsh-coordinator-continuation-')
-  const dispatcher = createDispatcher({ ctx, store: createNotificationStore({ home }), workers: createWorkerRegistry({ home }) })
+  const dispatcher = createDispatcher({ ctx, store: createNotificationStore({ home }), workers: createWorkerRegistry({ home }), coordinatorIndex })
   await assert.rejects(
     () => dispatcher.dispatch({ parent: { id: 'p' }, task: 't', label: 'l', signal: new AbortController().signal }),
     /查询/,
@@ -218,7 +226,7 @@ test('宿主 sendMessage 失败时续聊登记回滚', async () => {
   const workers = createWorkerRegistry({ home })
   // 同一子会话登记进新 home 的登记表，让 message 走到 sendMessage
   await workers.register({ childId, parentSessionId: 'parent-1', label: '首轮' })
-  const dispatcher = createDispatcher({ ctx, store, workers })
+  const dispatcher = createDispatcher({ ctx, store, workers, coordinatorIndex })
   await assert.rejects(
     () => dispatcher.message({ parent: fixture.parent, childId, message: 'x', signal: new AbortController().signal }),
     /NOT_RESUMABLE/,

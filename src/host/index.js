@@ -134,13 +134,17 @@ export function apply(ctx) {
   })
   // 项目索引失败会永久停在「未就绪」，而那个状态下所有会话都被当作协调者。
   // 重启进程代价太大，退避重试几次；最终失败则由派工路径上的 awaitIndex 拒绝。
+  /** @type {ReturnType<typeof setTimeout> | undefined} 重试定时器，卸载时清掉 */
+  let indexRetryTimer
+  /** @type {boolean} 插件是否已卸载：卸载后不再排新的重试 */
+  let disposed = false
   const loadProjectIndex = async (attempt) => {
     try {
       await projectService.loadIndex()
     } catch (error) {
       logger(`dsh-coordinator: 重建项目索引失败（第 ${attempt} 次）：${error instanceof Error ? error.message : String(error)}`)
-      if (attempt >= 3) return
-      setTimeout(() => { void loadProjectIndex(attempt + 1) }, 2000 * attempt)
+      if (attempt >= 3 || disposed) return
+      indexRetryTimer = setTimeout(() => { void loadProjectIndex(attempt + 1) }, 2000 * attempt)
     }
   }
   void loadProjectIndex(1)
@@ -180,6 +184,8 @@ export function apply(ctx) {
 
   // 空闲检测的定时器随插件卸载一起停掉。
   ctx.on('dispose', () => {
+    disposed = true
+    clearTimeout(indexRetryTimer)
     dispatcher.dispose()
   })
 }

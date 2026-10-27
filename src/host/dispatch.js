@@ -95,12 +95,33 @@ export function buildWorkerReport(outcome) {
 }
 
 /**
+ * 把宿主的终态原因判成通知用的终态。
+ *
+ * 宿主对 child-level 失败是 **resolve 而非 reject**（`subagent/src/types.ts` 的
+ * `activation.result` 契约，注释原文：非 `completed` 的原因意味着 output 可能不完整），
+ * 所以「promise 没抛错」不等于「活干成了」。只有 `completed` 算完成：
+ * `error` / `aborted` / `refusal` 是没干成活，`max-tokens` 的产出是被截断的，
+ * 当完整产物交给协调者验收会漏掉返工。
+ *
+ * @param {{ stopReason?: unknown, output?: unknown }} result - 宿主终态负载
+ * @returns {{ ok: true, result: object } | { ok: false, error: Error }} 通知终态
+ */
+export function judgeTerminal(result) {
+  const stopReason = typeof result?.stopReason === 'string' && result.stopReason !== ''
+    ? result.stopReason
+    : 'completed'
+  if (stopReason === 'completed') return { ok: true, result }
+  return { ok: false, error: new Error(`worker 以 ${stopReason} 结束，产出可能不完整`) }
+}
+
+/**
  * 创建派工与唤醒器。
  *
  * @param {object} options - 选项
  * @param {object} options.ctx - Cordis 上下文
  * @param {object} options.store - 通知落盘队列
  * @param {object} options.workers - worker 登记表（见 `worker-registry.js`）
+ * @param {object} options.coordinatorIndex - 项目注册表（提供 `awaitIndex` 与 `isCoordinatorSession`）
  * @param {string} [options.provider] - subagent provider 名，默认 `spawn`
  * @param {number} [options.autoResumeLimit] - 连续自动续行上限
  * @param {(parentSessionId: string) => string | undefined} [options.resolveWorkerCwd] - 取 worker 的工作目录
@@ -111,12 +132,17 @@ export function createDispatcher({
   ctx,
   store,
   workers,
+  coordinatorIndex,
   provider = 'spawn',
   autoResumeLimit = DEFAULT_AUTO_RESUME_LIMIT,
   resolveWorkerCwd,
-  coordinatorIndex,
   logger = () => {},
 }) {
+  // 派工校验依赖它，漏传就整段静默跳过——宁可装配时报错，也不要悄悄少一道闸。
+  if (typeof coordinatorIndex?.awaitIndex !== 'function'
+    || typeof coordinatorIndex?.isCoordinatorSession !== 'function') {
+    throw new Error('dsh-coordinator: createDispatcher 缺少 coordinatorIndex，无法校验协调者身份')
+  }
   /** @type {Map<string, object>} 派工记录，key 为子会话 id */
   const inflight = new Map()
   /** @type {Map<string, number>} 每个父会话的连续自动续行次数 */
@@ -491,19 +517,12 @@ export function createDispatcher({
         return
       }
       noticeStates.delete(childId)
-      // 宿主 `subagent/end` 在失败时也发，负载是 `stopReason: 'error'` 加空
-      // output。照抄成 ok 会让崩溃的续聊轮结算成「完成」，气泡上只剩一句
-      // 「worker 未产出文本」——和真的没产出分不开。
-      const failed = info.stopReason === 'error'
-      await emitNotification(record, failed
-        ? { ok: false, error: new Error('worker 续聊轮以错误结束') }
-        : {
-          ok: true,
-          result: {
-            stopReason: info.stopReason ?? 'completed',
-            output: Array.isArray(info.lastAssistantMessage) ? info.lastAssistantMessage : [],
-          },
-        })
+      // 宿主 `subagent/end` 在非正常结束时也发，负载带 `stopReason` 与最后一次
+      // assistant 输出。首轮与续聊轮共用同一套判据。
+      await emitNotification(record, judgeTerminal({
+        stopReason: info.stopReason,
+        output: Array.isArray(info.lastAssistantMessage) ? info.lastAssistantMessage : [],
+      }))
     })().catch((error) => {
       // 读盘失败等异常兜在这里：宿主对未处理拒绝是致命退出，一次抖动不该带走 dsh。
       logger(`dsh-coordinator: 续聊结算失败：${error instanceof Error ? error.message : String(error)}`)
@@ -552,14 +571,12 @@ export function createDispatcher({
     // 派工是唯一会真的拉起一个会话的操作，不能建立在「索引没就绪就先放行」的
     // 宽松判定上：注册表读不出来时，任何会话都会被当成协调者。这里等一次重建
     // 结果，读不出来就拒绝，并要求调用方确实是项目协调者。
-    if (coordinatorIndex !== undefined) {
-      const ready = await coordinatorIndex.awaitIndex()
-      if (!ready) {
-        throw new Error('spawn_worker: 项目注册表尚未读出，无法确认协调者身份，暂不能派工')
-      }
-      if (!coordinatorIndex.isCoordinatorSession(parent.id)) {
-        throw new Error('spawn_worker: 只有项目协调者能派工，请先 add_project 或用项目协调者会话')
-      }
+    const ready = await coordinatorIndex.awaitIndex()
+    if (!ready) {
+      throw new Error('spawn_worker: 项目注册表尚未读出，无法确认协调者身份，暂不能派工')
+    }
+    if (!coordinatorIndex.isCoordinatorSession(parent.id)) {
+      throw new Error('spawn_worker: 只有项目协调者能派工，请先 add_project 或用项目协调者会话')
     }
     // 续聊是 worker 的既定能力：缺持久化后端（日志不落盘）或查询后端（冷恢复
     // 读不了日志）时 worker 只能跑一轮，拒绝派工而不是静默降级成一次性 worker。
@@ -597,7 +614,8 @@ export function createDispatcher({
     // 先登记后挂回调时，登记一失败（home 只读、磁盘满）回调就永远注册不上，
     // 子会话白跑一遍、通知既不入盘也不投递。登记失败只记日志——子会话回滚不了。
     void activation.result.then(
-      (result) => settle(record.childId, { ok: true, result }),
+      // 宿主对 child-level 失败是 resolve 而非 reject，不能只看 promise 有没有抛。
+      (result) => settle(record.childId, judgeTerminal(result)),
       (error) => settle(record.childId, { ok: false, error }),
     ).catch((error) => {
       // 落盘失败等异常兜在这里：宿主对未处理拒绝是致命退出，一次磁盘抖动不该

@@ -41,7 +41,8 @@ test('超出上限时淘汰最早的记录，文件不无界增长', async () =>
   assert.deepEqual(stored.workers.map((item) => item.childId), ['child-2', 'child-3'])
 })
 
-test('跨实例读同一份落盘（进程重启后续聊找得到工）', async () => {  const home = await makeTempDir('dsh-coordinator-registry-')
+test('跨实例读同一份落盘（进程重启后续聊找得到工）', async () => {
+  const home = await makeTempDir('dsh-coordinator-registry-')
   await createWorkerRegistry({ home }).register({ childId: 'child-1', parentSessionId: 'parent-1', label: '工' })
   const reloaded = await createWorkerRegistry({ home }).get('child-1')
   assert.equal(reloaded.label, '工')
