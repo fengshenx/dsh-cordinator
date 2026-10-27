@@ -39,6 +39,8 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 **事件窗口按增量重放**。宿主的事件窗口「每接受一次变更就同步发布一次」（`packages/api/session-controller/src/client/contract/events.ts:119`），流式输出时每个 chunk 都是一次发布；每次都全量重放整扇窗口，等于把「窗口有多大」乘上「chunk 有多少」，看板会在协调者流式输出时卡住。改按宿主给的 `change` 分派：`append` 与 `settle-assistant` 只处理增量条目，`replace` 与 `prepend` 全量重建——`prepend` 往窗口前面补历史，早到的投影与后到的投影谁作数取决于窗口顺序。卡片表为空时同样全量重建：增量条目只覆盖增量部分，空表靠增量拼不出完整的视图。
 
+> P5 起看板的数据源从会话事件流换成宿主卡片库，本节的重放机制整段删除，见[看板按项目组织](2026-10-27-project-bound-board.md)。保留本节是为了记录「为什么会走偏」：事件窗口既跨不了会话（worker 建的卡不在协调者的窗口里），也扛不住宿主回收（窗口丢了卡就没了），而卡片真源一直在宿主的 `cards.json` 里。信号灯、排序、停滞判定、chip 排布这些不依赖数据来源的部分原样保留。
+
 **会话保留的账本独立于 React**。`retain`/`release` 的配对是看板最容易出错的地方（多释放一次宿主引用计数错位，少释放一次就永久持有会话），抽成 `slot-retain.js` 的独立模块，配对关系才能被直接断言。释放先于保留，且不受会话服务可用与否影响——保留的副作用正是阻止宿主回收会话，服务不可用这段时间里也得把不再需要的会话放掉。
 
 **组件的可判定逻辑拆成纯模块**。bundle 的运行时依赖只有 Node 内置模块，React 来自宿主、不在本仓依赖里——组件本身进不了单测，引入 jsdom 也不划算（本仓刻意不引）。于是把「能判定的那部分」从组件里拆出来：`link-row.js`（链接能否跳转、chip 的 key、排布计划）、`modal-focus.js`（初始焦点、Tab 绕回、Escape 动作）、`card-detail-view.js`（详情分段内容）。组件只管把纯模块的结果渲染出来。这样「Tab 到边缘要绕回」「没有进展就不出现该段」这类最容易写错的规则能被直接断言，而不是靠肉眼数 DOM。
@@ -54,7 +56,7 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 - **「等你输入」档暂无数据源**：宿主有机制（`pendingInteraction`）但当前没有域发布，这一档不会亮（见 [capability-gaps 第 35 条](../../docs/capability-gaps.md)）。
 - **详情浮层是打开瞬间的卡片快照**：卡片随后被协调者更新，浮层不会跟着刷新，要关掉重开。浮层只读，刷新它没有意义。
 - **详情只读**：完成、置顶、重命名、删除需要新增一组卡片远程方法（本仓的 Typert 写通道已有，缺的是卡片方法本身），属独立议题。
-- **无 workspace chip**：卡片不按项目/工作区分区，编号全局递增（见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。
+- **无 workspace chip**：卡片按项目归属，不按工作区分区；编号全局递增（见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。
 - **浮层与宿主 Modal 是复制改写**：宿主改 `Modal.tsx` 时本仓要同步（与确认弹窗同一条耦合）。
 - **卡面根的 ARIA 冲突**：见上。
 - **看板会保留槽位会话**：`retain` 的会话在卡片撤掉该槽位后释放，否则状态表会随卡片增删漂移。
