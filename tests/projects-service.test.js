@@ -665,3 +665,44 @@ test('索引重建完成前判定归属：等重建，不静悄悄地丢归属',
   const resolved = await pending
   assert.equal(resolved.id, 'p-restart')
 })
+
+test('isCoordinatorSession 同步认出建项目时定下的协调者', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const service = createProjectService({
+    store: createProjectStore({ home }),
+    ctx: createContext(),
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  await service.loadIndex()
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  assert.equal(service.isCoordinatorSession(project.coordinatorSessionId), true)
+  assert.equal(service.isCoordinatorSession('session-other'), false)
+  assert.equal(service.isCoordinatorSession(''), false)
+  assert.equal(service.isCoordinatorSession(undefined), false)
+})
+
+test('isCoordinatorSession 在索引未重建时保守放行', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const base = createProjectStore({ home })
+  await base.insert({
+    id: 'p-restart',
+    name: '重启前建的项目',
+    directory: workspace,
+    coordinatorSessionId: 'session-restart',
+    createdAt: 1,
+    updatedAt: 1,
+  })
+  const service = createProjectService({
+    store: base,
+    ctx: createContext(),
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  // 还没 loadIndex：注册表里的协调者问不出来，不能判成「不是协调者」
+  assert.equal(service.isCoordinatorSession('session-restart'), true)
+  assert.equal(service.isCoordinatorSession('session-anyone'), true)
+  await service.loadIndex()
+  assert.equal(service.isCoordinatorSession('session-restart'), true)
+  assert.equal(service.isCoordinatorSession('session-anyone'), false)
+})

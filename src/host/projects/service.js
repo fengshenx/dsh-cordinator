@@ -117,6 +117,14 @@ export function createProjectService({
    */
   let indexReady = Promise.resolve()
 
+  /**
+   * 索引是否已从注册表重建完成。
+   *
+   * 重建前内存镜像是空的，「这个会话是不是协调者」问不出真话；工具面分配要
+   * 同步拿到答案，等不了 promise，只能靠这个标志区分「没有协调者」与「还不知道」。
+   */
+  let indexLoaded = false
+
   // 目录归一器在进程内共享：会话头里的 cwd 高度重复，重复 realpath 纯属浪费。
 
   /**
@@ -167,13 +175,34 @@ export function createProjectService({
         }
         return coordinatorIndex
       })()
-      // 重建失败也要让等待者看到「重建过了」，否则它们会永远挂着等一个永远
-      // 不 settle 的 promise。失败的事实由调用方从 `loadIndex()` 的返回值看到。
+      // 重建成功才算就绪：失败时索引仍是空的，`isCoordinatorSession()` 继续走
+      // 保守放行，而不是把协调者的工具面判没。失败事实仍由返回值传播给调用方。
       indexReady = rebuilding.then(
-        () => undefined,
+        () => {
+          indexLoaded = true
+        },
         () => undefined,
       )
       return rebuilding
+    },
+
+    /**
+     * 同步判定某个会话是不是项目协调者。
+     *
+     * 协调者身份在建项目时就写进注册表（`coordinatorSessionId`），工具面据此
+     * 分配——不必等会话跑起来再从会话内容里推断。
+     *
+     * 索引重建完成前一律返回 true：那时注册表还没读回内存，返回 false 会让
+     * 协调者首轮看不到编排工具，活直接干不成；多给工具的实际危害是零，每个
+     * 工具执行时都按调用方会话再校验一次归属。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {boolean} 是否项目协调者
+     */
+    isCoordinatorSession(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return false
+      if (!indexLoaded) return true
+      return coordinatorIndex.has(sessionId)
     },
 
     /**

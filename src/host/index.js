@@ -1,9 +1,10 @@
 /**
  * dsh-coordinator 的宿主侧插件。
  *
- * 贡献八件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
- * 派工完成后的自动唤醒、任务看板卡片存储与卡片工具、项目注册表与项目作用域工具、
- * 项目数据的 Typert 远程通道，以及角色槽位到系统提示词的注入。
+ * 贡献九件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
+ * worker 续聊（登记表落盘 + `message_worker` 工具 + 续聊轮完成唤醒）、派工完成后
+ * 的自动唤醒、任务看板卡片存储与卡片工具、项目注册表与项目作用域工具、项目数据
+ * 的 Typert 远程通道，以及角色槽位到系统提示词的注入。
  *
  * 客户端侧（交付看板 UI 与左栏项目区块）在 `src/client/`，跑在浏览器进程，与本
  * 模块不共处。
@@ -16,6 +17,7 @@ import { dirname, join } from 'node:path'
 import { createSkillProvider } from './skills.js'
 import { createInitProjectTool } from './tools/init-project.js'
 import { createSpawnWorkerTool } from './tools/spawn-worker.js'
+import { createMessageWorkerTool } from './tools/message-worker.js'
 import { createCreateCardTool, createUpdateCardTool, createListCardsTool } from './tools/cards.js'
 import {
   createListProjectsTool,
@@ -24,11 +26,13 @@ import {
   createRemoveProjectTool,
 } from './tools/projects.js'
 import { createNotificationStore, resolveDshHome } from './notification-store.js'
+import { createWorkerRegistry } from './worker-registry.js'
 import { createCardStore } from './cards/store.js'
 import { createProjectStore } from './projects/store.js'
 import { createProjectService } from './projects/service.js'
 import { createProjectRemote } from './projects/remote.js'
 import { createDispatcher } from './dispatch.js'
+import { applyToolGate } from './tools/gate.js'
 import { applyRoleContext } from './slots/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -62,15 +66,20 @@ export function apply(ctx) {
     }),
   )
 
+  // 项目注册表：编排语境的容器。目录是代码语境，项目是编排语境，二者不合并。
+  const projects = createProjectStore({ home: resolveDshHome(), logger })
+  const projectService = createProjectService({ store: projects, ctx, logger })
+
+  // 工具面按角色分配：协调者拿到编排与全库查询，worker 再少掉项目注册表的
+  // 读写，普通会话两者都没有。裁剪在 `agent/created` 时对 agent 作用域做
+  // （见 `applyToolGate`）。
+  const isCoordinatorSession = (sessionId) => projectService.isCoordinatorSession(sessionId)
+
   ctx.tools.register(
     createInitProjectTool({
       conventionsPath: join(bundleRoot, 'skills', 'init-project', 'references', 'conventions.md'),
     }),
   )
-
-  // 项目注册表：编排语境的容器。目录是代码语境，项目是编排语境，二者不合并。
-  const projects = createProjectStore({ home: resolveDshHome(), logger })
-  const projectService = createProjectService({ store: projects, ctx, logger })
 
   ctx.tools.register(createListProjectsTool({ service: projectService }))
   ctx.tools.register(createAddProjectTool({ service: projectService }))
@@ -86,16 +95,21 @@ export function apply(ctx) {
   createProjectRemote({ service: projectService, cards, ctx })
 
   const store = createNotificationStore({ logger })
+  const workers = createWorkerRegistry({ home: resolveDshHome(), logger })
   const dispatcher = createDispatcher({
     ctx,
     store,
+    workers,
     // worker 跑在项目目录里：协调者不能指定 worker 的工作目录。
     resolveWorkerCwd: (sessionId) => projectService.directoryOfCoordinator(sessionId),
     logger,
   })
 
   ctx.tools.register(createSpawnWorkerTool({ dispatcher }))
+  ctx.tools.register(createMessageWorkerTool({ dispatcher }))
 
+  // 建卡与改卡对所有会话开放：worker 边干活边把状态写回卡片，普通会话也能为
+  // 项目登记待办；查全库卡片只给协调者。
   ctx.tools.register(createCreateCardTool({ store: cards, resolveProject }))
   ctx.tools.register(createUpdateCardTool({ store: cards, resolveProject }))
   ctx.tools.register(createListCardsTool({ store: cards, resolveProject }))
@@ -121,7 +135,11 @@ export function apply(ctx) {
   })
 
   // 父会话注册后补投此前未送达的完成通知（进程崩溃窗口）。
+  //
+  // 工具面也在这里裁：`agent/created` 早于首轮请求组装，作用域是新建的，每次
+  // 会话创建（含冷恢复）都重算一遍，不会带着上一次的限制。
   ctx.on('agent/created', ({ agent }) => {
+    applyToolGate({ agent, isCoordinatorSession })
     dispatcher.markAlive(agent.id)
     void dispatcher.redeliverPending(agent).catch((error) => {
       logger(`dsh-coordinator: 补投完成通知失败：${error instanceof Error ? error.message : String(error)}`)
@@ -134,10 +152,19 @@ export function apply(ctx) {
   })
 
   // 外部输入抵达即重置该会话的自动续行计数——人工介入后护栏应重新开始计数。
+  // 宿主的 subagent 结算通知先经派工器甄别：被移除的续聊通知不是外部输入，
+  // 不该重置计数；移除失败时它兜底透传，同样不算人工介入。
   ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+    if (dispatcher.maybeSwallowSettlementNotice(agent, message)) return
     if (!dispatcher.isInjected(message.id)) {
       dispatcher.resetResumeCount(agent.id)
     }
+  })
+
+  // 续聊轮的完成信号：宿主在子会话结算时发出，负载带子会话 id、终态原因与
+  // 最后一次 assistant 输出（见 dispatch.js 的续聊说明）。
+  ctx.on('subagent/end', (info) => {
+    dispatcher.onSubagentEnd(info)
   })
 
   // 空闲检测的定时器随插件卸载一起停掉。
