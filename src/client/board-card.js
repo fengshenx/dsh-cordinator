@@ -20,6 +20,7 @@ import {
   isCardStalled,
   slotViewsForCard,
 } from './board-projection.js'
+import { isJumpableLink, linkRowKey, planLinkRow } from './link-row.js'
 import { productIcon } from './icons.js'
 
 /** 链接行左侧缩进，对齐标题文字起点（信号灯槽 14px + 间距 8px）。 */
@@ -102,7 +103,7 @@ function BoardLinks({ links, onOpenDetail }) {
     return () => observer.disconnect()
   }, [links])
 
-  const overflow = links.length - visibleCount
+  const plan = planLinkRow(links, visibleCount)
 
   return createElement(
     'div',
@@ -110,15 +111,15 @@ function BoardLinks({ links, onOpenDetail }) {
     createElement(
       'div',
       { ref: measure, 'aria-hidden': 'true', className: 'dsh-coordinator-board-links-measure' },
-      links.map((link, index) => (typeof link.url === 'string' && link.url !== ''
+      links.map((link, index) => (isJumpableLink(link)
         ? createElement('a', {
-            key: link.id ?? `${link.label}-${index}`,
+            key: linkRowKey(link, index),
             href: link.url,
             tabIndex: -1,
             className: 'dsh-coordinator-board-link-chip',
           }, linkChipContent(link))
         : createElement('button', {
-            key: link.id ?? `${link.label}-${index}`,
+            key: linkRowKey(link, index),
             type: 'button',
             tabIndex: -1,
             className: 'dsh-coordinator-board-link-chip',
@@ -126,30 +127,31 @@ function BoardLinks({ links, onOpenDetail }) {
       createElement(
         'button',
         { type: 'button', tabIndex: -1, className: 'dsh-coordinator-board-link-chip dsh-coordinator-board-link-overflow' },
-        `+${links.length}`,
+        plan.measureOverflow,
       ),
     ),
-    links.slice(0, visibleCount).map((link, index) => (typeof link.url === 'string' && link.url !== ''
-      ? createElement('a', {
-          key: link.id ?? `${link.label}-${index}`,
-          href: link.url,
-          target: '_blank',
-          rel: 'noreferrer',
-          title: link.purpose || link.url,
-          className: 'dsh-coordinator-board-link-chip',
-          onClick: (event) => { event.stopPropagation() },
-        }, linkChipContent(link))
-      : createElement('button', {
-          key: link.id ?? `${link.label}-${index}`,
-          type: 'button',
-          title: link.purpose || link.label,
-          className: 'dsh-coordinator-board-link-chip',
-          onClick: (event) => {
-            event.stopPropagation()
-            onOpenDetail(event.currentTarget)
-          },
-        }, linkChipContent(link)))),
-    overflow > 0
+    links.map((link, index) => ({ link, index })).slice(0, plan.visible.length)
+      .map(({ link, index }) => (isJumpableLink(link)
+        ? createElement('a', {
+            key: linkRowKey(link, index),
+            href: link.url,
+            target: '_blank',
+            rel: 'noreferrer',
+            title: link.purpose || link.url,
+            className: 'dsh-coordinator-board-link-chip',
+            onClick: (event) => { event.stopPropagation() },
+          }, linkChipContent(link))
+        : createElement('button', {
+            key: linkRowKey(link, index),
+            type: 'button',
+            title: link.purpose || link.label,
+            className: 'dsh-coordinator-board-link-chip',
+            onClick: (event) => {
+              event.stopPropagation()
+              onOpenDetail(event.currentTarget)
+            },
+          }, linkChipContent(link)))),
+    plan.overflow !== null
       ? createElement('button', {
           type: 'button',
           title: links.map((link) => link.label).join(' · '),
@@ -158,7 +160,7 @@ function BoardLinks({ links, onOpenDetail }) {
             event.stopPropagation()
             onOpenDetail(event.currentTarget)
           },
-        }, `+${overflow}`)
+        }, plan.overflow)
       : null,
   )
 }

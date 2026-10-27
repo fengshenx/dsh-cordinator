@@ -1,7 +1,7 @@
 # 看板卡片视觉与交互
 
 **状态**：implemented（P4，2026-10-27）
-**范围**：`src/client/board.js`、`src/client/board-card.js`、`src/client/board-styles.js`、`src/client/card-detail.js`、`src/client/modal-shell.js`、`src/client/board-projection.js`、`src/client/slot-retain.js`、`src/client/confirm-dialog.js`、`src/client/icons.js`
+**范围**：`src/client/board.js`、`src/client/board-card.js`、`src/client/board-styles.js`、`src/client/card-detail.js`、`src/client/modal-shell.js`、`src/client/board-projection.js`、`src/client/slot-retain.js`、`src/client/link-row.js`、`src/client/modal-focus.js`、`src/client/card-detail-view.js`、`src/client/confirm-dialog.js`、`src/client/icons.js`
 
 ## 背景
 
@@ -41,6 +41,8 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 **会话保留的账本独立于 React**。`retain`/`release` 的配对是看板最容易出错的地方（多释放一次宿主引用计数错位，少释放一次就永久持有会话），抽成 `slot-retain.js` 的独立模块，配对关系才能被直接断言。释放先于保留，且不受会话服务可用与否影响——保留的副作用正是阻止宿主回收会话，服务不可用这段时间里也得把不再需要的会话放掉。
 
+**组件的可判定逻辑拆成纯模块**。bundle 的运行时依赖只有 Node 内置模块，React 来自宿主、不在本仓依赖里——组件本身进不了单测，引入 jsdom 也不划算（本仓刻意不引）。于是把「能判定的那部分」从组件里拆出来：`link-row.js`（链接能否跳转、chip 的 key、排布计划）、`modal-focus.js`（初始焦点、Tab 绕回、Escape 动作）、`card-detail-view.js`（详情分段内容）。组件只管把纯模块的结果渲染出来。这样「Tab 到边缘要绕回」「没有进展就不出现该段」这类最容易写错的规则能被直接断言，而不是靠肉眼数 DOM。
+
 **详情浮层只读**，用 `headless` 模式自带头部（标题就是卡片标题本身，不用宿主默认的「无信息标题」）。卡片写权限归协调者工具，UI 不越权写。
 
 **浮层外壳抽成 `modal-shell.js`** 供确认弹窗与详情浮层共用：portal、遮罩、ESC、Tab 焦点陷阱、初始焦点、关闭回焦，以及宿主 `Modal.module.css` 的样式全文（style id `dsh-coordinator-modal`）。`confirm-dialog.js` 改为复用它，行为不变。
@@ -59,10 +61,12 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 ## 证据
 
-单测 226 例全绿（新增 14 例：槽位绑定提取、槽位视图、信号档位、active 排序、done 排序、停滞判定（含「会话在跑不算停滞」「状态不可知不算停滞」）、时长格式化、链接排布（含「间距非法时全量展示」），「等你输入 / 未读」两档的聚合与两个来源的合并规则，事件增量的六条分派规则，以及会话保留的六条配对规则——保留与释放各走一遍、宿主不认识会话 id、保留期间撤槽位、dispose）。
+单测 246 例全绿（本 PR 累计新增 34 例：槽位绑定提取、槽位视图、信号档位、active 排序、done 排序、停滞判定（含「会话在跑不算停滞」「状态不可知不算停滞」）、时长格式化、链接排布（含「间距非法时全量展示」），「等你输入 / 未读」两档的聚合与两个来源的合并规则，事件增量的六条分派规则，会话保留的六条配对规则，以及链接 chip 的判定与 key、排布计划、浮层焦点循环与 Escape 判定、详情分段内容共 20 例）。
 
 真实实例取证用隔离 mock profile（`DSH_HOME=/tmp/dsh-mock`）：mock provider 发 `create_card` / `update_card` / `spawn_worker` 工具调用，**真实卡片工具与真实派工执行** → 投影进 session log → 看板渲染，全程不触达真实 API。截图不入仓库（证据图不进 git），见 PR #4 的评论「证据」条：改前（P2 旧卡面）、改后、详情浮层、悬停态、已完成区展开五张，另加一张「未读档」取证。改前/改后取自同一会话的同一批卡片。
 
 **未读档实测**：mock provider 派一个 worker 子会话，worker 跑完停下；看板上该卡槽位点变蓝（未读），同一会话里的协调者自身卡片是灰（空闲——主视图看过的会话未读被清），绑不存在会话的卡仍是虚线圈（状态未知）。
 
 **增量重放实测**：新会话跑完一轮（派工 → 建 4 张卡 → 标记 1 张完成），看板在挂载状态下从 0 张变 4 张 active + 1 张 done，编号续到全局序号，槽位点分别落在未读、空闲、状态未知、无信号四档；状态不可知的卡不再被误标「停滞」；chip 间距从 CSS 读到 `4px`；控制台无报错。
+
+**浮层焦点实测**：点卡面开详情浮层，浮层里可聚焦元素是两个（关闭按钮、链接），连按 6 次 Tab 在两者间往返且焦点始终在浮层内；Shift+Tab 从首元素绕到末元素；Escape 关闭浮层后焦点回到刚才点的卡面。分段只出现有内容的那些（说明 / 当前进展 / 链接，下一步与阻塞为空时不出现）。

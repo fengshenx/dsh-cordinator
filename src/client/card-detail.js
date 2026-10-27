@@ -14,19 +14,10 @@
 
 import { createElement, useEffect } from 'react'
 import { ModalShell } from './modal-shell.js'
+import { detailSections, statusLabel } from './card-detail-view.js'
+import { isJumpableLink, linkRowKey } from './link-row.js'
 import { productIcon } from './icons.js'
 import { ensureBoardStyles } from './board-styles.js'
-
-/**
- * 状态徽章文案。
- * @param {string} status - 卡片状态
- * @returns {string} 徽章文案
- */
-function statusLabel(status) {
-  if (status === 'done') return '已完成'
-  if (status === 'archived') return '已归档'
-  return '进行中'
-}
 
 /**
  * 详情里的一段文本（spec 或检查点条目）。
@@ -59,8 +50,7 @@ export function CardDetail({ card, onClose, restoreFocus = null }) {
   useEffect(() => {
     ensureBoardStyles()
   }, [])
-  const checkpoint = card?.checkpoint
-  const links = Array.isArray(card?.links) ? card.links : []
+  const sections = detailSections(card)
   const done = card?.status === 'done'
 
   return createElement(ModalShell, {
@@ -108,18 +98,20 @@ export function CardDetail({ card, onClose, restoreFocus = null }) {
       createElement(
         'div',
         { className: 'dsh-coordinator-card-detail-body' },
-        typeof card?.spec === 'string' && card.spec !== ''
+        sections.spec !== null
           ? createElement(
               'section',
               { className: 'dsh-coordinator-card-detail-section' },
               createElement('div', { className: 'dsh-coordinator-card-detail-section-title' }, '说明'),
-              createElement('div', { className: 'dsh-coordinator-card-detail-text' }, card.spec),
+              createElement('div', { className: 'dsh-coordinator-card-detail-text' }, sections.spec),
             )
           : createElement('div', { className: 'dsh-coordinator-card-detail-muted' }, '这张卡还没有写说明。'),
-        createElement(DetailSection, { title: '当前进展', text: checkpoint?.summary }),
-        createElement(DetailSection, { title: '下一步', text: checkpoint?.nextAction }),
-        createElement(DetailSection, { title: '阻塞', text: checkpoint?.blocker }),
-        links.length > 0
+        sections.checkpoint.map((section) => createElement(DetailSection, {
+          key: section.title,
+          title: section.title,
+          text: section.text,
+        })),
+        sections.links.length > 0
           ? createElement(
               'section',
               { className: 'dsh-coordinator-card-detail-section' },
@@ -127,7 +119,7 @@ export function CardDetail({ card, onClose, restoreFocus = null }) {
               createElement(
                 'div',
                 { className: 'dsh-coordinator-card-detail-links' },
-                links.map((link) => {
+                sections.links.map((link, index) => {
                   const row = createElement(
                     'span',
                     { className: 'dsh-coordinator-board-link-chip-body' },
@@ -145,11 +137,11 @@ export function CardDetail({ card, onClose, restoreFocus = null }) {
                         )
                       : null,
                   )
-                  return typeof link.url === 'string' && link.url !== ''
+                  return isJumpableLink(link)
                     ? createElement(
                         'a',
                         {
-                          key: link.id ?? link.label,
+                          key: linkRowKey(link, index),
                           className: 'dsh-coordinator-card-detail-link',
                           href: link.url,
                           target: '_blank',
@@ -159,7 +151,7 @@ export function CardDetail({ card, onClose, restoreFocus = null }) {
                       )
                     : createElement(
                         'div',
-                        { key: link.id ?? link.label, className: 'dsh-coordinator-card-detail-link' },
+                        { key: linkRowKey(link, index), className: 'dsh-coordinator-card-detail-link' },
                         row,
                       )
                 }),

@@ -22,6 +22,13 @@
 
 import { createElement, useLayoutEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import {
+  FOCUSABLE,
+  escapeAction,
+  isKeyboardEventBlocked,
+  nextFocusTarget,
+  pickInitialFocus,
+} from './modal-focus.js'
 import { productIcon } from './icons.js'
 
 /** 样式表 id，同一页面只注入一次。 */
@@ -206,9 +213,6 @@ const STYLE_TEXT = `
 }
 `
 
-/** 可聚焦元素的选取规则，照抄宿主 `useModalLayer`。 */
-const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]'
-
 /**
  * 注入样式表。同一页面只注入一次。
  * @returns {void}
@@ -304,32 +308,33 @@ export function ModalShell({
     const element = dialog.current
     if (!open || element === null) return undefined
     const previous = document.activeElement
-    const initial = element.querySelector('[data-modal-autofocus]')
-      ?? element.querySelector(FOCUSABLE)
-      ?? element
+    const initial = pickInitialFocus(element)
     if (!element.contains(document.activeElement)) focusWithoutRing(initial)
 
     const keydown = (event) => {
-      if (event.defaultPrevented || event.isComposing
-        || event.ctrlKey || event.altKey || event.metaKey) return
-      if (event.key === 'Escape' && !event.shiftKey) {
-        event.preventDefault()
-        if (!event.repeat) close.current()
+      if (isKeyboardEventBlocked(event)) return
+      if (event.key === 'Escape') {
+        const action = escapeAction(event)
+        if (action === 'close') {
+          event.preventDefault()
+          close.current()
+        } else if (action === 'prevent-only') {
+          event.preventDefault()
+        }
         return
       }
       if (event.key !== 'Tab') return
       const items = [...element.querySelectorAll(FOCUSABLE)]
         .filter((item) => !item.closest('[inert], [hidden]'))
-      const first = items[0] ?? element
-      const last = items.at(-1) ?? element
-      const atEdge = event.shiftKey
-        ? document.activeElement === first
-        : document.activeElement === last
-      if (document.activeElement === element || !element.contains(document.activeElement) || atEdge) {
-        event.preventDefault()
-        const target = event.shiftKey ? last : first
-        target.focus()
-      }
+      const { target, preventDefault } = nextFocusTarget(
+        items,
+        document.activeElement,
+        event.shiftKey,
+        element,
+      )
+      if (!preventDefault || target === null) return
+      event.preventDefault()
+      target.focus()
     }
     document.addEventListener('keydown', keydown)
     return () => {
