@@ -123,7 +123,12 @@ function useSlotStates(cards, getSessions, useSessionStatus, parentSessionId) {
     for (const card of cards) {
       const creator = typeof card.createdBy === 'string' && card.createdBy !== '' ? card.createdBy : undefined
       for (const binding of slotBindingsOf(card)) {
-        if (binding.sessionId !== '' && !table.has(binding.sessionId)) table.set(binding.sessionId, creator)
+        if (binding.sessionId === '') continue
+        // 同一个会话可能绑在多张卡上：优先留记了建卡会话的那一张，存量卡没有
+        // `createdBy`，拿它当父会话会让地址挂到看板会话上。
+        if (!table.has(binding.sessionId) || (table.get(binding.sessionId) === undefined && creator !== undefined)) {
+          table.set(binding.sessionId, creator)
+        }
       }
     }
     return table
@@ -131,7 +136,14 @@ function useSlotStates(cards, getSessions, useSessionStatus, parentSessionId) {
   const parents = useRef(parentsNow)
   parents.current = parentsNow
 
-  const needed = useMemo(() => new Set(parentsNow.keys()), [parentsNow])
+  // 依赖用 id 排序串而不是 Map 本身：卡片每 2 秒轮询都会换一个新数组，用 Map
+  // 当依赖会让 `needed` 每轮都是新 Set，同步效果跟着每 2 秒跑一次——保留失败的
+  // 槽位不在账本里，每次都会再 retain 一遍，日志被去重挡住但底层调用没停。
+  const neededKey = useMemo(() => [...parentsNow.keys()].sort().join('\n'), [parentsNow])
+  const needed = useMemo(
+    () => new Set(neededKey === '' ? [] : neededKey.split('\n')),
+    [neededKey],
+  )
 
   const useStatuses = useSessionStatus ?? useNoSessionStatus
   const statuses = useStatuses(
@@ -301,6 +313,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
         if (cancelled) return
         setProject(resolvedProject)
         setResolved(true)
+        setError(null)
       })
       .catch((cause) => {
         if (cancelled) return
@@ -321,9 +334,13 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
           if (cancelled) return
           setCards(next)
           setLoaded(true)
+          // 成功就清掉上一次的错误：项目通道比面板晚就绪、或一次 RPC 抖动，
+          // 都不该把面板判死在错误页上——2 秒轮询本来就是干这个的。
+          setError(null)
         })
         .catch((cause) => {
           if (cancelled) return
+          // 轮询失败保留已加载的卡片，只是把错误挂出来，不清空列表。
           setError(`读取卡片失败：${cause instanceof Error ? cause.message : String(cause)}`)
         })
     }

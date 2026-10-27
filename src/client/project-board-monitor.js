@@ -154,5 +154,16 @@ export function mountProjectBoardMonitor({
     closed = true
     clearInterval(timer)
     unsubscribe()
+    // 自己打开的 tab 自己收：留着一个点开即空的「看板」，插件重载后还会再叠一个。
+    // 只关本 kind 的，别碰用户别的 tab（宿主 sidebar-right 的 teardown 要求）。
+    try {
+      for (const tab of sidebarRight.openTabs.getSnapshot()) {
+        if (tab.kind !== BOARD_TAB_KIND) continue
+        sidebarRight.closeIn(tab.sessionId, tab.tabId)
+      }
+    } catch (error) {
+      // 卸载阶段右栏可能已经先拆了，关不掉不是错误。
+      logger(`dsh-coordinator: 关闭看板 tab 失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
