@@ -423,7 +423,7 @@ export function createListCardsTool({ store }) {
       properties: {
         cardId: {
           type: 'string',
-          description: '可选，只读指定卡片的完整当前事实（spec / links / checkpoint 全文），忽略分页参数',
+          description: '可选，只读指定卡片的完整当前事实（spec / links / checkpoint 全文）；单卡查询忽略 status 与分页参数',
         },
         status: {
           type: 'string',

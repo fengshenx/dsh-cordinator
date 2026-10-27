@@ -141,6 +141,15 @@ test('列表视图：还有未显示的卡时给续页位置', () => {
   assert.match(rendered, /还有 1 张未显示（offset=2 继续）。/)
 })
 
+test('列表视图：首行不报本页张数，显示数只由尾注说', () => {
+  const cards = Array.from({ length: 3 }, (_, index) => card({ id: `c${index}`, number: index + 1 }))
+  const rendered = renderCardList(cards, query({ status: 'all', limit: 2 }))
+  // 首行按 limit 写「本页 2 张」会与实际渲染张数矛盾：本页张数会被字符预算截断
+  assert.match(rendered, /^卡片快照（status=all，共 3 张）：/)
+  assert.doesNotMatch(rendered, /共 3 张，本页/)
+  assert.match(rendered, /本页显示 2 张，还有 1 张未显示/)
+})
+
 test('列表视图：超预算按卡截断并给续页位置', () => {
   const cards = Array.from({ length: 20 }, (_, index) => card({
     id: `c${index}`,
@@ -150,6 +159,9 @@ test('列表视图：超预算按卡截断并给续页位置', () => {
   const rendered = renderCardList(cards, query({ status: 'all' }))
   assert.match(rendered, new RegExp(`输出超过 ${LIST_MAX_CHARS} 字符上限`))
   assert.match(rendered, /用 offset=\d+ 继续/)
+  // 截断后的显示数只出现在尾注，首行不再与它矛盾
+  assert.match(rendered, /^卡片快照（status=all，共 20 张）：/)
+  assert.match(rendered, /本页显示 \d+\/20 张/)
 })
 
 test('列表视图：单卡查询给出完整事实', () => {
@@ -158,4 +170,12 @@ test('列表视图：单卡查询给出完整事实', () => {
   assert.match(detail, /cardId: card-1/)
   assert.match(detail, /slots: dev=session-1/)
   assert.match(renderCardList(cards, query({ cardId: 'nope' })), /卡片不存在/)
+})
+
+test('列表视图：单卡查询忽略 status 与分页', () => {
+  // 单卡查询要给事实：status 与 offset 同传也不改变结果（否则模型会以为那张卡不存在）
+  const cards = [card({ status: 'done' })]
+  const rendered = renderCardList(cards, query({ cardId: 'card-1', status: 'active', offset: 5, limit: 1 }))
+  assert.match(rendered, /cardId: card-1/)
+  assert.match(rendered, /\[done\]/)
 })

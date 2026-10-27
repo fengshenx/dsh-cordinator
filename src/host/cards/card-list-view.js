@@ -93,10 +93,13 @@ export function parseListQuery(args) {
  * @returns {{ page: object[], total: number, counts: { active: number, done: number, archived: number } }} 本页与计数
  */
 export function selectCards(cards, query) {
-  const counts = {
-    active: cards.filter((card) => card.status === 'active').length,
-    done: cards.filter((card) => card.status === 'done').length,
-    archived: cards.filter((card) => card.status === 'archived').length,
+  // 计数是全量口径，不随状态过滤与分页变化——尾注里的「active 3 · done 1」说的是
+  // 全项目有多少，不是本页有多少。一次遍历同时数三种状态。
+  const counts = { active: 0, done: 0, archived: 0 }
+  for (const card of cards) {
+    if (card.status === 'active') counts.active += 1
+    else if (card.status === 'done') counts.done += 1
+    else if (card.status === 'archived') counts.archived += 1
   }
   if (query.cardId !== undefined) {
     const found = cards.filter((card) => card.id === query.cardId)
@@ -234,7 +237,10 @@ export function renderCardList(cards, query) {
       ? '项目当前没有卡片。'
       : `项目当前没有 ${query.status} 卡（active ${counts.active} · done ${counts.done} · archived ${counts.archived}）。`
   }
-  const header = `卡片快照（status=${query.status}，共 ${total} 张，本页 ${page.length} 张）：`
+  // 首行只报总张数，不报「本页 N 张」：本页张数会被字符预算截断，首行按 limit 写
+  // 会与实际渲染出来的张数自相矛盾（「本页 20 张」对「只显示 11/20 张」）。
+  // 实际显示了几张由尾注说。
+  const header = `卡片快照（status=${query.status}，共 ${total} 张）：`
   const blocks = []
   let used = header.length
   for (const card of page) {
@@ -247,11 +253,11 @@ export function renderCardList(cards, query) {
   const notes = []
   if (blocks.length < page.length) {
     // 截断时续页只认实际渲染张数：未渲染的卡不能被当成已显示，否则照第二条 offset 翻会跳卡
-    notes.push(`…（输出超过 ${LIST_MAX_CHARS} 字符上限，本页只显示 ${blocks.length}/${page.length} 张，用 offset=${query.offset + blocks.length} 继续）`)
+    notes.push(`…（输出超过 ${LIST_MAX_CHARS} 字符上限，本页显示 ${blocks.length}/${page.length} 张，用 offset=${query.offset + blocks.length} 继续）`)
   } else {
-    const shownUntil = query.offset + page.length
+    const shownUntil = query.offset + blocks.length
     if (shownUntil < total) {
-      notes.push(`还有 ${total - shownUntil} 张未显示（offset=${shownUntil} 继续）。`)
+      notes.push(`本页显示 ${blocks.length} 张，还有 ${total - shownUntil} 张未显示（offset=${shownUntil} 继续）。`)
     }
   }
   if (query.status !== 'all') {
