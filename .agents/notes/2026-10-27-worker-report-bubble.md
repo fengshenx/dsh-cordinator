@@ -35,7 +35,7 @@ Telov 的做法是：worker 回报用**助手侧的形态**渲染——身份头
 
 **名字是按钮，点击下钻到 worker 的子会话**。`uiWorkspace.openSession(childSessionId)`：宿主 `SessionTarget = SessionId | SubagentAddress`，传子会话 id 即可。`uiWorkspace` 只挂在 web-app bundle 上，必须惰性获取（`ctx.get('uiWorkspace')`），不能写进 `inject`（缺服务会让整个插件挂起）。
 
-**气泡下方一行是时间与复制按钮**，与官方消息的底部 chrome 同形：时间按宿主 `formatMessageClock` 的口径（今天 `HH:MM`，往日带日期）；复制按钮自己实现——宿主 `useClipboardCopy` 在 UI 包里，不可 import。
+**气泡下方一行是时间与复制按钮**，与官方消息的底部 chrome 同形：时间按宿主 `formatMessageClock` 的口径（今天 `HH:MM`；同年往日 `M月D日 HH:MM`；跨年再加年份——宿主走 i18n 模板，英文环境是 `M/D`，本仓不做多语言，固定中文形态）；复制按钮自己实现——宿主 `useClipboardCopy` 在 UI 包里，不可 import。
 
 **头像用 `minidenticons`（Telov 同款），种子取 worker 的身份名**。FNV-1a 哈希取模落到 63 个内置 seed，同名恒同图；底色与图案同色相、底色明度压到 36% 以过非文本 3:1 基线。种子必须用身份名（派工 label）而不是显示文案：显示文案由任务描述派生、随任务变，用它做种子同一 worker 会跨任务换脸。
 
