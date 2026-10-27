@@ -23,9 +23,13 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 **卡面根是 `role="button"` 且内嵌可聚焦控件**，严格说违反 ARIA 的「button 不含可聚焦后代」。这是 Telov 同款取舍：整卡热区与嵌套控件并存，子控件保留独立按钮语义优先，键盘可达性由子控件自己保证。
 
-**信号灯五档**：`attention`（红实心）> `running`（琥珀脉冲）> `idle`（灰实心）> `unknown`（虚线圈）> `none`（虚线圈）。聚合自卡片声明的槽位会话状态，**不落存储**。未派工与状态未知共用虚线圈：两者都不谎称空闲，形状上与实心档区分；这两种情况在卡面上本来就不同——有槽位的卡多一行槽位 chip，空的没有。
+**信号灯七档**：`waiting`（蓝脉冲）> `attention`（红实心）> `running`（琥珀脉冲）> `unread`（蓝实心）> `idle`（灰实心）> `unknown`（虚线圈）> `none`（虚线圈）。聚合自卡片声明的槽位会话状态，**不落存储**。未派工与状态未知共用虚线圈：两者都不谎称空闲，形状上与实心档区分；这两种情况在卡面上本来就不同——有槽位的卡多一行槽位 chip，空的没有。档位序照抄 Telov 的 `sessionSignalRank`。
 
-**槽位状态取自保留会话的快照**：`ctx.sessions.retain(sessionId, {source})` → `reference.ready` → `binding.session.getSnapshot()`（`running` / `lastAgentError`）+ `subscribe`。会话列表对未保留的 subagent 子会话给的 `running` 不可信；`retain` 对未知 id **同步抛错**，try/catch 后状态保持 `unknown`（虚线圈）——不谎称空闲。
+**状态有两个来源，合并后成一表**。运行态、等你输入、未读读宿主客户端状态存储 `SessionStatus`（`useSessionStatus`，宿主 `packages/client/ui-session/src/client/index.ts:60-67`）——它是宿主按 `api-session/status` 事件维护的权威值；失败原因不在会话状态里，只在会话快照 `lastAgentError` 里，所以仍要 `ctx.sessions.retain(sessionId, {source})` → `reference.ready` → `binding.session.getSnapshot()` + `subscribe`。保留同时让会话不被宿主回收。
+
+**此前读错了数据源**：会话快照 `SessionSnapshot` 只有 `running` 一项，据此断定「宿主没有未读与审批投影」是错的——那两项在客户端状态存储里，官方 AgentTeam UI 读的就是它（`packages/experimental/client-ui-agent-team/src/client/TeamAction.tsx:83-84`）。会话列表对未保留的 subagent 子会话给的 `running` 是兜底值（宿主 `packages/client/ui-session/src/client/index.ts:521` 有注释说明），据此说「空闲」是撒谎，所以运行态必须以会话状态存储为准；状态存储里 `running` 还没建立基线（`undefined`）时判「状态未知」，不退回快照里的兜底值。
+
+**「等你输入」档当前不亮**：它读 `pendingInteraction`，而宿主的 `SessionPendingInteractionMap` 是空的声明合并表——没有任何域发布待处理交互。机制留着，档位留着，等真有域发布时自动生效。
 
 **槽位只渲染卡片实际声明的**。dsh 的槽位集合由项目 `SLOTS.md` 决定，客户端拿不到；恒渲染空槽等于宣称存在不存在的 worker。未派工的槽位（没有绑定会话）不是按钮——没有会话可打开。
 
@@ -41,7 +45,7 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 ## 边界
 
-- **信号灯少两档**：宿主未暴露 pending 审批与未读投影，Telov 的「等你输入 / 未看」表达不了。dsh 侧档位为 attention / running / idle / unknown / none。
+- **「等你输入」档暂无数据源**：宿主有机制（`pendingInteraction`）但当前没有域发布，这一档不会亮（见 [capability-gaps 第 35 条](../../docs/capability-gaps.md)）。
 - **详情只读**：完成、置顶、重命名、删除需要新增一组卡片远程方法（本仓的 Typert 写通道已有，缺的是卡片方法本身），属独立议题。
 - **无 workspace chip**：卡片不按项目/工作区分区，编号全局递增（见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。
 - **浮层与宿主 Modal 是复制改写**：宿主改 `Modal.tsx` 时本仓要同步（与确认弹窗同一条耦合）。
@@ -50,6 +54,8 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 
 ## 证据
 
-单测 209 例全绿（新增 9 例：槽位绑定提取、槽位视图、信号档位、active 排序、done 排序、停滞判定（含「会话在跑不算停滞」）、时长格式化、链接排布）。
+单测 212 例全绿（新增 12 例：槽位绑定提取、槽位视图、信号档位、active 排序、done 排序、停滞判定（含「会话在跑不算停滞」）、时长格式化、链接排布，以及「等你输入 / 未读」两档的聚合与两个来源的合并规则）。
 
-真实实例取证用隔离 mock profile（`DSH_HOME=/tmp/dsh-mock`）：mock provider 发 `create_card` / `update_card` 工具调用，**真实卡片工具执行** → 投影进 session log → 看板渲染，全程不触达真实 API。截图不入仓库（证据图不进 git），见 PR #4 的评论「证据」条：改前（P2 旧卡面）、改后、详情浮层、悬停态、已完成区展开五张。改前/改后取自同一会话的同一批卡片（5 张，覆盖 idle / none / unknown 三种信号）。
+真实实例取证用隔离 mock profile（`DSH_HOME=/tmp/dsh-mock`）：mock provider 发 `create_card` / `update_card` / `spawn_worker` 工具调用，**真实卡片工具与真实派工执行** → 投影进 session log → 看板渲染，全程不触达真实 API。截图不入仓库（证据图不进 git），见 PR #4 的评论「证据」条：改前（P2 旧卡面）、改后、详情浮层、悬停态、已完成区展开五张，另加一张「未读档」取证。改前/改后取自同一会话的同一批卡片。
+
+**未读档实测**：mock provider 派一个 worker 子会话，worker 跑完停下；看板上该卡槽位点变蓝（未读），同一会话里的协调者自身卡片是灰（空闲——主视图看过的会话未读被清），绑不存在会话的卡仍是虚线圈（状态未知）。
