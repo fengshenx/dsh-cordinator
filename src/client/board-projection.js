@@ -31,20 +31,26 @@ export const STALLED_THRESHOLD_MS = 24 * 60 * 60 * 1000
 /**
  * 槽位状态。
  *
- * - `running`：槽位会话正在执行；
+ * - `waiting`：槽位会话在等用户交互（宿主发布了待处理交互请求）；
  * - `attention`：槽位会话最后一次执行失败；
+ * - `running`：槽位会话正在执行；
+ * - `unread`：槽位会话已停下，且这次停止还没被主视图确认；
  * - `idle`：槽位会话已知且空闲；
  * - `empty`：槽位没有绑定会话（未派工）；
  * - `unknown`：绑定了会话但客户端读不到它的状态（会话不可达）。
  *
  * `empty` 与 `unknown` 都不谎称空闲：前者根本没派活，后者状态不可知。
  */
-export const SLOT_STATES = Object.freeze(['running', 'attention', 'idle', 'empty', 'unknown'])
+export const SLOT_STATES = Object.freeze([
+  'waiting', 'attention', 'running', 'unread', 'idle', 'empty', 'unknown',
+])
 
 /**
  * 卡片级信号灯档位。聚合规则见 {@link cardSignal}。
  */
-export const CARD_SIGNALS = Object.freeze(['attention', 'running', 'idle', 'unknown', 'none'])
+export const CARD_SIGNALS = Object.freeze([
+  'waiting', 'attention', 'running', 'unread', 'idle', 'unknown', 'none',
+])
 
 /**
  * 重放事件窗口里的卡片投影。
@@ -101,16 +107,52 @@ export async function loadHistory(binding, maxPages = MAX_HISTORY_PAGES) {
  * @typedef {object} BoardSlotView
  * @property {string} name - 槽位名
  * @property {string} sessionId - 绑定的会话 id；未绑定时为空串
- * @property {'running'|'attention'|'idle'|'empty'|'unknown'} state - 槽位状态
+ * @property {'waiting'|'attention'|'running'|'unread'|'idle'|'empty'|'unknown'} state - 槽位状态
  */
 
 /**
  * 会话的看板可见状态。
  *
  * @typedef {object} BoardSessionState
+ * @property {boolean} known - 是否读到了该会话的状态
  * @property {boolean} running - 会话正在执行
+ * @property {boolean} waiting - 会话在等用户交互
+ * @property {boolean} unread - 会话已停下且未被主视图确认
  * @property {boolean} failed - 会话最后一次执行失败
  */
+
+/**
+ * 合并两个来源的会话状态。
+ *
+ * `status` 是宿主客户端状态存储给的会话状态（`SessionStatus`：权威运行态、
+ * 待处理交互、未读确认），`snapshot` 是保留会话后从 `SessionSnapshot` 读到的
+ * 失败信息——宿主没有在会话状态里带失败原因，那一项只能从会话快照取。
+ *
+ * 宿主给出运行态但它还没建立基线（`running` 为 `undefined`）时，状态判为未知：
+ * 快照里的 `running` 对 subagent 子会话是列表兜底值，据此说「空闲」是撒谎。
+ *
+ * @param {object|undefined} status - 宿主会话状态
+ * @param {object|undefined} snapshot - 保留会话的快照状态
+ * @returns {BoardSessionState} 合并后的状态
+ */
+export function mergeSessionState(status, snapshot) {
+  if (status !== undefined) {
+    return {
+      known: status.running !== undefined,
+      running: status.running === true,
+      waiting: status.pendingInteraction !== undefined,
+      unread: status.completionUnread === true,
+      failed: snapshot?.failed === true,
+    }
+  }
+  return {
+    known: snapshot !== undefined,
+    running: snapshot?.running === true,
+    waiting: false,
+    unread: false,
+    failed: snapshot?.failed === true,
+  }
+}
 
 /**
  * 取卡片绑定的槽位。
@@ -140,18 +182,21 @@ export function slotBindingsOf(card) {
  * 单个槽位的状态。
  *
  * 绑定了会话但状态读不到时是 `unknown` 而不是 `idle`：把不可知说成空闲，
- * 等于在卡面上撒一个不实的信号。
+ * 等于在卡面上撒一个不实的信号。档位顺序照抄 Telov 的 `sessionSignalRank`
+ * （等你输入 > 需注意 > 执行中 > 未读 > 空闲）。
  *
  * @param {string} sessionId - 绑定的会话 id
  * @param {ReadonlyMap<string, BoardSessionState>} states - 会话 id 到状态
- * @returns {'running'|'attention'|'idle'|'empty'|'unknown'} 槽位状态
+ * @returns {'waiting'|'attention'|'running'|'unread'|'idle'|'empty'|'unknown'} 槽位状态
  */
 function slotStateOf(sessionId, states) {
   if (sessionId === '') return 'empty'
   const state = states.get(sessionId)
-  if (state === undefined) return 'unknown'
+  if (state === undefined || !state.known) return 'unknown'
+  if (state.waiting) return 'waiting'
   if (state.failed) return 'attention'
   if (state.running) return 'running'
+  if (state.unread) return 'unread'
   return 'idle'
 }
 
@@ -164,8 +209,7 @@ function slotStateOf(sessionId, states) {
  * @param {object} card - 卡片
  * @param {ReadonlyMap<string, BoardSessionState>} states - 会话 id 到状态
  * @returns {BoardSlotView[]} 槽位视图
- */
-export function slotViewsForCard(card, states) {
+ */export function slotViewsForCard(card, states) {
   return slotBindingsOf(card).map(({ name, sessionId }) => ({
     name,
     sessionId,
@@ -176,38 +220,49 @@ export function slotViewsForCard(card, states) {
 /**
  * 卡片信号灯：由名下槽位会话聚合。
  *
- * 优先级：需注意 > 推进中 > 空闲 > 状态未知 > 未派工。
- * 「需注意」压过「推进中」：失败是更该先看的事实，worker 可能还在跑但已经错了。
+ * 取名下槽位里档位最高的一档。优先级：等你输入 > 需注意 > 执行中 > 未读 >
+ * 空闲 > 未派工 > 状态未知。等你输入压过需注意——有人在等你，别的都不急；
+ * 需注意压过执行中：失败是更该先看的事实，worker 可能还在跑但已经错了。
  * 卡片本体不存信号——信号由会话状态实时推导。
  *
  * @param {object} card - 卡片
  * @param {ReadonlyMap<string, BoardSessionState>} states - 会话 id 到状态
- * @returns {'attention'|'running'|'idle'|'unknown'|'none'} 信号档位
+ * @returns {'waiting'|'attention'|'running'|'unread'|'idle'|'unknown'|'none'} 信号档位
  */
 export function cardSignal(card, states) {
   if (card?.status === 'done') return 'none'
   const slots = slotViewsForCard(card, states)
   if (slots.length === 0) return 'none'
-  if (slots.some((slot) => slot.state === 'attention')) return 'attention'
-  if (slots.some((slot) => slot.state === 'running')) return 'running'
-  if (slots.some((slot) => slot.state === 'idle')) return 'idle'
-  if (slots.some((slot) => slot.state === 'unknown')) return 'unknown'
-  return 'none'
+  let best = 'none'
+  let bestRank = signalRank('none')
+  for (const slot of slots) {
+    const rank = signalRank(slot.state)
+    if (rank < bestRank) {
+      best = slot.state
+      bestRank = rank
+    }
+  }
+  return best
 }
 
 /**
- * 信号档位的排序权重（值越小越靠前）。未派工与不可知都收在末尾。
+ * 信号档位的排序权重（值越小越靠前）。
+ *
+ * 未派工与不可知都收在末尾；未派工与「无信号」同权重——卡片有槽位但都没派活，
+ * 卡片级的说法就是「无信号」，把「未派工」抬到卡片级等于宣称存在一个状态档。
  *
  * @param {string} signal - 信号档位
  * @returns {number} 权重
  */
 function signalRank(signal) {
   switch (signal) {
-    case 'attention': return 0
-    case 'running': return 1
-    case 'idle': return 2
-    case 'unknown': return 3
-    default: return 4
+    case 'waiting': return 0
+    case 'attention': return 1
+    case 'running': return 2
+    case 'unread': return 3
+    case 'idle': return 4
+    case 'unknown': return 6
+    default: return 7
   }
 }
 

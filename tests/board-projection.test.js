@@ -8,6 +8,7 @@ import {
   formatDuration,
   isCardStalled,
   loadHistory,
+  mergeSessionState,
   slotBindingsOf,
   slotViewsForCard,
   sortActiveCards,
@@ -129,6 +130,23 @@ function states(entries) {
   return new Map(entries)
 }
 
+/**
+ * 构造一份会话状态，字段与 `mergeSessionState` 的产出同形。
+ *
+ * @param {object} overrides - 覆盖的字段
+ * @returns {object} 会话状态
+ */
+function sessionState(overrides = {}) {
+  return {
+    known: true,
+    running: false,
+    waiting: false,
+    unread: false,
+    failed: false,
+    ...overrides,
+  }
+}
+
 test('槽位绑定取 sessionId，结构非法的条目被跳过', () => {
   const bindings = slotBindingsOf(card({
     slots: {
@@ -157,9 +175,9 @@ test('槽位状态按会话状态映射，读不到状态时是 unknown 而不�
       freeSlot: {},
     },
   }), states([
-    ['s1', { running: true, failed: false }],
-    ['s3', { running: false, failed: false }],
-    ['s4', { running: false, failed: true }],
+    ['s1', sessionState({ running: true })],
+    ['s3', sessionState()],
+    ['s4', sessionState({ failed: true })],
   ]))
   assert.deepEqual(
     views.map((view) => [view.name, view.state]),
@@ -173,32 +191,91 @@ test('槽位状态按会话状态映射，读不到状态时是 unknown 而不�
   )
 })
 
-test('卡片信号按需注意 > 推进中 > 空闲 > 未知 > 未派工聚合', () => {
+test('卡片信号按等你输入 > 需注意 > 推进中 > 未读 > 空闲 > 未知 > 未派工聚合', () => {
   assert.equal(cardSignal(card({ slots: { a: { sessionId: 's1' } } }), states([
-    ['s1', { running: true, failed: false }],
+    ['s1', sessionState({ running: true })],
   ])), 'running')
   assert.equal(cardSignal(card({ slots: {
     a: { sessionId: 's1' },
     b: { sessionId: 's2' },
   } }), states([
-    ['s1', { running: true, failed: false }],
-    ['s2', { running: false, failed: true }],
+    ['s1', sessionState({ running: true })],
+    ['s2', sessionState({ failed: true })],
   ])), 'attention')
   assert.equal(cardSignal(card({ slots: { a: { sessionId: 's1' } } }), states([
-    ['s1', { running: false, failed: false }],
+    ['s1', sessionState()],
   ])), 'idle')
   assert.equal(cardSignal(card({ slots: { a: { sessionId: 's1' } } }), new Map()), 'unknown')
   assert.equal(cardSignal(card({ slots: { a: {} } }), new Map()), 'none')
   assert.equal(cardSignal(card(), new Map()), 'none')
   assert.equal(cardSignal(card({ status: 'done', slots: { a: { sessionId: 's1' } } }), states([
-    ['s1', { running: true, failed: true }],
+    ['s1', sessionState({ running: true, failed: true })],
   ])), 'none')
+})
+
+test('等你输入压过需注意，未读压过空闲', () => {
+  assert.equal(cardSignal(card({ slots: { a: { sessionId: 's1' } } }), states([
+    ['s1', sessionState({ waiting: true, failed: true })],
+  ])), 'waiting')
+  assert.equal(cardSignal(card({ slots: { a: { sessionId: 's1' } } }), states([
+    ['s1', sessionState({ unread: true })],
+  ])), 'unread')
+  assert.equal(cardSignal(card({ slots: {
+    a: { sessionId: 's1' },
+    b: { sessionId: 's2' },
+  } }), states([
+    ['s1', sessionState({ running: true })],
+    ['s2', sessionState({ unread: true })],
+  ])), 'running')
+})
+
+test('未派工的槽位不抬高卡片信号', () => {
+  assert.equal(cardSignal(card({ slots: {
+    a: { sessionId: 's1' },
+    b: {},
+  } }), states([
+    ['s1', sessionState()],
+  ])), 'idle')
+})
+
+test('会话状态合并：宿主状态优先，未建立基线不谎称空闲', () => {
+  assert.deepEqual(
+    mergeSessionState(
+      { running: true, pendingInteraction: undefined, completionUnread: false },
+      { running: false, failed: true },
+    ),
+    { known: true, running: true, waiting: false, unread: false, failed: true },
+  )
+  assert.deepEqual(
+    mergeSessionState(
+      { running: false, pendingInteraction: { key: 'k', kind: 'approval', sessionId: 's1' }, completionUnread: true },
+      undefined,
+    ),
+    { known: true, running: false, waiting: true, unread: true, failed: false },
+  )
+  // 宿主给了条目但运行态还没建立基线：判未知，不拿快照里的兜底值说空闲
+  assert.deepEqual(
+    mergeSessionState(
+      { running: undefined, pendingInteraction: undefined, completionUnread: false },
+      { running: false, failed: false },
+    ),
+    { known: false, running: false, waiting: false, unread: false, failed: false },
+  )
+  // 宿主没给状态（未挂 ui-session）：退回快照，等你输入与未读无从表达
+  assert.deepEqual(
+    mergeSessionState(undefined, { running: true, failed: false }),
+    { known: true, running: true, waiting: false, unread: false, failed: false },
+  )
+  assert.deepEqual(
+    mergeSessionState(undefined, undefined),
+    { known: false, running: false, waiting: false, unread: false, failed: false },
+  )
 })
 
 test('active 卡排序按信号档位、sortOrder、最后活动、编号依次决胜', () => {
   const table = states([
-    ['running', { running: true, failed: false }],
-    ['failed', { running: false, failed: true }],
+    ['running', sessionState({ running: true })],
+    ['failed', sessionState({ failed: true })],
   ])
   const cards = [
     card({ id: 'idle', number: 1, slots: { a: { sessionId: 'idle' } } }),
@@ -263,9 +340,9 @@ test('停滞判定要求有绑定会话且超过阈值，非 active 不计时', 
 test('停滞判定：名下会话正在跑不算停滞', () => {
   const now = 100 * 60 * 60 * 1000
   const card = { status: 'active', slots: { a: { sessionId: 's1' } }, updatedAt: 0 }
-  const running = new Map([['s1', { running: true, failed: false }]])
+  const running = new Map([['s1', sessionState({ running: true })]])
   assert.equal(isCardStalled(card, running, now), false)
-  const idle = new Map([['s1', { running: false, failed: false }]])
+  const idle = new Map([['s1', sessionState()]])
   assert.equal(isCardStalled(card, idle, now), true)
 })
 

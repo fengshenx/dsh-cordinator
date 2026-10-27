@@ -9,9 +9,10 @@
  * active 卡三层、done 卡单行并收进折叠区，空态与骨架同款。见
  * `.agents/notes/2026-10-27-board-card-visual-and-interaction.md`。
  *
- * 信号灯不落存储：推进/需注意/空闲由槽位绑定的会话状态实时推导。子会话的
- * `running` 只有在保留该会话后从 `SessionSnapshot` 读才准（会话列表对未保留的
- * subagent 子会话给的是默认值），保留失败就显示未知，不谎称空闲。
+ * 信号灯不落存储：等你输入/需注意/执行中/未读/空闲由槽位绑定的会话状态实时
+ * 推导。运行态取宿主的会话状态存储（`useSessionStatus`），那是宿主按
+ * `api-session/status` 事件维护的权威值；会话列表对未保留的 subagent 子会话给
+ * 的是兜底值，据此说「空闲」是撒谎。失败原因只在会话快照里，保留会话取它。
  *
  * @module dsh-coordinator/client/board
  */
@@ -20,6 +21,7 @@ import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import {
   collectCards,
   loadHistory,
+  mergeSessionState,
   slotBindingsOf,
   sortActiveCards,
   sortDoneCards,
@@ -36,45 +38,108 @@ import { productIcon } from './icons.js'
  * @param {string} props.sessionId - 面板所属会话
  * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务的延迟取值器
+ * @param {Function} [props.useSessionStatus] - 宿主会话状态 hook（宿主未挂载
+ *   ui-session 时不存在）
  * @returns {object} React 元素
  */
 export function BoardBody(props) {
-  const { sessionId, getSessions, getUiWorkspace } = props
-  return createElement(BoardPanel, { sessionId, getSessions, getUiWorkspace })
+  const { sessionId, getSessions, getUiWorkspace, useSessionStatus } = props
+  return createElement(BoardPanel, {
+    sessionId,
+    getSessions,
+    getUiWorkspace,
+    useSessionStatus,
+  })
+}
+
+/**
+ * 宿主没挂 ui-session 时的占位 hook。
+ *
+ * 保持 hook 调用顺序稳定：同一个渲染路径上，状态 hook 的个数不能变。
+ */
+function useNoSessionStatus() {
+  return undefined
+}
+
+/**
+ * 两个状态快照是否等价。
+ *
+ * 宿主每次发布都会重建状态对象，引用比较会让每次发布都触发重渲染。
+ *
+ * @param {ReadonlyMap<string, object>} left - 左快照
+ * @param {ReadonlyMap<string, object>} right - 右快照
+ * @returns {boolean} 是否等价
+ */
+function sameStatuses(left, right) {
+  if (left.size !== right.size) return false
+  for (const [sessionId, status] of left) {
+    const other = right.get(sessionId)
+    if (other === undefined
+      || other.running !== status.running
+      || other.pendingInteraction !== status.pendingInteraction
+      || other.completionUnread !== status.completionUnread) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
  * 槽位会话的状态表。
  *
- * 保留会话是为了读 `SessionSnapshot.running` 与 `lastAgentError`——会话列表对
- * 未保留的 subagent 子会话给的是默认 `false`，据此说「空闲」是撒谎。保留失败
- * （宿主不认识该会话 id）时状态表里没有这一项，槽位显示为「未知」。
+ * 状态有两个来源，合并后成一个表：
+ *
+ * - **宿主会话状态**（`useSessionStatus`）：权威运行态、等你输入、未读确认。
+ *   运行时状态由宿主的 `api-session/status` 事件驱动，会话列表对未保留的
+ *   subagent 子会话给的是兜底值，据此说「空闲」是撒谎。
+ * - **保留会话的快照**：最后一次执行失败的原因只在会话快照里，宿主会话状态
+ *   不带这一项。保留同时让会话不被宿主回收。
+ *
+ * 宿主没挂 ui-session 时没有会话状态 hook，退回读会话快照：运行态会不准
+ * （子会话给兜底值），等你输入与未读无从表达，此时档位如实收敛。
  *
  * @param {object[]} cards - 当前卡片
  * @param {() => object | undefined} getSessions - 取会话服务的延迟取值器
- * @returns {Map<string, { running: boolean, failed: boolean }>} 会话 id 到状态
+ * @param {Function} [useSessionStatus] - 宿主会话状态 hook
+ * @returns {Map<string, object>} 会话 id 到状态
  */
-function useSlotStates(cards, getSessions) {
-  const [states, setStates] = useState(() => new Map())
+function useSlotStates(cards, getSessions, useSessionStatus) {
+  const [snapshots, setSnapshots] = useState(() => new Map())
   const retained = useRef(new Map())
+
+  const needed = useMemo(() => {
+    const ids = new Set()
+    for (const card of cards) {
+      for (const binding of slotBindingsOf(card)) {
+        if (binding.sessionId !== '') ids.add(binding.sessionId)
+      }
+    }
+    return ids
+  }, [cards])
+
+  const useStatuses = useSessionStatus ?? useNoSessionStatus
+  const statuses = useStatuses(
+    (state) => {
+      const next = new Map()
+      for (const sessionId of needed) {
+        const status = state.get(sessionId)
+        if (status !== undefined) next.set(sessionId, status)
+      }
+      return next
+    },
+    sameStatuses,
+  )
 
   useEffect(() => {
     const sessions = getSessions()
     if (sessions === undefined || sessions === null) return undefined
-
-    const needed = new Set()
-    for (const card of cards) {
-      for (const binding of slotBindingsOf(card)) {
-        if (binding.sessionId !== '') needed.add(binding.sessionId)
-      }
-    }
 
     for (const [sessionId, entry] of retained.current) {
       if (needed.has(sessionId)) continue
       entry.unsubscribe?.()
       entry.reference.release()
       retained.current.delete(sessionId)
-      setStates((previous) => {
+      setSnapshots((previous) => {
         const next = new Map(previous)
         next.delete(sessionId)
         return next
@@ -98,7 +163,7 @@ function useSlotStates(cards, getSessions) {
           if (retained.current.get(sessionId) !== entry) return
           const read = () => {
             const snapshot = binding.session.getSnapshot()
-            setStates((previous) => {
+            setSnapshots((previous) => {
               const next = new Map(previous)
               next.set(sessionId, {
                 running: snapshot.running === true,
@@ -115,7 +180,7 @@ function useSlotStates(cards, getSessions) {
         })
     }
     return undefined
-  }, [cards, getSessions])
+  }, [needed, getSessions])
 
   useEffect(() => () => {
     for (const entry of retained.current.values()) {
@@ -125,7 +190,16 @@ function useSlotStates(cards, getSessions) {
     retained.current.clear()
   }, [])
 
-  return states
+  return useMemo(() => {
+    const merged = new Map()
+    for (const sessionId of needed) {
+      merged.set(sessionId, mergeSessionState(
+        statuses?.get(sessionId),
+        snapshots.get(sessionId),
+      ))
+    }
+    return merged
+  }, [needed, statuses, snapshots])
 }
 
 /**
@@ -170,9 +244,10 @@ function BoardEmpty({ allDone }) {
  * @param {string} props.sessionId - 面板所属会话
  * @param {() => object | undefined} props.getSessions - 取会话服务的延迟取值器
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务的延迟取值器
+ * @param {Function} [props.useSessionStatus] - 宿主会话状态 hook
  * @returns {object} React 元素
  */
-function BoardPanel({ sessionId, getSessions, getUiWorkspace }) {
+function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus }) {
   const [cards, setCards] = useState([])
   const [error, setError] = useState(null)
   const [history, setHistory] = useState('loading')
@@ -226,7 +301,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace }) {
     }
   }, [sessionId, getSessions])
 
-  const states = useSlotStates(cards, getSessions)
+  const states = useSlotStates(cards, getSessions, useSessionStatus)
 
   const { active, done } = useMemo(() => ({
     active: sortActiveCards(

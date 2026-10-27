@@ -87,6 +87,18 @@ const STYLE_TEXT = `
   opacity: 0.4;
 }
 
+/* 等你输入与未读同色不同动效：都在等你动作，但「有人在等」与「有结果没看」不同 */
+.dsh-coordinator-board-signal-waiting {
+  background: var(--dsw-static-blue-500);
+  opacity: 1;
+  animation: dsh-coordinator-board-pulse 1.6s ease-in-out infinite;
+}
+
+.dsh-coordinator-board-signal-unread {
+  background: var(--dsw-static-blue-500);
+  opacity: 1;
+}
+
 .dsh-coordinator-board-signal-running {
   background: var(--dsw-alias-state-warn-primary);
   opacity: 1;
@@ -117,7 +129,8 @@ const STYLE_TEXT = `
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dsh-coordinator-board-signal-running { animation: none; }
+  .dsh-coordinator-board-signal-running,
+  .dsh-coordinator-board-signal-waiting { animation: none; }
 }
 
 .dsh-coordinator-board-card-number {
@@ -258,6 +271,17 @@ const STYLE_TEXT = `
   opacity: 0.4;
 }
 
+.dsh-coordinator-board-slot-dot-waiting {
+  background: var(--dsw-static-blue-500);
+  opacity: 1;
+  animation: dsh-coordinator-board-pulse 1.6s ease-in-out infinite;
+}
+
+.dsh-coordinator-board-slot-dot-unread {
+  background: var(--dsw-static-blue-500);
+  opacity: 1;
+}
+
 .dsh-coordinator-board-slot-dot-running {
   background: var(--dsw-alias-state-warn-primary);
   opacity: 1;
@@ -279,6 +303,11 @@ const STYLE_TEXT = `
   background: transparent;
   border: 1px dashed var(--dsw-alias-label-tertiary);
   opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsh-coordinator-board-slot-dot-running,
+  .dsh-coordinator-board-slot-dot-waiting { animation: none; }
 }
 
 /* done 卡：单行轻量变体 */

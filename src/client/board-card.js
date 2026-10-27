@@ -162,6 +162,23 @@ function BoardLinks({ links, onOpenDetail }) {
 }
 
 /**
+ * 状态档位的中文名。
+ *
+ * 信号灯是纯图形，档位名只出现在 title 里。`unknown` 与 `none` 不是同义：
+ * 前者是「读不到这个会话」，后者是「没有会话可读」。
+ */
+const STATE_LABELS = {
+  waiting: '等你输入',
+  attention: '需注意',
+  running: '执行中',
+  unread: '未读',
+  idle: '空闲',
+  empty: '未派工',
+  unknown: '状态未知',
+  none: '无信号',
+}
+
+/**
  * 槽位 chip：状态点 + 槽位名，点击打开该槽位绑定的会话。
  *
  * 未派工的槽位（没有绑定会话）不是按钮——没有会话可打开。
@@ -175,10 +192,11 @@ function BoardSlot({ slot, onOpenSession }) {
   const dot = createElement('span', {
     className: `dsh-coordinator-board-slot-dot dsh-coordinator-board-slot-dot-${slot.state}`,
   })
+  const label = STATE_LABELS[slot.state] ?? slot.state
   if (slot.sessionId === '') {
     return createElement(
       'span',
-      { className: 'dsh-coordinator-board-slot-chip', title: `${slot.name}：未派工` },
+      { className: 'dsh-coordinator-board-slot-chip', title: `${slot.name}：${label}` },
       dot,
       slot.name,
     )
@@ -188,7 +206,7 @@ function BoardSlot({ slot, onOpenSession }) {
     {
       type: 'button',
       className: 'dsh-coordinator-board-slot-chip',
-      title: `${slot.name}：${slot.state === 'unknown' ? '状态未知' : slot.state}`,
+      title: `${slot.name}：${label}`,
       onClick: (event) => {
         event.stopPropagation()
         onOpenSession(slot.sessionId)
@@ -256,7 +274,10 @@ export function BoardCard({ card, states, now, onOpenDetail, onOpenSession }) {
       createElement(
         'span',
         { className: 'dsh-coordinator-board-signal-slot' },
-        createElement('span', { className: `dsh-coordinator-board-signal dsh-coordinator-board-signal-${signal}` }),
+        createElement('span', {
+          className: `dsh-coordinator-board-signal dsh-coordinator-board-signal-${signal}`,
+          title: STATE_LABELS[signal] ?? signal,
+        }),
       ),
       createElement('span', { className: 'dsh-coordinator-board-card-number' }, `#${card.number ?? '?'}`),
       createElement('span', { className: 'dsh-coordinator-board-card-title', title: card.title }, card.title ?? ''),
