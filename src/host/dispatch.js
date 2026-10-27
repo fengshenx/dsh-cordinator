@@ -9,6 +9,16 @@
  * wake the driver」，父会话空闲时由此开新 turn。这补上了 dsh 原生缺失的一环：
  * 「worker 结束 → 协调者自动被唤醒并继续」。
  *
+ * 完成通知走 **next-turn** 边界（`followup`）：它是「下一个 turn 的一次输入」，
+ * 语义上就该排进下一轮，而不是插进协调者当前这一步里。
+ *
+ * 投递时机是「父会话空闲时」：宿主输入框上方的「消息队列」面板显示的是 inbox 的
+ * next-turn 未消费项（`ui-conversation` 的 QueueDock 读 `inbox['next-turn']`）。
+ * 协调者正忙时把通知投进去，它就会以「一条待发消息」的形态挂在那里——那是用户的
+ * 输入队列，不是后台通知该待的地方。改为忙时先不投（通知留在落盘队列），检测到
+ * 空闲再投：投递即被消费，队列面板不会看到它，唤醒时机与排进 next-turn 也几乎
+ * 一样（两者都要等当前 turn 结束）。
+ *
  * 本模块不新增 session event 类型（仓外插件的硬约束），完成通知走自有落盘队列。
  *
  * @module dsh-coordinator/host/dispatch
@@ -19,6 +29,15 @@ import { workerReportSource } from '../shared/worker-report.js'
 
 const DEFAULT_AUTO_RESUME_LIMIT = 8
 const NOTIFICATION_LIMIT = 4000
+/** 空闲检测的轮询间隔（毫秒）。 */
+const IDLE_POLL_MS = 500
+
+/** 投递结果：已投出。 */
+const DELIVERED = 'delivered'
+/** 投递结果：可重试——父会话忙、暂时失败或别处正在投同一条。 */
+const RETRYABLE = 'retryable'
+/** 投递结果：不可重试——已达自动续行上限，再投也是同一个结果。 */
+const EXHAUSTED = 'exhausted'
 
 /**
  * 构造完成通知正文。
@@ -43,6 +62,24 @@ export function buildNotificationText(record, outcome) {
   }
   lines.push('下一步：按协调者协议判断验收、返工或派新工。')
   return lines.join('\n').slice(0, NOTIFICATION_LIMIT)
+}
+
+/**
+ * 构造 worker 最后一次回报的内容（界面渲染用）。
+ *
+ * 消息正文是给模型读的事实，含子会话 id、状态、下一步这些协议字段；界面只渲染
+ * worker 真正产出的内容——成功是产物摘要，失败是失败原因。
+ *
+ * @param {{ ok: boolean, result?: object, error?: unknown }} outcome - 终态
+ * @returns {string} 最后一次回报的内容
+ */
+export function buildWorkerReport(outcome) {
+  if (!outcome.ok) {
+    const reason = outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+    return `失败：${reason}`.slice(0, NOTIFICATION_LIMIT)
+  }
+  const summary = blocksToText(outcome.result?.output ?? [])
+  return (summary === '' ? '（worker 未产出文本）' : summary).slice(0, NOTIFICATION_LIMIT)
 }
 
 /**
@@ -71,15 +108,25 @@ export function createDispatcher({
   const resumeCounts = new Map()
   /** @type {Set<string>} 本进程注入过的通知消息 id，用于区分外部输入 */
   const injected = new Set()
-  /** @type {Set<string>} 已销毁的会话 id。失活的 agent 会静默接受 followup，投递前必须排除。 */
+  /** @type {Set<string>} 已销毁的会话 id。失活的 agent 会静默接受投递，投递前必须排除。 */
   const disposed = new Set()
+  /** @type {Map<string, object[]>} 等待父会话空闲的通知，按父会话分组 */
+  const waiting = new Map()
+  /** @type {ReturnType<typeof setInterval> | undefined} 空闲检测定时器 */
+  let idleTimer = undefined
+  /** @type {Set<string>} 正在投递的通知 id：同一条通知只投一次。 */
+  const delivering = new Set()
+  /** @type {boolean} 空闲检测是否正在跑：轮询重入会重复投递，用它当闸门。 */
+  let flushing = false
+  /** @type {boolean} 插件是否已卸载：卸载后不再起定时器、不再投递。 */
+  let closed = false
 
   /**
    * 解析父会话的 agent。
    *
    * 优先走 `sessionController.resolveAgent()`：它给出活 agent 并确保会话的 inbox
    * 投影处于激活状态。缺失该服务时回退到派工时持有的父 agent 活对象——实测只要
-   * 父 agent 尚未被销毁，对空闲 agent 调 `followup()` 就能唤醒它开新 turn。
+   * 父 agent 尚未被销毁，对空闲 agent 调 `steer()` 就能唤醒它开新 turn。
    *
    * 真正让唤醒落空的是父 agent 已被销毁（headless 一次性 CLI 会在 turn 结束后
    * dispose 会话）。这类通知留在队列里，等父会话重新打开时补投。
@@ -102,33 +149,50 @@ export function createDispatcher({
   }
 
   /**
-   * 向父会话投递完成通知。
+   * 把一条通知投进父会话的下一个 turn。
+   *
+   * 走 `followup`：通知是「下一个 turn 的一次输入」，语义上就该排进下一轮。
+   *
    * @param {object} notification - 通知记录
-   * @param {object} [parentAgent] - 派工时持有的父 agent 活对象
-   * @returns {Promise<boolean>} 是否已投递
+   * @param {object} agent - 父会话的 agent 活对象
+   * @returns {Promise<string>} 投递结果：`delivered` / `retryable` / `exhausted`
    */
-  async function deliver(notification, parentAgent) {
-    if (disposed.has(notification.parentSessionId)) {
-      await store.markUndelivered(notification.id, '父会话已销毁，等待重新打开后补投')
-      return false
+  async function deliverNow(notification, agent) {
+    // 幂等闸：轮询重入、补投与轮询并发时，同一条通知只投一次。
+    if (delivering.has(notification.id)) return RETRYABLE
+    delivering.add(notification.id)
+    try {
+      return await deliverOnce(notification, agent)
+    } finally {
+      delivering.delete(notification.id)
     }
-    const agent = await resolveParentAgent(notification.parentSessionId, parentAgent)
-    if (agent === undefined) {
-      await store.markUndelivered(notification.id, '父会话当前不可达')
-      return false
-    }
+  }
+
+  /**
+   * 真正投递一条通知（幂等闸之外的部分）。
+   *
+   * @param {object} notification - 通知记录
+   * @param {object} agent - 父会话的 agent 活对象
+   * @returns {Promise<string>} 投递结果：`delivered` / `retryable` / `exhausted`
+   */
+  async function deliverOnce(notification, agent) {
     const used = resumeCounts.get(notification.parentSessionId) ?? 0
     if (used >= autoResumeLimit) {
-      await store.markUndelivered(notification.id, `连续自动续行已达上限 ${autoResumeLimit}`)
-      logger(
-        `dsh-coordinator: 父会话 ${notification.parentSessionId} 的自动续行已达上限 ${autoResumeLimit}，`
-        + `通知 ${notification.id} 留待人工处理`,
-      )
-      return false
+      // 不可重试：上限不会自己涨，再试一次也是同一个结果。写盘与日志交给调用方，
+      // 那里知道还有多少条在等。
+      return EXHAUSTED
     }
     const message = createUserMessage(
       [{ type: 'text', text: notification.text }],
-      workerReportSource(notification.label, notification.childId, notification.text.split('\n')[0] ?? ''),
+      workerReportSource(
+        notification.label,
+        notification.childId,
+        // 改造前落盘的记录没有 summary / report / outcome：摘要退回正文首行
+        // （与当时的算法一致），回报正文与终态按缺省处理。
+        notification.summary ?? notification.text.split('\n')[0] ?? '',
+        notification.report ?? '',
+        notification.outcome ?? 'completed',
+      ),
     )
     injected.add(message.id)
     resumeCounts.set(notification.parentSessionId, used + 1)
@@ -140,10 +204,160 @@ export function createDispatcher({
         notification.id,
         `投递失败：${error instanceof Error ? error.message : String(error)}`,
       )
-      return false
+      return RETRYABLE
     }
     await store.markDelivered(notification.id)
-    return true
+    return DELIVERED
+  }
+
+  /**
+   * 记录一条不可重试的投递失败：已达自动续行上限。
+   *
+   * 原因里带上积压条数——积压本身在界面上没有任何提示，这条记录是唯一的线索。
+   *
+   * @param {object} notification - 通知记录
+   * @param {number} pendingCount - 当前落盘队列里的待投条数
+   * @returns {Promise<void>} 写盘完成
+   */
+  async function markExhausted(notification, pendingCount) {
+    const reason = `连续自动续行已达上限 ${autoResumeLimit}，当前有 ${pendingCount} 条完成通知待投`
+    await store.markUndelivered(notification.id, reason)
+    logger(
+      `dsh-coordinator: 父会话 ${notification.parentSessionId} 的${reason}，`
+      + `通知 ${notification.id} 留待人工处理`,
+    )
+  }
+
+  /**
+   * 向父会话投递完成通知。
+   *
+   * 父会话正忙时不投：通知排在 inbox 的 next-turn 队列里，会以「一条待发消息」的
+   * 形态出现在宿主输入框上方的消息队列面板——那是用户的输入队列，不是后台通知
+   * 该待的地方。改为留在落盘队列里等空闲，检测到空闲再投：投递即被消费。
+   *
+   * @param {object} notification - 通知记录
+   * @param {object} [parentAgent] - 派工时持有的父 agent 活对象
+   * @returns {Promise<string>} 投递结果：`delivered` / `retryable` / `exhausted`
+   */
+  async function deliver(notification, parentAgent) {
+    if (closed) {
+      await store.markUndelivered(notification.id, '插件已卸载，等待下次启动后补投')
+      return RETRYABLE
+    }
+    if (disposed.has(notification.parentSessionId)) {
+      await store.markUndelivered(notification.id, '父会话已销毁，等待重新打开后补投')
+      return RETRYABLE
+    }
+    const agent = await resolveParentAgent(notification.parentSessionId, parentAgent)
+    if (agent === undefined) {
+      await store.markUndelivered(notification.id, '父会话当前不可达')
+      return RETRYABLE
+    }
+    if (agent.status !== 'idle') {
+      const list = waiting.get(notification.parentSessionId) ?? []
+      // 记下当时的 agent 活对象：空闲检测里没有第二个入口能拿到它
+      if (!list.some((item) => item.notification.id === notification.id)) {
+        list.push({ notification, agent })
+      }
+      waiting.set(notification.parentSessionId, list)
+      await store.markUndelivered(notification.id, '父会话正忙，等待空闲后投递')
+      ensureIdleTimer()
+      return RETRYABLE
+    }
+    const result = await deliverNow(notification, agent)
+    if (result === EXHAUSTED) {
+      await markExhausted(notification, (await store.listPending()).length)
+      // 条目留在等待表里并打标记：上限复位后还能重新投，不能就此丢掉。
+      const list = waiting.get(notification.parentSessionId) ?? []
+      if (!list.some((item) => item.notification.id === notification.id)) {
+        list.push({ notification, agent, exhausted: true })
+      }
+      waiting.set(notification.parentSessionId, list)
+    }
+    return result
+  }
+
+  /**
+   * 启动空闲检测定时器。
+   * @returns {void}
+   */
+  function ensureIdleTimer() {
+    if (closed) return
+    if (idleTimer !== undefined) return
+    idleTimer = setInterval(() => {
+      if (flushing) return
+      flushing = true
+      void flushWaiting()
+        .catch((error) => {
+          // 读盘失败等异常必须在这里兜住：宿主对未处理拒绝是致命退出（proc.exit(1)），
+          // 一次磁盘抖动不该带走整个 dsh 进程。
+          logger(`dsh-coordinator: 空闲检测失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+        .finally(() => {
+          flushing = false
+        })
+    }, IDLE_POLL_MS)
+    // 空闲检测不该拖住进程退出：dsh 退出时通知仍在落盘队列里，重启后补投。
+    idleTimer.unref?.()
+  }
+
+  /**
+   * 把等待中的通知投给已经空闲的父会话。
+   *
+   * 投递前先看通知还在不在落盘队列里：父会话重新打开时补投通道（`redeliverPending`）
+   * 可能已经投过同一条，重复投会让协调者收到两遍。
+   *
+   * @returns {Promise<void>} 处理完成
+   */
+  async function flushWaiting() {
+    // 全是「已达上限、等人工介入复位」的条目时不必读盘：轮询只是等上限复位。
+    const hasWork = [...waiting.values()].some((list) => list.some((item) => item.exhausted !== true))
+    if (!hasWork) return
+    const pending = await store.listPending()
+    for (const [parentSessionId, list] of [...waiting]) {
+      // 先摘后投：投递期间等待表里没有这些条目，轮询重入也拿不到同一条。
+      waiting.delete(parentSessionId)
+      /** 已达上限、等人工介入复位的条目：不投、不写盘、不记日志，但留在表里。 */
+      const kept = []
+      const remaining = []
+      for (const item of list) {
+        if (item.exhausted === true) {
+          kept.push(item)
+          continue
+        }
+        const { notification } = item
+        if (!pending.some((entry) => entry.id === notification.id)) continue
+        const agent = await resolveParentAgent(parentSessionId, item.agent)
+        if (agent === undefined || agent.status !== 'idle') {
+          remaining.push(item)
+          continue
+        }
+        const result = await deliverNow(notification, agent)
+        if (result === RETRYABLE) {
+          remaining.push(item)
+          continue
+        }
+        if (result === EXHAUSTED) {
+          // 不可重试：再投一次也是同一个结果。条目留在等待表里并打标记——
+          // 上限复位后（用户开口）还要能重新投出去，不能就此丢掉。
+          await markExhausted(notification, pending.length)
+          kept.push({ ...item, exhausted: true })
+          continue
+        }
+      }
+      if (kept.length > 0 || remaining.length > 0) {
+        // 合并而不是覆盖：投递期间新到的通知也在这个等待表里。
+        waiting.set(parentSessionId, [
+          ...kept,
+          ...remaining,
+          ...(waiting.get(parentSessionId) ?? []),
+        ])
+      }
+    }
+    if (waiting.size === 0 && idleTimer !== undefined) {
+      clearInterval(idleTimer)
+      idleTimer = undefined
+    }
   }
 
   /**
@@ -156,12 +370,16 @@ export function createDispatcher({
     const record = inflight.get(childId)
     if (record === undefined) return
     inflight.delete(childId)
+    const text = buildNotificationText(record, outcome)
     const notification = {
       id: `note-${childId}-${record.startedAt}`,
       childId,
       parentSessionId: record.parentSessionId,
       label: record.label,
-      text: buildNotificationText(record, outcome),
+      text,
+      summary: text.split('\n')[0] ?? '',
+      report: buildWorkerReport(outcome),
+      outcome: outcome.ok ? 'completed' : 'failed',
       createdAt: Date.now(),
       attempts: 0,
     }
@@ -232,9 +450,24 @@ export function createDispatcher({
       let delivered = 0
       for (const notification of pending) {
         if (notification.parentSessionId !== agent.id) continue
-        if (await deliver(notification, agent)) delivered += 1
+        if (await deliver(notification, agent) === DELIVERED) delivered += 1
       }
+      // 补投通道已经处理过这个父会话的待投通知，等待表里的同一批不要再留
+      if (delivered > 0) waiting.delete(agent.id)
       return delivered
+    },
+
+    /**
+     * 释放定时器。
+     * @returns {void}
+     */
+    dispose() {
+      closed = true
+      if (idleTimer !== undefined) {
+        clearInterval(idleTimer)
+        idleTimer = undefined
+      }
+      waiting.clear()
     },
 
     /**
@@ -244,6 +477,19 @@ export function createDispatcher({
      */
     resetResumeCount(parentSessionId) {
       resumeCounts.delete(parentSessionId)
+      // 上限复位了，此前被标记为「已达上限」的条目要能重新投：清掉标记，
+      // 并让空闲检测重新跑起来。
+      const list = waiting.get(parentSessionId)
+      if (list === undefined) return
+      let released = false
+      const next = list.map((item) => {
+        if (item.exhausted !== true) return item
+        released = true
+        return { ...item, exhausted: false }
+      })
+      if (!released) return
+      waiting.set(parentSessionId, next)
+      ensureIdleTimer()
     },
 
     /**

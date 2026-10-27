@@ -232,6 +232,8 @@ dsh team 的消息是 inbox 投递：target 睡着时排队，等它自己醒来
 
 **通知的呈现（2026-10-27 追加）**：完成通知是注入父会话的一条 `user/message`，说话人不是用户。宿主把这类消息渲染成右对齐的用户气泡，于是本仓用自定义 `source.kind`（`dsh-coordinator/worker-report`）标记归属，客户端注册独立 Chat node kind 并用 exclusive claim 接管，渲染成左侧、带头像与身份的气泡。选这条路而不是抢占官方的 `user` 渲染键，是因为后者会接管所有会话的用户消息渲染。详见 [worker 回报气泡的呈现](.agents/notes/2026-10-27-worker-report-bubble.md)。
 
+**通知的界面内容与投递时机（2026-10-27 再追加）**：消息正文保留完整协议字段给模型读，界面只渲染 worker 最后一次回报的内容（`source.worker.report`，单独承载，附 `outcome` 终态）——用户不必读协议口吻。投递排进 inbox 的 next-turn 边界（下一个 turn 的一次输入），且父会话正忙时先不投、留在落盘队列里，检测到空闲再投：这样它不会以「一条待发消息」的形态挂在宿主输入框上方的「消息队列」面板上。详见 [worker 回报的投递边界](.agents/notes/2026-10-27-worker-report-delivery-boundary.md)。
+
 ### 5.3 Card 存储域
 
 **P2 决策：不进 dsh storage domain，改用自建落盘**（`src/host/cards/store.js`）。

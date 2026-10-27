@@ -34,6 +34,12 @@ export async function makeTempDir(prefix) {
  * @returns {Promise<void>}
  */
 export async function cleanupTempDirs() {
-  await Promise.all(created.map((dir) => rm(dir, { recursive: true, force: true })))
+  // 重试：目录可能正被在途写盘占用，删一次撞上 ENOTEMPTY / ENOENT 就再试。
+  await Promise.all(created.map((dir) => rm(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 50,
+  })))
   created.length = 0
 }

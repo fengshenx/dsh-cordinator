@@ -35,11 +35,22 @@ const STYLE_TEXT = `
   font-size: 12px;
   font-weight: 500;
   color: var(--dsw-alias-label-secondary);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.dsh-coordinator-worker-report__name:hover {
+  color: var(--dsw-alias-label-primary);
+  text-decoration: underline;
 }
 
 .dsh-coordinator-worker-report__bubble {
   max-width: min(calc(var(--dsh-chat-content-width, 748px) * 0.702), 82%);
-  background: var(--dsw-alias-bg-layer-1);
+  /* 淡底：按前景色混出极淡的一层，浅色主题是几乎看不出的灰，深色主题是微亮。 */
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
   border: 1px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-xl);
   padding: 10px 16px;
@@ -48,6 +59,37 @@ const STYLE_TEXT = `
   color: var(--dsw-alias-label-primary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.dsh-coordinator-worker-report__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 2px;
+}
+
+.dsh-coordinator-worker-report__time {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsh-coordinator-worker-report__copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.dsh-coordinator-worker-report__copy:hover {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+  color: var(--dsw-alias-label-secondary);
 }
 `
 

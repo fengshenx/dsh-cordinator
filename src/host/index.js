@@ -136,4 +136,9 @@ export function apply(ctx) {
       dispatcher.resetResumeCount(agent.id)
     }
   })
+
+  // 空闲检测的定时器随插件卸载一起停掉。
+  ctx.on('dispose', () => {
+    dispatcher.dispose()
+  })
 }

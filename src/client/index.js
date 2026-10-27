@@ -119,5 +119,10 @@ function mountWorkerReport(ctx) {
   ctx.effect(() => ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
     name: 'conversation.chat.node',
     key: WORKER_REPORT_NODE_KIND,
+    // `uiWorkspace` 只挂在 web-app bundle 上，写进 inject 的服务缺失会让整个插件
+    // 挂起——惰性获取，点击名字时才取。
+    inject: () => ({
+      openSession: (sessionId) => ctx.get('uiWorkspace')?.openSession(sessionId),
+    }),
   }, WorkerReportView)), 'dsh-coordinator worker 回报渲染器')
 }
