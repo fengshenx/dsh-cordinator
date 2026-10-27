@@ -187,14 +187,28 @@ export function createProjectService({
     },
 
     /**
+     * 等协调者索引就绪，并报告它到底有没有读出来。
+     *
+     * `isCoordinatorSession()` 在索引未就绪时一律放行——那是为了保证协调者首轮
+     * 不至于没有工具，但放行意味着**任何**会话都拿到编排工具。派工这类高危操作
+     * 不能建立在这个宽松判定上：执行前等一次重建结果，读不出来就拒绝。
+     *
+     * @returns {Promise<boolean>} 索引是否可用
+     */
+    async awaitIndex() {
+      await indexReady
+      return indexLoaded
+    },
+
+    /**
      * 同步判定某个会话是不是项目协调者。
      *
      * 协调者身份在建项目时就写进注册表（`coordinatorSessionId`），工具面据此
      * 分配——不必等会话跑起来再从会话内容里推断。
      *
      * 索引重建完成前一律返回 true：那时注册表还没读回内存，返回 false 会让
-     * 协调者首轮看不到编排工具，活直接干不成；多给工具的实际危害是零，每个
-     * 工具执行时都按调用方会话再校验一次归属。
+     * 协调者首轮看不到编排工具，活直接干不成。这个宽松只对读类工具安全——派工
+     * 走 `awaitIndex()` 再判一次，不能靠这里兜。
      *
      * @param {string} sessionId - 会话 id
      * @returns {boolean} 是否项目协调者

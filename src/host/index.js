@@ -102,6 +102,8 @@ export function apply(ctx) {
     workers,
     // worker 跑在项目目录里：协调者不能指定 worker 的工作目录。
     resolveWorkerCwd: (sessionId) => projectService.directoryOfCoordinator(sessionId),
+    // 派工前要确认调用方是协调者，且索引真的读出来了，不能靠工具面的宽松放行。
+    coordinatorIndex: projectService,
     logger,
   })
 
@@ -130,9 +132,18 @@ export function apply(ctx) {
   void cards.loadSlotIndex().catch((error) => {
     logger(`dsh-coordinator: 重建槽位索引失败：${error instanceof Error ? error.message : String(error)}`)
   })
-  void projectService.loadIndex().catch((error) => {
-    logger(`dsh-coordinator: 重建项目索引失败：${error instanceof Error ? error.message : String(error)}`)
-  })
+  // 项目索引失败会永久停在「未就绪」，而那个状态下所有会话都被当作协调者。
+  // 重启进程代价太大，退避重试几次；最终失败则由派工路径上的 awaitIndex 拒绝。
+  const loadProjectIndex = async (attempt) => {
+    try {
+      await projectService.loadIndex()
+    } catch (error) {
+      logger(`dsh-coordinator: 重建项目索引失败（第 ${attempt} 次）：${error instanceof Error ? error.message : String(error)}`)
+      if (attempt >= 3) return
+      setTimeout(() => { void loadProjectIndex(attempt + 1) }, 2000 * attempt)
+    }
+  }
+  void loadProjectIndex(1)
 
   // 父会话注册后补投此前未送达的完成通知（进程崩溃窗口）。
   //
