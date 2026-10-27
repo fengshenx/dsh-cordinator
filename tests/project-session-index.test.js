@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { mkdtemp, mkdir, realpath, symlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { after, test } from 'node:test'
+import { mkdir, realpath, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createCanonicalizer, groupSessionsByProject } from '../src/host/projects/session-index.js'
 import { createProjectStore } from '../src/host/projects/store.js'
 import { createProjectService } from '../src/host/projects/service.js'
+import { cleanupTempDirs, makeTempDir } from './helpers/temp-dir.js'
+
+after(cleanupTempDirs)
 
 /**
  * 造一套临时 home 与项目目录。
  * @returns {Promise<{ home: string, workspace: string }>} 路径
  */
 async function makeWorkspace() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-index-'))
-  const workspace = await mkdtemp(join(tmpdir(), 'dsh-coordinator-dir-'))
+  const home = await makeTempDir('dsh-coordinator-index-')
+  const workspace = await makeTempDir('dsh-coordinator-dir-')
   return { home, workspace }
 }
 

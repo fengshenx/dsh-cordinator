@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { DETAIL_SPEC_EMPTY, detailSections, statusLabel } from '../src/client/card-detail-view.js'
+
+test('卡片没写说明时用统一的占位文案', () => {
+  assert.equal(DETAIL_SPEC_EMPTY, '这张卡还没有写说明。')
+  assert.equal(detailSections({}).spec, null)
+})
+
+test('状态徽章按卡片状态给中文名', () => {
+  assert.equal(statusLabel('done'), '已完成')
+  assert.equal(statusLabel('archived'), '已归档')
+  assert.equal(statusLabel('active'), '进行中')
+  assert.equal(statusLabel(undefined), '进行中')
+})
+
+test('详情分段：说明为空时不出说明段', () => {
+  assert.equal(detailSections({ spec: '写点东西' }).spec, '写点东西')
+  assert.equal(detailSections({ spec: '' }).spec, null)
+  assert.equal(detailSections({}).spec, null)
+  assert.equal(detailSections(undefined).spec, null)
+})
+
+test('详情分段：检查点只出现有内容的段', () => {
+  const sections = detailSections({
+    checkpoint: { summary: '做了一半', nextAction: '', blocker: '等外部依赖' },
+  })
+  assert.deepEqual(sections.checkpoint, [
+    { title: '当前进展', text: '做了一半' },
+    { title: '阻塞', text: '等外部依赖' },
+  ])
+})
+
+test('详情分段：没有检查点时没有检查点段', () => {
+  assert.deepEqual(detailSections({}).checkpoint, [])
+  assert.deepEqual(detailSections({ checkpoint: {} }).checkpoint, [])
+})
+
+test('详情分段：链接不是数组时当作空列表', () => {
+  assert.deepEqual(detailSections({ links: '不是数组' }).links, [])
+  assert.deepEqual(detailSections({ links: [{ label: '甲' }] }).links, [{ label: '甲' }])
+})

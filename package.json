@@ -38,11 +38,6 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-api-session-controller"
-      ],
-      "external": [
-        "react",
-        "react-dom",
-        "@deepseek-ai/dsh-client-ui-sidebar-right/client"
       ]
     }
   },
