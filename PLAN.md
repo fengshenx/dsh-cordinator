@@ -454,7 +454,7 @@ dsh 侧实现：
 | 只读详情浮层 | 通过 | `card-detail.js` + 共用的 `modal-shell.js`；遮罩 / Escape / Tab 焦点陷阱 / 初始焦点 / 关闭回焦齐备（见 PR #4 评论「证据」条） |
 | 已完成折叠区 | 通过 | Linear 风格折叠区，默认收起，计数胶囊；展开后 done 单行变体（见 PR #4 评论「证据」条） |
 | 确认弹窗行为不变 | 通过 | `confirm-dialog.js` 改为复用浮层外壳，单测与真实实例均通过 |
-| 卡片写操作（完成/置顶/重命名/删除） | **未做** | 客户端无通用写通道，需新增宿主远程方法（见 capability-gaps 第 36 条） |
+| 卡片写操作（完成/置顶/重命名/删除） | **未做** | 浏览器→宿主的写通道本仓已有（Typert SRC 命名空间 `projects`），缺的是卡片自己的写方法——补一组远程方法即可（见 capability-gaps 第 36 条） |
 | 信号灯「等你输入 / 未看」两档 | **未做** | 宿主未暴露 pending 审批与未读投影（见 capability-gaps 第 35 条） |
 
 **P4 结论**：卡面与交互按 Telov 的信息结构重做并真实实例取证通过；两处结构性缺口（宿主无写通道、宿主无未读/审批投影）记在 [docs/capability-gaps.md](docs/capability-gaps.md) 第 35–36 条。实现期的两条取舍写进[看板卡片视觉与交互](.agents/notes/2026-10-27-board-card-visual-and-interaction.md)：浮层外壳抽出供确认弹窗与详情浮层共用；卡面根 `role="button"` 内嵌可聚焦控件的 ARIA 冲突沿用 Telov 同款取舍。

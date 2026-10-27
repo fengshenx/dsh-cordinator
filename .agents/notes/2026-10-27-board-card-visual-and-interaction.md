@@ -42,7 +42,7 @@ Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：act
 ## 边界
 
 - **信号灯少两档**：宿主未暴露 pending 审批与未读投影，Telov 的「等你输入 / 未看」表达不了。dsh 侧档位为 attention / running / idle / unknown / none。
-- **详情只读**：完成、置顶、重命名、删除需要新增宿主远程方法，属独立议题。
+- **详情只读**：完成、置顶、重命名、删除需要新增一组卡片远程方法（本仓的 Typert 写通道已有，缺的是卡片方法本身），属独立议题。
 - **无 workspace chip**：卡片不按项目/工作区分区，编号全局递增（见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。
 - **浮层与宿主 Modal 是复制改写**：宿主改 `Modal.tsx` 时本仓要同步（与确认弹窗同一条耦合）。
 - **卡面根的 ARIA 冲突**：见上。
