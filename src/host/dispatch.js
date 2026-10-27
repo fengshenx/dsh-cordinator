@@ -107,6 +107,12 @@ export function createDispatcher({
   const waiting = new Map()
   /** @type {ReturnType<typeof setInterval> | undefined} 空闲检测定时器 */
   let idleTimer = undefined
+  /** @type {Set<string>} 正在投递的通知 id：同一条通知只投一次。 */
+  const delivering = new Set()
+  /** @type {boolean} 空闲检测是否正在跑：轮询重入会重复投递，用它当闸门。 */
+  let flushing = false
+  /** @type {boolean} 插件是否已卸载：卸载后不再起定时器、不再投递。 */
+  let closed = false
 
   /**
    * 解析父会话的 agent。
@@ -145,6 +151,24 @@ export function createDispatcher({
    * @returns {Promise<boolean>} 是否已投递
    */
   async function deliverNow(notification, agent) {
+    // 幂等闸：轮询重入、补投与轮询并发时，同一条通知只投一次。
+    if (delivering.has(notification.id)) return false
+    delivering.add(notification.id)
+    try {
+      return await deliverOnce(notification, agent)
+    } finally {
+      delivering.delete(notification.id)
+    }
+  }
+
+  /**
+   * 真正投递一条通知（幂等闸之外的部分）。
+   *
+   * @param {object} notification - 通知记录
+   * @param {object} agent - 父会话的 agent 活对象
+   * @returns {Promise<boolean>} 是否已投递
+   */
+  async function deliverOnce(notification, agent) {
     const used = resumeCounts.get(notification.parentSessionId) ?? 0
     if (used >= autoResumeLimit) {
       await store.markUndelivered(notification.id, `连续自动续行已达上限 ${autoResumeLimit}`)
@@ -159,9 +183,11 @@ export function createDispatcher({
       workerReportSource(
         notification.label,
         notification.childId,
-        notification.summary,
-        notification.report,
-        notification.outcome,
+        // 改造前落盘的记录没有 summary / report / outcome：摘要退回正文首行
+        // （与当时的算法一致），回报正文与终态按缺省处理。
+        notification.summary ?? notification.text.split('\n')[0] ?? '',
+        notification.report ?? '',
+        notification.outcome ?? 'completed',
       ),
     )
     injected.add(message.id)
@@ -192,6 +218,10 @@ export function createDispatcher({
    * @returns {Promise<boolean>} 是否已投递
    */
   async function deliver(notification, parentAgent) {
+    if (closed) {
+      await store.markUndelivered(notification.id, '插件已卸载，等待下次启动后补投')
+      return false
+    }
     if (disposed.has(notification.parentSessionId)) {
       await store.markUndelivered(notification.id, '父会话已销毁，等待重新打开后补投')
       return false
@@ -220,9 +250,20 @@ export function createDispatcher({
    * @returns {void}
    */
   function ensureIdleTimer() {
+    if (closed) return
     if (idleTimer !== undefined) return
     idleTimer = setInterval(() => {
+      if (flushing) return
+      flushing = true
       void flushWaiting()
+        .catch((error) => {
+          // 读盘失败等异常必须在这里兜住：宿主对未处理拒绝是致命退出（proc.exit(1)），
+          // 一次磁盘抖动不该带走整个 dsh 进程。
+          logger(`dsh-coordinator: 空闲检测失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+        .finally(() => {
+          flushing = false
+        })
     }, IDLE_POLL_MS)
     // 空闲检测不该拖住进程退出：dsh 退出时通知仍在落盘队列里，重启后补投。
     idleTimer.unref?.()
@@ -239,6 +280,8 @@ export function createDispatcher({
   async function flushWaiting() {
     const pending = await store.listPending()
     for (const [parentSessionId, list] of [...waiting]) {
+      // 先摘后投：投递期间等待表里没有这些条目，轮询重入也拿不到同一条。
+      waiting.delete(parentSessionId)
       const remaining = []
       for (const item of list) {
         const { notification } = item
@@ -250,8 +293,10 @@ export function createDispatcher({
         }
         if (!await deliverNow(notification, agent)) remaining.push(item)
       }
-      if (remaining.length > 0) waiting.set(parentSessionId, remaining)
-      else waiting.delete(parentSessionId)
+      if (remaining.length > 0) {
+        // 合并而不是覆盖：投递期间新到的通知也在这个等待表里。
+        waiting.set(parentSessionId, [...(waiting.get(parentSessionId) ?? []), ...remaining])
+      }
     }
     if (waiting.size === 0 && idleTimer !== undefined) {
       clearInterval(idleTimer)
@@ -361,6 +406,7 @@ export function createDispatcher({
      * @returns {void}
      */
     dispose() {
+      closed = true
       if (idleTimer !== undefined) {
         clearInterval(idleTimer)
         idleTimer = undefined

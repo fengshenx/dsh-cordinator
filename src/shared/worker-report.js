@@ -26,9 +26,12 @@ export const CONTEXT_SUMMARY_MAX_CHARS = 120
  * @returns {string} 压到上限后的摘要
  */
 export function boundSummary(summary) {
-  return summary.length <= CONTEXT_SUMMARY_MAX_CHARS
-    ? summary
-    : `${summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS - 1)}…`
+  // 兜住非字符串：改造前落盘的完成通知没有 summary 字段，补投时这里是 undefined。
+  const text = typeof summary === 'string' ? summary : ''
+
+  return text.length <= CONTEXT_SUMMARY_MAX_CHARS
+    ? text
+    : `${text.slice(0, CONTEXT_SUMMARY_MAX_CHARS - 1)}…`
 }
 
 /**
@@ -49,7 +52,7 @@ export function boundSummary(summary) {
  * @param {string} [outcome] - 终态：`completed` 或 `failed`
  * @returns {{ kind: string, form: string, summary: string, worker: { label: string, childSessionId: string, report: string, outcome: string } }} source
  */
-export function workerReportSource(label, childSessionId, summary, report = '', outcome = 'completed') {
+export function workerReportSource(label, childSessionId, summary = '', report = '', outcome = 'completed') {
   return {
     kind: WORKER_REPORT_SOURCE_KIND,
     form: 'notice',

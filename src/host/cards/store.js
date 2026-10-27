@@ -73,13 +73,15 @@ async function readStore(file, onCorrupt, io = defaultIo) {
 /**
  * 创建卡片存储。
  *
- * @param {object} options - 选项
+ * @param {object} options - 存储选项
  * @param {string} options.home - dsh home 目录
  * @param {(message: string) => void} [options.logger] - 日志输出
- * @param {object} [options.io] - 文件系统调用（测试用）
+ * @param {object} [options.io] - 文件读写实现（测试可替换）
+ * @param {() => number} [options.clock] - 取当前时间的函数：排序依赖卡片更新时间戳，
+ *   同一毫秒内的两次写入会退回插入序，测试可注入可控时钟避免这种巧合
  * @returns {object} 卡片存储接口
  */
-export function createCardStore({ home, logger = () => {}, io = defaultIo } = {}) {
+export function createCardStore({ home, logger = () => {}, io = defaultIo, clock = Date.now } = {}) {
   const directory = join(home, 'dsh-coordinator')
   const file = join(directory, 'cards.json')
   const temporary = join(directory, 'cards.json.tmp')
@@ -147,7 +149,7 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo } = {}
     async create({ title, spec, links, slots, checkpoint, updatedBy }) {
       return serialize(async () => {
         const store = await readStore(file, recoverFromCorruption, io)
-        const now = Date.now()
+        const now = clock()
         const card = {
           id: randomUUID(),
           number: store.counter + 1,
@@ -214,7 +216,7 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo } = {}
         if (status !== undefined && !CARD_STATUSES.includes(status)) {
           throw new Error(`卡片状态非法：${String(status)}`)
         }
-        const now = Date.now()
+        const now = clock()
         const next = { ...card }
         if (title !== undefined) next.title = title
         if (spec !== undefined) next.spec = spec

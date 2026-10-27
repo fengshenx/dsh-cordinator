@@ -16,7 +16,10 @@ import {
  */
 async function createTools() {
   const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-cardtools-'))
-  const store = createCardStore({ home })
+  // 可控时钟：卡片排序按更新时间戳，两次写入落在同一毫秒会退回插入序，
+  // 断言「最近更新的排前面」就成了碰运气的 flaky 用例。
+  let tick = 0
+  const store = createCardStore({ home, clock: () => Date.now() + (tick += 1) })
   return {
     home,
     tools: {

@@ -169,14 +169,158 @@ test('父会话正忙时通知先留队，空闲后自动投递', async () => {
     await waitFor(async () => (await store.listPending()).length === 1)
     assert.equal(fixture.delivered.length, 0)
 
-    // 转空闲后自动投递
+    // 转空闲后自动投递。投递与落盘的「已投递」标记之间有一步异步：
+    // 消息先到父会话，队列文件随后才清——等两件事都成立再断言。
     parent.status = 'idle'
-    await waitFor(() => fixture.delivered.length === 1, 5000)
+    await waitFor(async () => (
+      fixture.delivered.length === 1 && (await store.listPending()).length === 0
+    ), 5000)
     assert.equal(fixture.delivered.length, 1)
     assert.equal((await store.listPending()).length, 0)
   } finally {
     dispatcher.dispose()
     await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('轮询重入不会重复投递同一条通知', async () => {
+  const fixture = createFixture()
+  const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-dispatch-'))
+  const real = createNotificationStore({ home })
+  // 造出「两次轮询拿到同一份待投快照」：第一份读到的结果被缓存下来，
+  // 之后每次轮询都返回它——两个轮询都认为这条通知还等着投。
+  let calls = 0
+  let snapshot = null
+  const store = {
+    listPending: async () => {
+      calls += 1
+      if (snapshot === null) snapshot = await real.listPending()
+      await new Promise((resolve) => setTimeout(resolve, calls % 2 === 1 ? 800 : 300))
+      return snapshot
+    },
+    markDelivered: (id) => real.markDelivered(id),
+    markUndelivered: (id, reason) => real.markUndelivered(id, reason),
+    enqueue: (notification) => real.enqueue(notification),
+  }
+  const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
+  try {
+    const parent = createParent('parent-1', fixture.delivered, 'running')
+    fixture.agents.set('parent-1', parent)
+    await dispatcher.dispatch({
+      parent,
+      task: '做一件事',
+      label: '实现派工',
+      signal: new AbortController().signal,
+    })
+    fixture.activations[0].settle({
+      stopReason: 'completed',
+      output: [{ type: 'text', text: '产物在此' }],
+    })
+    await waitFor(async () => (await real.listPending()).length === 1)
+    parent.status = 'idle'
+    // 两轮轮询（500ms 一次）都跑过
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    assert.equal(fixture.delivered.length, 1)
+  } finally {
+    dispatcher.dispose()
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('空闲检测读盘失败不会变成未处理拒绝', async () => {
+  const fixture = createFixture()
+  const rejections = []
+  const onRejection = (reason) => rejections.push(reason)
+  process.on('unhandledRejection', onRejection)
+  const store = {
+    listPending: async () => { throw new Error('EIO: i/o error, read') },
+    markDelivered: async () => {},
+    markUndelivered: async () => {},
+    enqueue: async () => {},
+  }
+  const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
+  try {
+    const parent = createParent('parent-1', fixture.delivered, 'running')
+    fixture.agents.set('parent-1', parent)
+    await dispatcher.dispatch({
+      parent,
+      task: '做一件事',
+      label: '实现派工',
+      signal: new AbortController().signal,
+    })
+    fixture.activations[0].settle({
+      stopReason: 'completed',
+      output: [{ type: 'text', text: '产物在此' }],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    assert.deepEqual(rejections, [])
+    assert.equal(fixture.delivered.length, 0)
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    dispatcher.dispose()
+  }
+})
+
+test('改造前落盘的旧通知补投不会失败', async () => {
+  const fixture = createFixture()
+  const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-dispatch-'))
+  const store = createNotificationStore({ home })
+  const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
+  try {
+    // PR #6 形状的记录：没有 summary / report / outcome 字段。
+    await store.enqueue({
+      id: 'note-old-1',
+      childId: 'child-old',
+      parentSessionId: 'parent-1',
+      label: '实现派工',
+      text: '任务「实现派工」已结束。\n子会话：child-old',
+      createdAt: 1,
+      attempts: 0,
+    })
+    const parent = createParent('parent-1', fixture.delivered)
+    fixture.agents.set('parent-1', parent)
+    const delivered = await dispatcher.redeliverPending(parent)
+    assert.equal(delivered, 1)
+    assert.equal(fixture.delivered.length, 1)
+    const source = fixture.delivered[0].source
+    assert.equal(source.summary, '任务「实现派工」已结束。')
+    assert.equal(source.worker.report, '')
+    assert.equal(source.worker.outcome, 'completed')
+  } finally {
+    dispatcher.dispose()
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('插件卸载后不再起定时器', async () => {
+  const fixture = createFixture()
+  const home = await mkdtemp(join(tmpdir(), 'dsh-coordinator-dispatch-'))
+  const store = createNotificationStore({ home })
+  const dispatcher = createDispatcher({ ctx: fixture.ctx, store })
+  const home2 = await mkdtemp(join(tmpdir(), 'dsh-coordinator-dispatch-'))
+  try {
+    dispatcher.dispose()
+    // 卸载后即便父会话转空闲，也不该再有定时器把它投出去
+    const parent = createParent('parent-1', fixture.delivered, 'idle')
+    fixture.agents.set('parent-1', parent)
+    await dispatcher.dispatch({
+      parent,
+      task: '做一件事',
+      label: '实现派工',
+      signal: new AbortController().signal,
+    })
+    fixture.activations[0].settle({
+      stopReason: 'completed',
+      output: [{ type: 'text', text: '产物在此' }],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    // 卸载后不再投递，也不该有轮询把它送出去
+    assert.equal(fixture.delivered.length, 0)
+    assert.equal((await store.listPending()).length, 1)
+  } finally {
+    dispatcher.dispose()
+    await rm(home, { recursive: true, force: true })
+    await rm(home2, { recursive: true, force: true })
   }
 })
 
