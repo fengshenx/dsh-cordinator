@@ -310,6 +310,9 @@ export function createDispatcher({
    * @returns {Promise<void>} 处理完成
    */
   async function flushWaiting() {
+    // 全是「已达上限、等人工介入复位」的条目时不必读盘：轮询只是等上限复位。
+    const hasWork = [...waiting.values()].some((list) => list.some((item) => item.exhausted !== true))
+    if (!hasWork) return
     const pending = await store.listPending()
     for (const [parentSessionId, list] of [...waiting]) {
       // 先摘后投：投递期间等待表里没有这些条目，轮询重入也拿不到同一条。
