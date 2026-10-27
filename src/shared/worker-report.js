@@ -1,0 +1,81 @@
+/**
+ * worker 回报消息的来源标记。
+ *
+ * 完成通知注入父会话时，消息的 `source` 带这个 kind，客户端据此认出「这条不是
+ * 用户输入，是某个 worker 的回报」，并把它渲染成左侧、带头像与身份的气泡。
+ *
+ * 标记放在 `source` 而不是正文里：正文是模型读的事实，前缀会污染它；`source`
+ * 是宿主的归属字段，链路上原样透传（宿主只校验 `source.kind` 是非空字符串）。
+ *
+ * @module dsh-coordinator/shared/worker-report
+ */
+
+/** worker 回报消息的 source kind。 */
+export const WORKER_REPORT_SOURCE_KIND = 'dsh-coordinator/worker-report'
+
+/**
+ * 构造 worker 回报消息的 source。
+ *
+ * `form: 'notice'` 与 `summary` 是宿主给所有生产者的通用契约：带 form 的消息在
+ * 官方上下文行里会直接显示一行摘要。我们的渲染接管失败而降级时，它显示的
+ * 是「任务「X」已结束。」而不是 source 的原始 kind 字符串。
+ *
+ * @param {string} label - worker 的任务标签（身份名，头像与名字都用它）
+ * @param {string} childSessionId - worker 子会话 id
+ * @param {string} summary - 一行摘要
+ * @returns {{ kind: string, form: string, summary: string, worker: { label: string, childSessionId: string } }} source
+ */
+export function workerReportSource(label, childSessionId, summary) {
+  return {
+    kind: WORKER_REPORT_SOURCE_KIND,
+    form: 'notice',
+    summary,
+    worker: { label, childSessionId },
+  }
+}
+
+/**
+ * 从消息内容块里取出纯文本。
+ *
+ * 宿主不约束 content 的形状（事件数据是开放 JSON），所以读的时候自己判型。
+ *
+ * @param {unknown} content - 消息的内容块数组
+ * @returns {string} 拼接后的文本
+ */
+export function workerReportText(content) {
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block) => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+/**
+ * 判断某个值是不是普通对象。
+ *
+ * @param {unknown} value - 待判的值
+ * @returns {boolean} 是否是普通对象
+ */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * 从消息的 source 里读出 worker 回报信息。
+ *
+ * 宿主不校验 source 的内部形状（只认 kind 是非空字符串），所以读的时候必须
+ * 自己判型：盘上事件里的 source 是 `unknown`。
+ *
+ * @param {unknown} source - 消息的 source
+ * @returns {{ label: string, childSessionId: string } | null} worker 信息；不是 worker 回报时为 null
+ */
+export function readWorkerReportSource(source) {
+  if (!isRecord(source) || source.kind !== WORKER_REPORT_SOURCE_KIND) return null
+  const worker = source.worker
+  if (!isRecord(worker)) return null
+  const label = worker.label
+  const childSessionId = worker.childSessionId
+  if (typeof label !== 'string' || typeof childSessionId !== 'string') return null
+  return { label, childSessionId }
+}

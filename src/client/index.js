@@ -18,6 +18,8 @@ import { BoardBody } from './board.js'
 import { ProjectPanel } from './project-panel.js'
 import { mountCoordinatorView, watchCoordinatorSessions } from './coordinator-view.js'
 import { callProjectRemote, mountProjectRemote, reportProjectRemoteError } from './project-remote.js'
+import { WORKER_REPORT_NODE_KIND, workerReportDefinition } from './worker-report-definition.js'
+import { WorkerReportView } from './worker-report-view.js'
 
 export const inject = ['slots', 'sidebarRightTabs', 'sessions']
 
@@ -80,6 +82,7 @@ export function apply(ctx) {
   // 官方欢迎页。
   ctx.inject(['uiConversation'], function mountCoordinatorViewFiber(conversationCtx) {
     mountCoordinatorView(conversationCtx)
+    mountWorkerReport(conversationCtx)
   })
 
   // 项目命名空间挂在官方 gateway client 的 `ctx.remote` 上。远程通道由官方
@@ -94,4 +97,27 @@ export function apply(ctx) {
     // 协调者会话名单走同一条通道：填充不挂在项目面板上，侧栏收起时面板会卸载。
     watchCoordinatorSessions(remoteCtx)
   })
+}
+
+/**
+ * 注册 worker 回报的会话节点定义与渲染器。
+ *
+ * 定义用 exclusive claim 接管带 worker 标记的 `user/message`，让它们不再走官方的
+ * 右对齐用户气泡；渲染器按节点 kind 注册，键必须等于 kind。
+ *
+ * @param {object} ctx - 客户端 Cordis 上下文（已注入 `uiConversation`）
+ * @returns {void}
+ */
+function mountWorkerReport(ctx) {
+  try {
+    ctx.uiConversation.events.register(workerReportDefinition)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ctx.logger?.error?.(`dsh-coordinator: worker 回报节点注册失败：${message}`)
+    return
+  }
+  ctx.effect(() => ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+    name: 'conversation.chat.node',
+    key: WORKER_REPORT_NODE_KIND,
+  }, WorkerReportView)), 'dsh-coordinator worker 回报渲染器')
 }
