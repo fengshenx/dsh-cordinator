@@ -264,20 +264,25 @@ const STYLE_TEXT = `
   line-height: 18px;
   cursor: pointer;
 }
+/* 会话列表与项目行左边缘对齐：官方树里会话行不额外缩进，层级由行首状态位
+   交代（宿主 Rows.module.css 的 sessionRow 缩进只跟 --dsh-workspace-indent）。 */
 .dsh-coordinator-project-sessions {
   display: flex;
   flex-direction: column;
-  padding: 2px 0 4px 20px;
+  padding: 2px 0 4px;
 }
+/* 会话行逐项照官方工作区会话行（宿主 Rows.module.css 的 sessionRow 与
+   sessionRow 下的 title）：行高 32、左右各 8 内边距、行内不设 gap（标题自带
+   左右外边距）、文字用一级标签色。 */
 .dsh-coordinator-session-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px 0 4px;
+  gap: 0;
+  height: 32px;
+  padding: 0 8px;
   box-sizing: border-box;
   border-radius: var(--dsw-radius-md);
-  color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-primary);
   cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
@@ -287,10 +292,11 @@ const STYLE_TEXT = `
     background: var(--dsw-alias-interactive-bg-hover);
   }
 }
+/* 状态位：官方会话行的 slot 是 16×20，圆点或加载器在里面居中。 */
 .dsh-coordinator-session-status {
   flex: none;
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -304,6 +310,7 @@ const STYLE_TEXT = `
   /* 与官方工作区会话行同字号（宿主 Rows.module.css 的 .title）。 */
   font-size: 14px;
   line-height: 20px;
+  margin: 0 6px 0 var(--dsh-sidebar-label-gap, 4px);
 }
 .dsh-coordinator-session-spinner {
   flex: none;
@@ -315,12 +322,12 @@ const STYLE_TEXT = `
   border-radius: 50%;
   animation: dsh-coordinator-spin 0.8s linear infinite;
 }
-/* 归档按钮：外观照官方会话行的 hover 动作（24×24、三级标签色、悬停提亮）。 */
+/* 归档按钮：外观照官方会话行的 hover 动作（24×24、三级标签色、悬停提亮）。
+   容器不加外边距——按钮自己的 -4px 负外边距负责把 24px 目标对到紧凑图标中心。 */
 .dsh-coordinator-session-actions {
   flex: none;
   display: none;
   align-items: center;
-  margin-left: 4px;
 }
 @media (hover: hover) {
   .dsh-coordinator-session-row:hover .dsh-coordinator-session-actions {
