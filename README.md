@@ -1,6 +1,6 @@
 # dsh-coordinator
 
-DeepSeek Harness 的协调者/执行者编排 bundle。把 Telov 的多 Agent 编排协议层移植到 dsh：协议 skill、项目初始化工具、后台派工与完成唤醒、任务看板卡片，以及后续阶段的交付看板 UI。
+DeepSeek Harness 的协调者/执行者编排 bundle：多 Agent 编排协议 skill、项目初始化工具、后台派工与完成唤醒、任务看板卡片，以及交付看板 UI。
 
 当前状态：**P5（骨架 + 协议层 + 初始化 + 派工唤醒 + 卡片存储与卡片工具 + 右栏看板 UI + 项目注册表与左栏项目区块 + 角色槽位注入 + 看板卡面重做 + 看板按项目组织 + 建卡后自动打开看板）**。
 
@@ -99,14 +99,6 @@ dsh plugin --profile dev add dsh-coordinator
 
 协议层也随 bundle 分发到 `skills/` 下；项目内若自行放置 `.agents/skills/coordinator-mode/`，项目副本优先（dsh 的 skill 发现按来源层级取优）。
 
-## 协议层从 Telov 搬来了什么
-
-保留的是编排纪律与方法学内核，删掉的是 Telov 仓库专有内容：
-
-- **保留**：任务接力顺序、事件调度与卡片检查点、传话纪律（首轮简报只给边界与验收、不抄已落盘正文）、验收裁决条件、进展说明口径、并行与串行的划分原则。
-- **改写**：Telov 的 15 个兄弟专项技能（`telov-how`/`telov-why`/`telov-architect` 等）替换为方法表——保留「什么情况下用什么方法」，去掉 Telov 专有技能依赖；Telov 的工具名（`SpawnWorker`/`MessageWorker`/`CreateCard` 等）落到 dsh 侧的真实工具（见上表），协议层写明对应关系与差异。
-- **删除**：指向 Telov 仓库文档的链接（`docs/architecture.md`、治理文档、e2e 取证文档）、pstack 对照表、审查 bot 分诊——这些属于 Telov 的仓库治理，不通用。
-
 ## 已知限制
 
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
@@ -132,7 +124,7 @@ dsh plugin --profile dev add dsh-coordinator
 - **worker 回报的渲染依赖宿主的会话节点扩展位**。本仓注册一个独立的 Chat node kind 并用 exclusive claim 接管这类消息（见 [worker 回报气泡](.agents/notes/2026-10-27-worker-report-bubble.md)）。宿主若改了 claim 或分组语义，这条消息会退化成普通的右对齐用户气泡——内容不会丢。
 - **worker 回报要等父会话空闲才送达**。完成通知排进 inbox 的 next-turn 边界（下一个 turn 的一次输入），父会话正忙时先不投、留在落盘队列里，检测到空闲再投。否则它会像用户自己发的消息一样，以「一条待发消息」的形态挂在输入框上方的「消息队列」条里（对照实验：busy 时直接投，面板显示「2 queued messages」，把人的消息和 worker 回报混在一起）。代价是协调者正忙时，回报要多等它这一轮结束（见 [worker 回报的投递边界](.agents/notes/2026-10-27-worker-report-delivery-boundary.md)）。
 - **历史消息不追溯**。改造之前发出的通知在 session log 里就是普通用户消息，重放时仍按老形态渲染（右对齐、无头像）。
-- **worker 头像在深色主题下轮廓弱**（与 Telov 同款取舍，不是待修项）。气泡底是前景色混出的 4% 一层，36% 的蓝紫色相落上去只有 1.35:1，块的外轮廓看不出边界；头像本身仍可辨。头像池只有 63 个 seed，worker 多时会有撞图（3 个约 4.7%，5 个约 15%），名字就在头像旁边，不影响身份识别。
+- **worker 头像在深色主题下轮廓弱**（既定取舍，不是待修项）。气泡底是前景色混出的 4% 一层，36% 的蓝紫色相落上去只有 1.35:1，块的外轮廓看不出边界；头像本身仍可辨。头像池只有 63 个 seed，worker 多时会有撞图（3 个约 4.7%，5 个约 15%），名字就在头像旁边，不影响身份识别。
 - **卡片编号跨项目不复用**。编号全局递增，归档与删除都不回收。
 - **不能新增 session event 类型**：dsh 要求仓外事件带 `ignorable` 标记且不进读路径，因此卡片与通知状态走自有落盘文件。
 - **浏览器侧 → 宿主侧走 Typert 远程通道**（命名空间 `projects`，经官方 `/api` 共享通道）。dsh 的 `connection.rpc.handle` 对仓外插件不可用（注册作用域拿不到 `webServer`），`/api` 又被官方 gateway 占用；Typert 的 SRC 回退通道允许第三方按协议形状注册服务，但代价是**手写的协议形状与宿主版本耦合**——本仓对齐宿主 `0.2.1-rc.2`（标记属性名、`version:1` 描述符、`typertRemote` 绑定字段、方法形参即 wire 字段名），宿主改契约时本仓要同步改。远程方法名还要避开官方命名空间服务的保留字（撞名会让整个命名空间挂不上）。
@@ -164,7 +156,7 @@ npm run build:client  # 构建浏览器侧产物 lib/client.js（esbuild）
 
 浏览器侧取证的执行流程（隔离实例、场景标记、断言外部世界、双向验证）见 [浏览器侧取证的执行规范](docs/e2e-testing.md)。
 
-运行时依赖只有 `minidenticons`（worker 头像，与 Telov 同款）；宿主侧代码只用 Node 内置模块。
+运行时依赖只有 `minidenticons`（worker 头像）；宿主侧代码只用 Node 内置模块。
 
 浏览器侧产物不入库（`.gitignore` 忽略 `lib/`），发布时由 `prepublishOnly` 重建。`cordis.patch.yml` 的插件行名必须是**纯包名**——写成子路径，浏览器侧定位不到包 manifest，宿主便不下发 client bundle。
 

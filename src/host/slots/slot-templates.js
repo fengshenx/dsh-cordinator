@@ -1,7 +1,7 @@
 /**
  * 项目角色槽位的配置解析。
  *
- * 槽位配置放在项目目录下的 `SLOTS.md`，与 Telov 同构：文件按 `## <槽位名>` 分节，
+ * 槽位配置放在项目目录下的 `SLOTS.md`：文件按 `## <槽位名>` 分节，
  * 正文是该槽位角色的方法与人设。协调者会话通过卡片把执行会话绑到某个槽位，
  * 被绑会话的每一轮 turn 都会注入对应槽位的正文。
  *
@@ -27,7 +27,7 @@ const SLOT_NAME_PATTERN = /^[a-z0-9_-]{1,32}$/
 /**
  * 零合法槽位时回落的默认槽位名。
  *
- * 与 Telov 的默认三角色（discuss/dev/review）同构。回落而非留空，是为了让没写
+ * 默认三角色是 discuss/dev/review。回落而非留空，是为了让没写
  * `SLOTS.md` 的项目仍有一份可用的槽位骨架。
  */
 export const DEFAULT_SLOT_NAMES = Object.freeze(['discuss', 'dev', 'review'])

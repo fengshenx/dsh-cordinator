@@ -5,7 +5,7 @@
  * 客户端读 `presentationMeta` 的投影。列表视图只管前者——客户端要全量卡片重建
  * 看板，不能被分页与状态过滤裁掉。
  *
- * 列表口径照抄 Telov 的 ListCards（`apps/electron/src/main/lib/project/tools.ts`）：
+ * 列表口径：
  *
  * - 列表按最近更新倒序，默认只列 active，一页 20 张；
  * - 列表只给可观测事实（标题、编号、状态、id、版本、更新时间、链接标签、槽位），

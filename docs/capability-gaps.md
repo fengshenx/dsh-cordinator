@@ -1,6 +1,6 @@
 # 能力缺口清单（P0–P4 实测）
 
-本清单由 P0–P4 阶段在真实 dsh（0.2.1-rc.2）上实测得出，不是文档推断。每条给出 Telov 现状、dsh 实测现状、证据与影响。
+本清单由 P0–P4 阶段在真实 dsh（0.2.1-rc.2）上实测得出，不是文档推断。每条给出目标形态、dsh 实测现状、证据与影响。
 
 复现环境：macOS arm64，dsh `0.2.1-rc.2`，web、headless 与 sdk 三个 profile。
 
@@ -10,7 +10,7 @@
 
 ### 1. `agent-team` 的版本耦合（P1 期间已解除，但结论保留）
 
-**Telov 现状**：协调者的执行者能力是产品级能力，不受宿主版本漂移影响。
+**目标形态**：协调者的执行者能力是产品级能力，不受宿主版本漂移影响。
 
 **P0 实测**：web profile 的 `dsh.profile.bundles` 里有三个 team 插件行，dsh 启动时全部拒绝激活：
 
@@ -27,7 +27,7 @@ is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-llm":"^0.1.
 
 ### 2. dsh 没有「完成唤醒协调者」——P1 已自建补齐
 
-**Telov 现状**：`coordinator-wake.ts`（390 行）实现「worker 跑完 → 事件触发 → 协调者自动开新 turn 并收到富通知」，外加通知落盘、崩溃补投与自动续行护栏。协调者派完活继续思考，不阻塞。
+**目标形态**：worker 跑完 → 事件触发 → 协调者自动开新 turn 并收到富通知，外加通知落盘、崩溃补投与自动续行护栏。协调者派完活继续思考，不阻塞。
 
 **dsh 实测**：base bundle 内置 `subagent-spawn-in-process`、`tool-subagent-control`、`tool-subagent-list-agents`（`packages/bundle/base/cordis.patch.yml:362-377`），可用；但 subagent 工具的语义是**父 agent 调工具 → 子 agent 跑完 → 工具返回结果**，父 turn 在调用处阻塞。dsh 侧没有等价的「子会话结束后父会话被动醒来」机制；team 有 inbox 投递但同样不主动唤醒 Lead（team README「Waiting and interruption」只有成员主动 `waitForChange()`）。
 
@@ -76,13 +76,13 @@ at runProfilePnpm (packages/boot/plugin-manager/src/operations.ts:523:15)
 
 dsh 的 skill 只有 `modelInvocable` / `userInvocable` 两个布尔开关（`packages/skill/skill/src/index.ts:49-54`），没有 per-skill 工具白名单或角色声明。粗粒度角色只能靠 agent preset 换工具集 + persona 换人设。
 
-**影响**：Telov 的 `SLOTS.md` 槽位机制（角色名 → role_context 注入）无对应物。**应对**：P3 自建薄层，只承载方法入口与人设，不承担工具授权——协议层需保留「技能不授予权限」的声明。
+**影响**：`SLOTS.md` 槽位机制（角色名 → role_context 注入）无对应物。**应对**：P3 自建薄层，只承载方法入口与人设，不承担工具授权——协议层需保留「技能不授予权限」的声明。
 
 ### 6. 无跨会话的项目实体
 
 session 类型里没有 `projectId`；`projectRoot` 只用于 skill 发现与 agent-instructions。最接近的持久实体是 team 的任务板（绑定单一 Lead Session）、todo（单会话整表）、goal（单会话一个目标）。
 
-**影响**：Telov 的 Project（目录绑定 + coordinatorSessionId + 卡片外键）需自建。**但**：dsh 的 `profile` 概念可能已覆盖「一套插件组合 + 一个协调者」的诉求，P3 开工前必须先核对，避免自建重复概念。
+**影响**：项目实体（目录绑定 + coordinatorSessionId + 卡片外键）需自建。**但**：dsh 的 `profile` 概念可能已覆盖「一套插件组合 + 一个协调者」的诉求，P3 开工前必须先核对，避免自建重复概念。
 
 ### 7. team 任务板不覆盖 slot→session 绑定
 
@@ -147,7 +147,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **实测**：`session_event_read` / `session_search` / `session_trace` 属 `@deepseek-ai/dsh-tool-session-query`（experimental），base bundle 未启用；其「authorized session」授权校验在 dsh 内部，仓外插件无法零依赖正确复刻。
 
-**影响**：Telov 的 `ReadWorkerTurn` 没有直接对应物，降级为「完成通知携带产物摘要」；需要深挖时用 `send_message` 向该 worker 追问（会唤醒它开新回合）。若要直读子会话原始事件，须显式安装 `tool-session-query` 并接受其 experimental 状态。
+**影响**：读 worker 原始回合没有直接对应物，降级为「完成通知携带产物摘要」；需要深挖时用 `send_message` 向该 worker 追问（会唤醒它开新回合）。若要直读子会话原始事件，须显式安装 `tool-session-query` 并接受其 experimental 状态。
 
 ### 17. storage domain 需要 dsh 内部包与 zod，与「bundle 零内部依赖」冲突
 
@@ -209,7 +209,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 24. 系统提示词消息是会话级固定的——动态内容必须走运行时上下文
 
-**Telov 现状**：角色槽位正文作为 role_context 随每轮 turn 构造注入，读的是当轮的文件内容，改完文件下一轮即生效。
+**目标形态**：角色槽位正文作为 role_context 随每轮 turn 构造注入，读的是当轮的文件内容，改完文件下一轮即生效。
 
 **dsh 实测**：`systemPrompt.section()` 注册的段进的是**系统提示词消息**，而那条消息只在请求序列重启时重新投影（`packages/core/agent-loop/src/agent.ts:407-425` 的 `systemPrompt.project`；`startsSeries` 为假时不追加新消息）。会话建立后再注册进去的段，在后续请求的系统提示词里始终不出现——注册成功、不报错、静默失效。
 
@@ -227,7 +227,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 26. `connection.rpc.handle` 对仓外插件不可用——但 Typert 的 SRC 通道可用
 
-**Telov 现状**：渲染进程的 IPC 通道是宿主提供的固定接口，插件只要拿到通道句柄就能调宿主。
+**目标形态**：渲染进程的 IPC 通道由宿主提供，插件只要拿到通道句柄就能调宿主。
 
 **dsh 实测**：`connection` 服务提供 `rpc.handle(channel, handler)` 与 `rpc.fetch.register(route)`，但它们把路由注册到**读取 connection 的那个作用域**上（`packages/client/connection/src/rpc-host.ts:253-277` 的 `owner.webServer.register(route)`）。作用域属性访问要求该服务在作用域链上可注入，第三方 bundle 读到的 connection 服务副本带着「读取者作用域」——而 `webServer` 只挂在 web-app bundle 上，读取者作用域拿不到它的 inject 声明，注册必抛 `cannot get property "webServer" without inject`。dsh 内部也没有任何 `handle` 的使用者：官方 gateway 走的是 `rpc.intercept('/api', …)`，而 `/api` 每条通道只允许一个拦截器，第三方插不进去。
 
@@ -245,7 +245,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 27. 左栏没有与工作区并列的区块槽——第三方只能靠 DOM 注入取位
 
-**Telov 现状**：左栏是三个并列区块（项目类目 → 置顶区 → 工作区类目），项目区目是独立的一等公民。
+**目标形态**：左栏是三个并列区块（项目类目 → 置顶区 → 工作区类目），项目是独立的一等公民。
 
 **dsh 实测**：左栏正文区只有**一个** `sidebar.workspaces` 槽（single，已被宿主的 `WorkspaceBrowser` 占；重复注册抛 `single slot "sidebar.workspaces" already has a registration`，`packages/client/ui-slots/src/index.ts:1220-1222`），slot 机制没有 decorator/HOC 或包装能力（`packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx` 与 `deriveGroups` 都未导出，无法复用渲染逻辑）。左栏可用的 list 槽只有两个：`sidebar.panellist`（occupant 只放 glyph，须与 `main` 同 id 成对注册）与 `sidebar.footer.action`（occupant 可渲染任意内容，位置在工作区下方、设置按钮上方，`packages/client/ui-sidebar/src/client/SidebarRoot.tsx:405-412`）。
 
@@ -259,7 +259,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 29. 官方只有工作区树，没有项目树；「按项目排除会话」也没有扩展点
 
-**Telov 现状**：项目区目与工作区区目是左栏里两个并列的区块，同一个会话只出现在项目下。
+**目标形态**：项目与工作区是左栏里两个并列的区块，同一个会话只出现在项目下。
 
 **dsh 实测**：官方左栏只有一棵按工作区分组的会话树，没有「项目」这个维度；`sidebar.workspaces` 槽是 single 且已被官方的 `WorkspaceBrowser` 占用，第三方既换不掉渲染也拿不到分组逻辑（见第 27 条）。官方会话行带 `data-row-key="session:<id>"`（`packages/client/ui-workspace/src/client/rows/Rows.tsx:666`），但没有「按外部集合排除行」的接口。
 
@@ -304,7 +304,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 35. 「等你输入」档暂无数据源——宿主机制在，但当前没有域发布待处理交互
 
-**Telov 现状**：信号灯五档——`waiting`（等你输入）、`attention`（需注意）、`running`（执行中）、`idle`（空闲）、`no-sessions`（无 worker），其中「未看 / 已看」还区分未看等待光环与已看等待慢脉冲（`candyapp/apps/electron/src/renderer/components/board/BoardSignalDot.tsx`）。
+**目标形态**：信号灯五档——`waiting`（等你输入）、`attention`（需注意）、`running`（执行中）、`idle`（空闲）、`no-sessions`（无 worker），其中「未看 / 已看」还区分未看等待光环与已看等待慢脉冲。
 
 **dsh 实测（更正此前结论）**：宿主**有**「等你输入」与「未读」两项，只是不在会话快照里。会话快照 `SessionSnapshot`（`packages/api/session-controller/src/client/contract/snapshot.ts:69-96`）确实只有 `running`、`lastAgentError`、`blank`、`awaitingFirstTurn`、`pendingSubmissions`——但那只是会话控制器的一层。客户端状态存储 `SessionStatus`（`packages/client/ui-session/src/client/index.ts:60-67`）有三项：`running`（宿主按 `api-session/status` 事件维护的权威运行态）、`pendingInteraction`（域发布的待用户交互请求）、`completionUnread`（会话停下且不在主视图，仍需确认）。这份存储由 ui-session 通过 `ctx.slots.provideRoot({ hooks: { sessionStatus } })` 提供，`sidebar.right.pane.tab` 的标准 prop 里就有 `useSessionStatus`（`packages/extensions/cordis-client-runner/src/client/slot-catalog.ts:3877`），第三方取用不需要 import 宿主 UI 包。官方 AgentTeam UI 读的就是它（`packages/experimental/client-ui-agent-team/src/client/TeamAction.tsx:83-84`）。
 
@@ -312,7 +312,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 36. 卡片没有写方法——详情只能只读
 
-**Telov 现状**：卡片详情浮层带编辑能力（改标题、状态、链接、槽位、排序）。
+**目标形态**：卡片详情浮层带编辑能力（改标题、状态、链接、槽位、排序）。
 
 **dsh 实测**：宿主官方未暴露通用远程方法注册面（`connection.rpc.handle` 对仓外插件不可用）。但浏览器侧 → 宿主侧的写通道**本仓已经有了**：自建的 Typert SRC 命名空间 `projects`（见第 26 条）在 P3 实测通过，8 个写方法（create / unregister / rename / replaceCoordinator / attachCoordinator / removeWorkspace 等）都跑通了。缺的不是通道，是**卡片自己的写方法**——而卡片的写入语义（revision 乐观并发、归档终态）住在 host 侧的卡片存储里，改卡要走那套规则。
 

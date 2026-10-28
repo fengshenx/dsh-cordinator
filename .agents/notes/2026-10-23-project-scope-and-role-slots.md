@@ -5,27 +5,27 @@
 
 ## 背景
 
-P0–P2 已交付协议层、初始化工具、派工唤醒、卡片存储与右栏看板。剩下两件 Telov 有、dsh 没有的东西：**项目作用域**与**角色槽位**。
+P0–P2 已交付协议层、初始化工具、派工唤醒、卡片存储与右栏看板。剩下两件 dsh 缺的东西：**项目作用域**与**角色槽位**。
 
-Telov 的项目是显式持久实体（`candyapp/packages/shared/src/types/project.ts`：`id`/`name`/`directory`/`coordinatorSessionId?`），落盘在 `~/.telov/projects.json`（`apps/electron/src/main/lib/config/project-store.ts:30-32`）。建项目 = 建实体 + 建协调者会话 + 绑定（`lib/config/projects.ts:33-53`），任一步失败则删会话、删实体并重抛；「换新协调者」把旧会话降级为普通会话保留历史（`lib/config/projects.ts:69-96`）。切项目 = 打开该项目的协调者会话。角色槽位是项目根的 `SLOTS.md`（`apps/electron/src/main/lib/project/slot-templates.ts:25`），按 `## <槽位名>` 分节，正文作为 role_context 注入会话；每次 turn 构造时重读文件，无 watcher。
+项目是显式持久实体：`id`/`name`/`directory`/`coordinatorSessionId?`，落盘在独立注册表。建项目 = 建实体 + 建协调者会话 + 绑定，任一步失败则删会话、删实体并重抛；「换新协调者」把旧会话降级为普通会话保留历史。切项目 = 打开该项目的协调者会话。角色槽位是项目根的 `SLOTS.md`，按 `## <槽位名>` 分节，正文作为 role_context 注入会话；每次 turn 构造时重读文件，无 watcher。
 
-dsh 侧最容易误认的是 `workspace` 家族——`ctx.workspaceRegistry`，「提供命名且有序的项目，并按目录归组在其中运行的会话」（`deepseek-harness/packages/workspace/workspace/README.zh.md:27`）。它是**工作区**语义（目录 + 会话归组），不是项目语义：工作区管代码语境，项目管编排语境（协调者 / 卡 / worker / 手册），同一个目录可以挂多个项目，二者不合并（Telov 的同款决策见 `candyapp/.agents/notes/implemented/feature/2026-09-19-board-stage5-project-container.md:38`）。且 `workspace` 只在 web-app bundle 挂载（`packages/bundle/web-app/cordis.patch.yml:91`），第三方 bundle 不能把它写进 `inject`——声明成必需依赖会让 headless 等 profile 整个插件挂起（P1 已踩过 `sessionController` 的同类坑）。
+dsh 侧最容易误认的是 `workspace` 家族——`ctx.workspaceRegistry`，「提供命名且有序的项目，并按目录归组在其中运行的会话」（`deepseek-harness/packages/workspace/workspace/README.zh.md:27`）。它是**工作区**语义（目录 + 会话归组），不是项目语义：工作区管代码语境，项目管编排语境（协调者 / 卡 / worker / 手册），同一个目录可以挂多个项目，二者不合并。且 `workspace` 只在 web-app bundle 挂载（`packages/bundle/web-app/cordis.patch.yml:91`），第三方 bundle 不能把它写进 `inject`——声明成必需依赖会让 headless 等 profile 整个插件挂起（P1 已踩过 `sessionController` 的同类坑）。
 
-**本轮返工的起因**：P3 首版实现把「项目」做成「有会话的目录集合」（不建实体，项目标识即目录路径）。该方向与 Telov 的真实模型相反——项目是显式注册、有名字、可注销、与协调者会话硬绑定的实体，目录只是它的一个属性。首版实现已整体废弃，本轮按 Telov 真实模型重做。
+**本轮返工的起因**：P3 首版实现把「项目」做成「有会话的目录集合」（不建实体，项目标识即目录路径）。该方向是错的——项目是显式注册、有名字、可注销、与协调者会话硬绑定的实体，目录只是它的一个属性。首版实现已整体废弃，本轮按此模型重做。
 
 ## 决策
 
-**项目 = 显式注册的持久实体**，落盘在 `$DSH_HOME/dsh-coordinator/projects.json`（结构 `{version, projects[]}`，与卡片库同域）。字段与 Telov 对齐：`id` / `name` / `directory` / `coordinatorSessionId?` / `createdAt` / `updatedAt`。存储域自建而非用 dsh storage domain：后者要 zod schema 与 `@deepseek-ai/dsh-storage-domain` peer 依赖，仓外 bundle 带内部 peer 会周期性失效（`agent-team` 是活例，见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。原子写（tmp + rename）+ 全部读-改-写走同一条 promise 链串行化 + 库损坏时备份并写回空库。
+**项目 = 显式注册的持久实体**，落盘在 `$DSH_HOME/dsh-coordinator/projects.json`（结构 `{version, projects[]}`，与卡片库同域）。字段：`id` / `name` / `directory` / `coordinatorSessionId?` / `createdAt` / `updatedAt`。存储域自建而非用 dsh storage domain：后者要 zod schema 与 `@deepseek-ai/dsh-storage-domain` peer 依赖，仓外 bundle 带内部 peer 会周期性失效（`agent-team` 是活例，见[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)）。原子写（tmp + rename）+ 全部读-改-写走同一条 promise 链串行化 + 库损坏时备份并写回空库。
 
-**项目 ↔ 协调者会话硬绑定**。dsh 的 `SessionHeader` 是封闭字段、没有自由元数据槽（`packages/core/session/src/types.ts:95-138`），第三方无法给会话塞 `projectId`；`coordinatorSessionId` 指针因此存在**项目记录**里，这是绑定关系的唯一真源。`SessionHeader.cwd` 是 readonly 且创建时定死（`:106`），`session.create` 接受 `workspaceId` 或 `cwd` 二选一（`packages/api/session-controller/src/commands.ts:112-124`）——所以「切项目」在 dsh 里天然是「切到另一个 cwd 的会话」，与 Telov「切项目 = 切协调者会话」本就是同一件事。
+**项目 ↔ 协调者会话硬绑定**。dsh 的 `SessionHeader` 是封闭字段、没有自由元数据槽（`packages/core/session/src/types.ts:95-138`），第三方无法给会话塞 `projectId`；`coordinatorSessionId` 指针因此存在**项目记录**里，这是绑定关系的唯一真源。`SessionHeader.cwd` 是 readonly 且创建时定死（`:106`），`session.create` 接受 `workspaceId` 或 `cwd` 二选一（`packages/api/session-controller/src/commands.ts:112-124`）——所以「切项目」在 dsh 里天然是「切到另一个 cwd 的会话」。
 
-**建项目 = 建实体 + 建协调者会话 + 绑定，失败整体回滚**。顺序是「先建会话（失败不落盘）→ 再落盘（落盘失败则尽力撤销会话）」，与 Telov 的回滚顺序一致。协调者会话创建走双路径：优先 `ctx.get('sessionController').create({cwd})`（仅 web-app bundle 有），降级 `ctx.get('agents').create({sessionId:'session-'+randomUUID(), meta:{cwd}, agentOptions: 默认模型})`（base bundle 全 profile 有）。两条路径都拿不到时如实报错，不静默降级。
+**建项目 = 建实体 + 建协调者会话 + 绑定，失败整体回滚**。顺序是「先建会话（失败不落盘）→ 再落盘（落盘失败则尽力撤销会话）」。协调者会话创建走双路径：优先 `ctx.get('sessionController').create({cwd})`（仅 web-app bundle 有），降级 `ctx.get('agents').create({sessionId:'session-'+randomUUID(), meta:{cwd}, agentOptions: 默认模型})`（base bundle 全 profile 有）。两条路径都拿不到时如实报错，不静默降级。
 
-**worker 目录由项目决定，协调者不能指定**。派工时用 `resolveWorkerCwd(parentSessionId)` 查项目目录，注入 `subagents.startActivation` 的 `cwd`（`packages/subagent/subagent/src/manager.ts:525-531` 对绝对路径原样采用）。这与 Telov「port 强制项目目录，不开放 cwd 出参」同构（`apps/electron/src/main/lib/project/worker-orchestration.ts:150`）。worker 是协调者 spawn 的对等独立会话，授权真源是项目目录而非 cwd 约定。
+**worker 目录由项目决定，协调者不能指定**。派工时用 `resolveWorkerCwd(parentSessionId)` 查项目目录，注入 `subagents.startActivation` 的 `cwd`（`packages/subagent/subagent/src/manager.ts:525-531` 对绝对路径原样采用）。worker 是协调者 spawn 的对等独立会话，授权真源是项目目录而非 cwd 约定。
 
 **项目 ↔ 会话归属自建映射**。宿主侧维护内存镜像 `coordinatorIndex: Map<sessionId, directory>`（落盘是真源，启动时 `loadIndex()` 重建），因为提示词组装与派工都是同步路径，而存储层是异步的。索引只服务读侧，落后一版只影响当轮派工目录。
 
-**槽位读项目目录的 `SLOTS.md`**，目录优先级是「项目目录 → 会话头 cwd → 外部回调」。槽位注入落点是 `ctx.systemPrompt.context()` 注册的运行时上下文而非 `section()`：section 进的是会话级固定的系统提示词消息，槽位改了不会重写；运行时上下文每轮组装时重新求值（`packages/core/system-prompt/src/index.ts:660-664`），「变更在下一轮 turn 生效」是结构性的，与 Telov「每次 turn 构造时读文件」一致。**上下文必须注册成 provider**：`refreshContext` 按注册表重新求值，临时追加的项在可选运行时被关掉时会被丢弃（`:591`），声明 `required` 才稳定。**槽位不授予工具权限**——它只贡献一段提示词文本，不注册工具、不改工具可见性，这是结构性保证而非运行时校验。
+**槽位读项目目录的 `SLOTS.md`**，目录优先级是「项目目录 → 会话头 cwd → 外部回调」。槽位注入落点是 `ctx.systemPrompt.context()` 注册的运行时上下文而非 `section()`：section 进的是会话级固定的系统提示词消息，槽位改了不会重写；运行时上下文每轮组装时重新求值（`packages/core/system-prompt/src/index.ts:660-664`），「变更在下一轮 turn 生效」是结构性的。**上下文必须注册成 provider**：`refreshContext` 按注册表重新求值，临时追加的项在可选运行时被关掉时会被丢弃（`:591`），声明 `required` 才稳定。**槽位不授予工具权限**——它只贡献一段提示词文本，不注册工具、不改工具可见性，这是结构性保证而非运行时校验。
 
 **client → host 走 Typert 的 SRC 远程通道**（命名空间 `projects`，经官方 `/api` 共享通道）。这条路是首版自建 HTTP 通道（`/coordinator` 前缀 + 同源校验）之后改选的：用户要求复用官方工作区控制器（`WorkspaceController extends TypertRemoteService` + `@Remote` 装饰器）的做法。自建 Web 路由的两条路对仓外插件都不成立——`connection.rpc.handle` 把路由注册到**读取 connection 的那个作用域**上，而该作用域拿不到 webServer 的 inject 声明，注册必抛 `cannot get property "webServer" without inject`（dsh 内部也没有任何 `handle` 的使用者）；`rpc.intercept('/api', …)` 每条通道只允许一个拦截器，官方 gateway 已占用 `/api`。
 
@@ -49,7 +49,7 @@ Typert 侧的关键发现是：**宿主 gateway 在 strict 生成描述符缺失
 
 **会话归属判定放在宿主侧**。浏览器没有文件系统，做不了路径归一。宿主按 realpath 归一后（官方 `packages/workspace/workspace/src/entity.ts:125` 的 `realpathNormalize` 同样要求：实测 `/tmp` 与 `/private/tmp` 指向同一目录），把项目目录与全部会话的 cwd 比对，得出「项目 → 会话 id」映射，经远程方法 `sessionsByProject` 下发。子目录里的会话不算这个项目的会话；两个项目指向同一目录时先注册的那个归属。协调者会话不在项目的子会话列表里——它的入口在行的「更多」菜单里，重复列出会让入口含糊。
 
-**项目树两处折叠**：点区块标题「项目」折叠/展开整个项目列表；点项目行的行首槽位折叠/展开该项目下的子会话列表。项目名后面不跟目录路径（路径放进悬停提示）——路径占一行会把项目行撑成两行，与官方工作区行不齐。**点项目行本身是「打开该项目的协调者会话」**——项目行的主用途就是切项目（与 Telov「切项目 = 切协调者会话」一致），折叠动作挪到行首槽位（官方工作区行的槽位就是展开箭头，位置天然合适）。「更多」菜单里保留「打开协调者会话」与重命名、换新协调者、注销项目并列。
+**项目树两处折叠**：点区块标题「项目」折叠/展开整个项目列表；点项目行的行首槽位折叠/展开该项目下的子会话列表。项目名后面不跟目录路径（路径放进悬停提示）——路径占一行会把项目行撑成两行，与官方工作区行不齐。**点项目行本身是「打开该项目的协调者会话」**——项目行的主用途就是切项目，折叠动作挪到行首槽位（官方工作区行的槽位就是展开箭头，位置天然合适）。「更多」菜单里保留「打开协调者会话」与重命名、换新协调者、注销项目并列。
 
 **项目行的形态照抄官方工作区行**（`packages/client/ui-workspace/src/client/rows/Rows.tsx:288-330` 与 `Rows.module.css:107-166`）。官方的行首是一个 16×20 的槽位：槽里叠着两个元素，平时显示目录图标（展开 `folder-open` / 收起 `folder-close`），`@media (hover: hover)` 下把目录图标 `display:none`、换成展开箭头（实心三角 `triangle-right-fill`，展开时 `rotate(90deg)` 指向下）。用 `display` 互换而不是 opacity，是为了不因两图宽度不同而抖动。点行（或点行首槽位）即折叠/展开。官方把操作按钮放在独立的 `rowActions` 槽里（`display:none`，悬停整行时显示），项目名所在的 `projectText` 是 `flex: 1`，所以按钮天然贴行右端——三点右对齐就是这么来的，不是靠额外的 margin。本仓照搬这一套：行首槽位 16px、悬停换箭头、箭头展开时旋转、`rowActions` 悬停显示、项目名 `flex: 1`。
 
@@ -80,13 +80,13 @@ Typert 侧的关键发现是：**宿主 gateway 在 strict 生成描述符缺失
 ## 边界
 
 - **卡片不按项目分区，编号仍全局递增**。按项目编号要迁移存量卡片的编号作用域（已在[卡片存储与编号作用域](2026-10-23-card-storage-and-numbering-scope.md)里记为已知代价），本轮不做，列 P4。因此跨项目的卡片在同一个库里混列，`@#n` 引用在跨项目场景下会歧义。
-- **项目实体只有 name 与 directory 可变**。更新走字段白名单（`name` / `coordinatorSessionId`），目录在创建时定死——目录变了就等于换了一个项目，Telov 也是这个语义。
+- **项目实体只有 name 与 directory 可变**。更新走字段白名单（`name` / `coordinatorSessionId`），目录在创建时定死——目录变了就等于换了一个项目。
 - **点项目会把项目目录注册成 dsh 工作区**。官方 UI 只能打开归属工作区的会话，不注册就没有打开路径。工作区不再从官方左栏的工作区树里隐藏（2026-10-27 修订，理由见上）；工作区仍在宿主的数据里，用户可在 dsh 的工作区管理面板里看到并删除它。
 - **项目工作区在官方 UI 里没法直接删**。删除入口放在项目自己的「更多」菜单里（「从 dsh 移除工作区」），走宿主 `workspaceRegistry.delete(id)`——它只删工作区注册，目录与全部会话日志都留着，协调者会话仍在，只是不再归属工作区；下次打开项目会重新注册并挂上。宿主侧的工作区注册表与本仓的项目注册表是两份数据，删除时两边同步清。（2026-10-27 修订：原先的理由是「工作区被隐藏后官方树里没法删」，隐藏已取消，入口保留是因为插件注册的工作区归项目管。）
 - **官方工作区控制器不走 `/api` 通道**——删除入口只能经 host 侧的 `workspaceRegistry`，机制细节见 capability-gaps 第 33 条。
 - **用户自己加的同目录工作区不受影响**。复用来的工作区不写进项目记录，既不改标题也不隐藏（隐藏机制已取消，见上）；它的会话计数会因我们的协调者会话而多一个（那一条会话在渲染层被排除，官方数字仍计入）。
 - **两个项目指向同一目录时，子会话归属先注册者**。demo 与 demo2 都指向 `/tmp/dsh-demo-project`（realpath 归一后同一目录），后者的协调者会话会出现在前者的子会话列表里——归属按目录判定，不按项目判定。
-- **注销项目保留协调者会话**。注销只移除注册表条目，会话留在会话库；Telov 的删除是「删会话 + 删实体」，本轮不做级联删除，避免误删历史。
+- **注销项目保留协调者会话**。注销只移除注册表条目，会话留在会话库；本轮不做级联删除，避免误删历史。
 - **协调者会话与 worker 会话在官方工作区树里都不出现**。它们属于项目目录，落在排除集里；worker 另有一层过滤（subagent 会话官方左栏本就不显示）。两者的可见入口都在自建的项目树下。
 - **官方分组行上的会话计数与实际可见行数对不上**。排除只发生在渲染层，官方分组行上的数字仍按数据层算。
 - **被排除的行仍在 DOM 里**。官方搜索等按数据层工作的功能仍能命中它们，只是不可见。

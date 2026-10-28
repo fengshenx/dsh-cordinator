@@ -5,25 +5,25 @@
 
 ## 背景
 
-P2 的看板只有数据通道与一个能列出卡片的壳：卡面是带边框的方框，正文把 `spec` 与 `checkpoint` 全量铺开，状态做成右上角胶囊，没有链接、没有槽位、没有信号灯、没有详情视图、没有已完成区。用户指认「Card 的交互完全不对，太难看」，要求参考 Telov 的看板。
+P2 的看板只有数据通道与一个能列出卡片的壳：卡面是带边框的方框，正文把 `spec` 与 `checkpoint` 全量铺开，状态做成右上角胶囊，没有链接、没有槽位、没有信号灯、没有详情视图、没有已完成区。用户指认「Card 的交互完全不对，太难看」，要求重做看板。
 
-Telov 的看板在 `candyapp/apps/electron/src/renderer/components/board/`：active 卡三层（标题行 / 链接行 / 元信息行）、done 卡单行变体、信号灯五档、链接 chip 按实测宽度排布、点击开只读详情浮层、已完成收进折叠区。它的信息结构能整段搬，宿主差异集中在三处：视觉令牌（Tailwind → `--dsw-*`）、图标（宿主运行时无 sprite → 内联路径）、浮层组件（官方 `Modal` 不可 import → 复制改写）。
+看板的信息结构定为：active 卡三层（标题行 / 链接行 / 元信息行）、done 卡单行变体、信号灯五档、链接 chip 按实测宽度排布、点击开只读详情浮层、已完成收进折叠区。宿主差异集中在三处：视觉令牌（`--dsw-*`）、图标（宿主运行时无 sprite → 内联路径）、浮层组件（官方 `Modal` 不可 import → 复制改写）。
 
 ## 决策
 
-**卡面零操作铬**。卡片只做信息与导航，不放操作按钮（完成、置顶、重命名、删除都没有）。卡片是协调者维护的事实，UI 越权写会把「谁在改」搅浑；Telov 同样不做。
+**卡面零操作铬**。卡片只做信息与导航，不放操作按钮（完成、置顶、重命名、删除都没有）。卡片是协调者维护的事实，UI 越权写会把「谁在改」搅浑；本仓不做。
 
 **视觉走「复制宿主数值 + `--dsw-*` 变量」**。不引 Tailwind、不 import 宿主 UI 包。类名统一 `dsh-coordinator-board-*` 前缀，样式由 `board-styles.js` 注入一次（`<style id="dsh-coordinator-board">`），沿用确认弹窗既有的「同一页面只注入一次」做法。
 
 **active 卡三层**：标题行（14px 固定信号槽 → `#编号` mono 11px → 标题 13px/500 两行 clamp → 停滞时长）→ 链接行（缩进 22px，圆角胶囊 chip）→ 元信息行（槽位 chip：状态点 + 槽位名）。done 卡是单行轻量变体（绿勾 + 编号 + 标题 + 相对完成时间）。卡面无边框无阴影，静态零装饰，hover 只出背景。
 
-**链接 chip 按实测宽度排布**。`fitLinkChips` 与 Telov 的 `board-link-fit.ts` 几乎逐行同构：可见 chip 数由实测宽度决定，放不下的收进「+N」胶囊；测量层是全量 chip 的不可见副本（`visibility:hidden` 仍参与布局，`<a>`/`<button>` 与真实 chip 同构），`ResizeObserver` 监听行宽变化重排。首帧未测量时全量展示而不是藏链接。chip 间距取 CSS 的真值（`getComputedStyle`），JS 里不再写第二份常量——两份会各改各的，排布就算错。
+**链接 chip 按实测宽度排布**。`fitLinkChips` 的做法：可见 chip 数由实测宽度决定，放不下的收进「+N」胶囊；测量层是全量 chip 的不可见副本（`visibility:hidden` 仍参与布局，`<a>`/`<button>` 与真实 chip 同构），`ResizeObserver` 监听行宽变化重排。首帧未测量时全量展示而不是藏链接。chip 间距取 CSS 的真值（`getComputedStyle`），JS 里不再写第二份常量——两份会各改各的，排布就算错。
 
 **交互三语义**：点卡面其他区域 → 开只读详情浮层；点有 URL 的链接 chip → 新标签打开（`stopPropagation`）；点槽位 chip → 打开该槽位绑定的会话。键盘 Enter/Space 只在事件来自卡面根本身时触发——嵌套控件的 Enter/Space 归自己。
 
-**卡面根是 `role="button"` 且内嵌可聚焦控件**，严格说违反 ARIA 的「button 不含可聚焦后代」。这是 Telov 同款取舍：整卡热区与嵌套控件并存，子控件保留独立按钮语义优先，键盘可达性由子控件自己保证。
+**卡面根是 `role="button"` 且内嵌可聚焦控件**，严格说违反 ARIA 的「button 不含可聚焦后代」。这是刻意的取舍：整卡热区与嵌套控件并存，子控件保留独立按钮语义优先，键盘可达性由子控件自己保证。
 
-**信号灯七档**：`waiting`（蓝脉冲）> `attention`（红实心）> `running`（琥珀脉冲）> `unread`（蓝实心）> `idle`（灰实心）> `unknown`（虚线圈）> `none`（虚线圈）。聚合自卡片声明的槽位会话状态，**不落存储**。未派工与状态未知共用虚线圈：两者都不谎称空闲，形状上与实心档区分；这两种情况在卡面上本来就不同——有槽位的卡多一行槽位 chip，空的没有。档位序照抄 Telov 的 `sessionSignalRank`。
+**信号灯七档**：`waiting`（蓝脉冲）> `attention`（红实心）> `running`（琥珀脉冲）> `unread`（蓝实心）> `idle`（灰实心）> `unknown`（虚线圈）> `none`（虚线圈）。聚合自卡片声明的槽位会话状态，**不落存储**。未派工与状态未知共用虚线圈：两者都不谎称空闲，形状上与实心档区分；这两种情况在卡面上本来就不同——有槽位的卡多一行槽位 chip，空的没有。
 
 **状态有两个来源，合并后成一表**。运行态、等你输入、未读读宿主客户端状态存储 `SessionStatus`（`useSessionStatus`，宿主 `packages/client/ui-session/src/client/index.ts:60-67`）——它是宿主按 `api-session/status` 事件维护的权威值；失败原因不在会话状态里，只在会话快照 `lastAgentError` 里，所以仍要 `ctx.sessions.retain(sessionId, {source})` → `reference.ready` → `binding.session.getSnapshot()` + `subscribe`。保留同时让会话不被宿主回收。
 
