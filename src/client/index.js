@@ -19,6 +19,7 @@ import { ProjectPanel } from './project-panel.js'
 import { mountCoordinatorView, watchCoordinatorSessions } from './coordinator-view.js'
 import { callProjectRemote, mountProjectRemote, reportProjectRemoteError } from './project-remote.js'
 import { mountProjectBoardMonitor } from './project-board-monitor.js'
+import { createReadySignal } from './ready-signal.js'
 import { WORKER_REPORT_NODE_KIND, workerReportDefinition } from './worker-report-definition.js'
 import { WorkerReportView } from './worker-report-view.js'
 
@@ -66,6 +67,11 @@ export function apply(ctx) {
   // 渲染任意内容，位置在工作区下方、设置按钮上方。
   //
   // `uiWorkspace` 只挂在 web-app bundle 上，一律惰性获取。
+  //
+  // 工作区服务的就绪单独用信号广播：它可能晚于本插件加载，而项目区块要订阅归档
+  // 集合，订阅错过一次就再也收不到。
+  const workspacesReady = createReadySignal()
+  ctx.inject(['workspaces'], () => { workspacesReady.mark() })
   ctx.effect(() => ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'dsh-coordinator-projects',
@@ -77,6 +83,7 @@ export function apply(ctx) {
       getSessions: () => ctx.sessions,
       // 归档走宿主的工作区服务：它是既有能力，别处归档的会话这里也要跟着消失。
       getWorkspaces: () => ctx.get('workspaces'),
+      onWorkspacesReady: (listener) => workspacesReady.subscribe(listener),
     }),
   }, ProjectPanel)), 'dsh-coordinator 左栏项目区块')
 

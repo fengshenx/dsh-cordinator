@@ -54,10 +54,11 @@ import { describeWorkspaceRemoval } from './project-panel-logic.js'
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务
  * @param {() => object | undefined} props.getSessions - 取会话服务
  * @param {() => object | undefined} props.getWorkspaces - 取工作区服务（归档会话走它）
+ * @param {(listener: () => void) => (() => void)} [props.onWorkspacesReady] - 订阅工作区服务就绪
  * @returns {object} React 元素
  */
 export function ProjectPanel(props) {
-  const { wide, callRemote, getUiWorkspace, getSessions, getWorkspaces } = props
+  const { wide, callRemote, getUiWorkspace, getSessions, getWorkspaces, onWorkspacesReady } = props
   const [projects, setProjects] = useState([])
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -175,19 +176,33 @@ export function ProjectPanel(props) {
 
   // 订阅已归档集合：宿主的工作区快照是真源。归档是宿主的既有能力，别处（官方
   // 工作区树）归档的会话在这里也要一起消失，所以不靠本地记账。
+  //
+  // 工作区服务可能晚于本插件就绪，首帧取不到不代表以后取不到：挂不上订阅时等
+  // 一次就绪通知再挂，否则归档后行不消失且毫无提示。
   useEffect(() => {
-    const workspaces = getWorkspaces?.()
-    const list = workspaces?.list
-    if (list?.getSnapshot === undefined || list.subscribe === undefined) return undefined
-    const sync = () => {
-      const snapshot = list.getSnapshot()
-      setArchivedSessionIds(new Set(Array.isArray(snapshot?.archivedSessionIds)
-        ? snapshot.archivedSessionIds
-        : []))
+    let unsubscribe = null
+    let stopped = false
+    const attach = () => {
+      if (stopped || unsubscribe !== null) return
+      const list = getWorkspaces?.()?.list
+      if (list?.getSnapshot === undefined || list.subscribe === undefined) return
+      const sync = () => {
+        const snapshot = list.getSnapshot()
+        setArchivedSessionIds(new Set(Array.isArray(snapshot?.archivedSessionIds)
+          ? snapshot.archivedSessionIds
+          : []))
+      }
+      sync()
+      unsubscribe = list.subscribe(sync)
     }
-    sync()
-    return list.subscribe(sync)
-  }, [getWorkspaces])
+    attach()
+    const off = onWorkspacesReady?.(attach)
+    return () => {
+      stopped = true
+      off?.()
+      unsubscribe?.()
+    }
+  }, [getWorkspaces, onWorkspacesReady])
 
   // 项目的协调者会话不在官方工作区树里重复出现：它由项目区块呈现。worker 会话
   // 不必排除——宿主官方树已经把 subagent 会话滤掉（`tree.ts` 的 `sessionVisible`
