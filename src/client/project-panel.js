@@ -181,9 +181,9 @@ export function ProjectPanel(props) {
   // 一次就绪通知再挂，否则归档后行不消失且毫无提示。
   useEffect(() => {
     let unsubscribe = null
-    let stopped = false
     const attach = () => {
-      if (stopped || unsubscribe !== null) return
+      // 服务已就绪时同步挂上，随后就绪通知还会来一次——这一条守卫就是为它。
+      if (unsubscribe !== null) return
       const list = getWorkspaces?.()?.list
       if (list?.getSnapshot === undefined || list.subscribe === undefined) return
       const sync = () => {
@@ -198,7 +198,6 @@ export function ProjectPanel(props) {
     attach()
     const off = onWorkspacesReady?.(attach)
     return () => {
-      stopped = true
       off?.()
       unsubscribe?.()
     }
