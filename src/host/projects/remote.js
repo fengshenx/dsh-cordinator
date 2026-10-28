@@ -51,6 +51,14 @@ function buildMethodDescriptor() {
  * @returns {object} 已注册的远程服务实例
  */
 export function createProjectRemote({ service, cards, workers, ctx }) {
+  // 归档后的收尾要同时改两张表：漏传任何一张，问题都要等到会话真的被归档时才
+  // 以 `Cannot read properties of undefined` 暴露，那时用户看到的是「归档失败」。
+  if (typeof cards?.detachSession !== 'function') {
+    throw new Error('dsh-coordinator: createProjectRemote 缺少 cards，归档后无法摘卡')
+  }
+  if (typeof workers?.remove !== 'function') {
+    throw new Error('dsh-coordinator: createProjectRemote 缺少 workers，归档后无法摘派工登记')
+  }
   class ProjectRemote {
     /**
      * @param {object} service - 项目服务
@@ -169,6 +177,11 @@ export function createProjectRemote({ service, cards, workers, ctx }) {
      *
      * 由浏览器侧在会话归档成功后调用：归档本身走宿主的 `workspaces` 服务（会话
      * 还在跑时会被拒绝，那时不该动卡片），这里只做归档之后的收尾。
+     *
+     * 两处收尾是**顺序的两次独立落盘**，不是一次事务：摘卡失败就直接抛出，登记表
+     * 不会被碰，因此不会出现「卡没摘、登记先没了」；反过来摘卡成功而摘登记失败时，
+     * 会留下一条指向已归档会话的登记（`message_worker` 会走进一条宿主注定拒绝的
+     * 路径）。这个方向的不一致比反过来轻，所以顺序保持「先卡后表」。
      *
      * @param {string} sessionId - 会话 id
      * @returns {Promise<{cards: string[], slots: number, worker: boolean}>} 摘除结果

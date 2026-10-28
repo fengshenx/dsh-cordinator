@@ -114,6 +114,18 @@ test('远程服务注册进 Cordis，服务键与命名空间对齐契约', () =
   assert.equal(remote.typertRemote.service, remote)
 })
 
+test('漏传卡片库或登记表时装配直接报错，不等到归档才炸', () => {
+  const { ctx } = fakeCtx()
+  assert.throws(
+    () => createProjectRemote({ service: fakeService(), workers: fakeWorkers(), ctx }),
+    /cards/,
+  )
+  assert.throws(
+    () => createProjectRemote({ service: fakeService(), cards: fakeCards(), ctx }),
+    /workers/,
+  )
+})
+
 test('原型上的方法标记覆盖契约里的每个方法', () => {
   const { ctx } = fakeCtx()
   const remote = createProjectRemote({ service: fakeService(), cards: fakeCards(), workers: fakeWorkers(), ctx })
