@@ -832,6 +832,7 @@ function SessionRow(props) {
     {
       className: 'dsh-coordinator-session-row',
       'data-busy': busy ? 'true' : undefined,
+      'data-session-id': row.id,
       onClick: () => onOpenSession(row.id),
       title: row.displayTitle ?? row.title ?? row.id,
     },
