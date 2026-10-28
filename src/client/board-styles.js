@@ -1,8 +1,7 @@
 /**
  * 看板样式表。
  *
- * 数值照抄 Telov 的看板实现（`apps/electron/src/renderer/components/board/`）：
- * 8px 圆角、6px 卡间距、13px 标题、11px 弱化文字、22px 链接行缩进。颜色一律走
+ * 数值：8px 圆角、6px 卡间距、13px 标题、11px 弱化文字、22px 链接行缩进。颜色一律走
  * 宿主 `--dsw-*` 令牌，不写死色值——第三方 bundle 不能 import 宿主 UI 包
  * （见 docs/subsystems/web-client.zh.md:93），既没有 Tailwind 也没有宿主 CSS
  * module 可用，只能自注入样式表（沿用 `modal-shell.js` 的做法）。

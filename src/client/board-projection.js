@@ -17,7 +17,7 @@
  */
 
 /**
- * 停滞阈值：名下有会话但 24h 无活动。照抄 Telov 的 `STALLED_THRESHOLD_MS`。
+ * 停滞阈值：名下有会话但 24h 无活动。
  */
 export const STALLED_THRESHOLD_MS = 24 * 60 * 60 * 1000
 
@@ -126,8 +126,8 @@ export function slotBindingsOf(card) {
  * 单个槽位的状态。
  *
  * 绑定了会话但状态读不到时是 `unknown` 而不是 `idle`：把不可知说成空闲，
- * 等于在卡面上撒一个不实的信号。档位顺序照抄 Telov 的 `sessionSignalRank`
- * （等你输入 > 需注意 > 执行中 > 未读 > 空闲）。
+ * 等于在卡面上撒一个不实的信号。档位顺序：等你输入 > 需注意 > 执行中 >
+ * 未读 > 空闲。
  *
  * @param {string} sessionId - 绑定的会话 id
  * @param {ReadonlyMap<string, BoardSessionState>} states - 会话 id 到状态
@@ -212,7 +212,7 @@ function signalRank(signal) {
 
 /**
  * 收件箱序排序 active 卡：信号档位升序 → 显式 sortOrder 升序（未设置排后）→
- * 最后活动降序 → 编号升序。与 Telov 的 `sortActiveCards` 同序，档位按 dsh 可得状态收敛。
+ * 最后活动降序 → 编号升序。档位按 dsh 可得的会话状态收敛。
  *
  * @param {readonly object[]} cards - 卡片列表
  * @param {ReadonlyMap<string, BoardSessionState>} states - 会话 id 到状态
