@@ -31,7 +31,7 @@
 要点的按钮长在某个会话行上（归档、打开、续聊），而这行出现在左栏需要同时满足三个条件。少一条，界面上什么都不会出现，症状还都一样「等不到」。
 
 1. **只有子代理会话进项目树**。`groupSessionsByProject()` 的循环里，除 `origin: 'subagent'` 之外的会话一律跳过（`src/host/projects/session-index.js:77`）——手工 New Session 造的普通会话永远不在项目树下，别指望在它上面点项目内的动作。要在项目树下取证，先让 worker 派工出来。
-2. **派工只认项目协调者**。身份来自 `projects.json` 的 `coordinatorSessionId`（`src/host/projects/service.js:205`），不是会话里写着什么。要换协调者：停机 → 改 `projects.json` → 重启。索引是进程内镜像，热改文件不会被读到。
+2. **派工只认项目协调者**。身份来自 `projects.json` 的 `coordinatorSessionId`，判定读的是进程内镜像（`src/host/projects/service.js:216` 的 `coordinatorIndex.has()`，镜像在 `:163` 由注册表填充）。要换协调者：停机 → 改 `projects.json` → 重启，热改文件不会被读到。
 3. **mock 用首条用户消息判角色**。`firstUserText()` 含 `MOCK-WORKER-TASK` 就把该会话当 worker 首轮，直接吐文本、永不派工。所以协调者会话的第一条消息只能带场景标记（如 `MOCK-LONG-REPORT`），worker 标记由 mock 拼进派工 task 里。
 
 路径形式不是坑：项目目录与会话 cwd 都过 `realpath`（`src/host/projects/service.js:23`），`/tmp/...` 与 `/private/tmp/...` 判成同一个目录，不要在这上面找原因。
