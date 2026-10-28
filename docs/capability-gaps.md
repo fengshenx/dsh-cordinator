@@ -1,6 +1,6 @@
-# 能力缺口清单（P0–P4 实测）
+# 能力缺口清单（P0–P5 实测）
 
-本清单由 P0–P4 阶段在真实 dsh（0.2.1-rc.2）上实测得出，不是文档推断。每条给出目标形态、dsh 实测现状、证据与影响。
+本清单由 P0–P5 阶段在真实 dsh（0.2.1-rc.2）上实测得出，不是文档推断。每条给出对比形态、dsh 实测现状、证据与影响。**目标形态**指希望达成的能力，**参照形态**指已有实现的实际做法；本仓是否已达成，看条目结论。
 
 复现环境：macOS arm64，dsh `0.2.1-rc.2`，web、headless 与 sdk 三个 profile。
 
@@ -227,7 +227,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 26. `connection.rpc.handle` 对仓外插件不可用——但 Typert 的 SRC 通道可用
 
-**目标形态**：渲染进程的 IPC 通道由宿主提供，插件只要拿到通道句柄就能调宿主。
+**参照形态**：渲染进程的 IPC 通道由宿主提供，插件只要拿到通道句柄就能调宿主。
 
 **dsh 实测**：`connection` 服务提供 `rpc.handle(channel, handler)` 与 `rpc.fetch.register(route)`，但它们把路由注册到**读取 connection 的那个作用域**上（`packages/client/connection/src/rpc-host.ts:253-277` 的 `owner.webServer.register(route)`）。作用域属性访问要求该服务在作用域链上可注入，第三方 bundle 读到的 connection 服务副本带着「读取者作用域」——而 `webServer` 只挂在 web-app bundle 上，读取者作用域拿不到它的 inject 声明，注册必抛 `cannot get property "webServer" without inject`。dsh 内部也没有任何 `handle` 的使用者：官方 gateway 走的是 `rpc.intercept('/api', …)`，而 `/api` 每条通道只允许一个拦截器，第三方插不进去。
 
@@ -259,7 +259,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 29. 官方只有工作区树，没有项目树；「按项目排除会话」也没有扩展点
 
-**目标形态**：项目与工作区是左栏里两个并列的区块，同一个会话只出现在项目下。
+**参照形态**：项目与工作区是左栏里两个并列的区块，同一个会话只出现在项目下。
 
 **dsh 实测**：官方左栏只有一棵按工作区分组的会话树，没有「项目」这个维度；`sidebar.workspaces` 槽是 single 且已被官方的 `WorkspaceBrowser` 占用，第三方既换不掉渲染也拿不到分组逻辑（见第 27 条）。官方会话行带 `data-row-key="session:<id>"`（`packages/client/ui-workspace/src/client/rows/Rows.tsx:666`），但没有「按外部集合排除行」的接口。
 
@@ -304,7 +304,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 35. 「等你输入」档暂无数据源——宿主机制在，但当前没有域发布待处理交互
 
-**目标形态**：信号灯五档——`waiting`（等你输入）、`attention`（需注意）、`running`（执行中）、`idle`（空闲）、`no-sessions`（无 worker），其中「未看 / 已看」还区分未看等待光环与已看等待慢脉冲。
+**参照形态**：信号灯五档——`waiting`（等你输入）、`attention`（需注意）、`running`（执行中）、`idle`（空闲）、`no-sessions`（无 worker），其中「未看 / 已看」还区分未看等待光环与已看等待慢脉冲。
 
 **dsh 实测（更正此前结论）**：宿主**有**「等你输入」与「未读」两项，只是不在会话快照里。会话快照 `SessionSnapshot`（`packages/api/session-controller/src/client/contract/snapshot.ts:69-96`）确实只有 `running`、`lastAgentError`、`blank`、`awaitingFirstTurn`、`pendingSubmissions`——但那只是会话控制器的一层。客户端状态存储 `SessionStatus`（`packages/client/ui-session/src/client/index.ts:60-67`）有三项：`running`（宿主按 `api-session/status` 事件维护的权威运行态）、`pendingInteraction`（域发布的待用户交互请求）、`completionUnread`（会话停下且不在主视图，仍需确认）。这份存储由 ui-session 通过 `ctx.slots.provideRoot({ hooks: { sessionStatus } })` 提供，`sidebar.right.pane.tab` 的标准 prop 里就有 `useSessionStatus`（`packages/extensions/cordis-client-runner/src/client/slot-catalog.ts:3877`），第三方取用不需要 import 宿主 UI 包。官方 AgentTeam UI 读的就是它（`packages/experimental/client-ui-agent-team/src/client/TeamAction.tsx:83-84`）。
 
