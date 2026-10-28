@@ -20,6 +20,8 @@
 
 派工用 `spawn_worker` 而不是通用委派工具：它立即返回子会话 id，worker 结束后自动唤醒你并附完成通知，同一轮里可连派多个工。
 
+派工必须给 `name`（`initialMessage` 同样是必填的任务简报）：它是 worker 的显示名，也直接成为它的会话标题——侧栏与项目树里看到的就是这个名字，所以用角色-任务短名（如 `research-sources`），不要写成长句。worker 换了角色用 `message_worker` 的 `rename` 顺手改名，不必为此另派新工。
+
 `list_agents`、`send_message`、`interrupt_agent` 是宿主按父子关系提供的工具，`agent_id` 就是 worker 的子会话 id（`spawn_worker` 的返回值）。它们只看得到你直接派出的执行者。宿主另有同伴模型的一套同名工具，按成员名寻址，与本流程的执行者不是同一批，不要混用。
 
 worker 回报的产物摘要在完成通知里，不需要轮询查询。通知缺失、截断或需要深挖时，用 `send_message` 向该 worker 追问，它会被唤醒并回话。

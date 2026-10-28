@@ -83,8 +83,8 @@ async function createFixture({ removeSucceeds = true } = {}) {
 async function dispatchAndSettleFirstRound(fixture) {
   const record = await fixture.dispatcher.dispatch({
     parent: fixture.parent,
-    task: '做一件事',
-    label: '首轮',
+    initialMessage: '做一件事',
+    name: '首轮',
     signal: new AbortController().signal,
   })
   fixture.activations[0].settle({ stopReason: 'completed', output: [{ type: 'text', text: '首轮产物' }] })
@@ -98,7 +98,7 @@ test('派工同时登记进 worker 登记表', async () => {
   const record = await fixture.workers.get(childId)
   assert.notEqual(record, undefined)
   assert.equal(record.parentSessionId, 'parent-1')
-  assert.equal(record.label, '首轮')
+  assert.equal(record.name, '首轮')
 })
 
 test('缺会话持久化后端时拒绝派工', async () => {
@@ -113,7 +113,7 @@ test('缺会话持久化后端时拒绝派工', async () => {
   const home = await makeTempDir('dsh-coordinator-continuation-')
   const dispatcher = createDispatcher({ ctx, store: createNotificationStore({ home }), workers: createWorkerRegistry({ home }), coordinatorIndex })
   await assert.rejects(
-    () => dispatcher.dispatch({ parent: { id: 'p' }, task: 't', label: 'l', signal: new AbortController().signal }),
+    () => dispatcher.dispatch({ parent: { id: 'p' }, initialMessage: 't', name: 'l', signal: new AbortController().signal }),
     /持久化/,
   )
   assert.equal(activations.length, 0)
@@ -130,7 +130,7 @@ test('缺会话查询后端时拒绝派工', async () => {
   const home = await makeTempDir('dsh-coordinator-continuation-')
   const dispatcher = createDispatcher({ ctx, store: createNotificationStore({ home }), workers: createWorkerRegistry({ home }), coordinatorIndex })
   await assert.rejects(
-    () => dispatcher.dispatch({ parent: { id: 'p' }, task: 't', label: 'l', signal: new AbortController().signal }),
+    () => dispatcher.dispatch({ parent: { id: 'p' }, initialMessage: 't', name: 'l', signal: new AbortController().signal }),
     /查询/,
   )
 })
@@ -139,18 +139,18 @@ test('worker 在飞时续聊并入当前执行', async () => {
   const fixture = await createFixture()
   const record = await fixture.dispatcher.dispatch({
     parent: fixture.parent,
-    task: '做一件事',
-    label: '在飞',
+    initialMessage: '做一件事',
+    name: '在飞',
     signal: new AbortController().signal,
   })
   const status = await fixture.dispatcher.message({
     parent: fixture.parent,
-    childId: record.childId,
+    sessionId: record.childId,
     message: '顺手补个测试',
     signal: new AbortController().signal,
   })
   assert.equal(status.code, 'merged')
-  assert.equal(status.label, '在飞')
+  assert.equal(status.name, '在飞')
   assert.equal(fixture.sent.length, 1)
   assert.equal(fixture.sent[0].childId, record.childId)
 })
@@ -160,7 +160,7 @@ test('已结算 worker 续聊走登记表校验并恢复执行', async () => {
   const childId = await dispatchAndSettleFirstRound(fixture)
   const status = await fixture.dispatcher.message({
     parent: fixture.parent,
-    childId,
+    sessionId: childId,
     message: '再核对一遍',
     signal: new AbortController().signal,
   })
@@ -176,7 +176,7 @@ test('没有派工记录的子会话拒绝续聊', async () => {
   await assert.rejects(
     () => fixture.dispatcher.message({
       parent: fixture.parent,
-      childId: 'child-别家的',
+      sessionId: 'child-别家的',
       message: 'hi',
       signal: new AbortController().signal,
     }),
@@ -190,7 +190,7 @@ test('别的会话派的 worker 不能跨会话续聊', async () => {
   await assert.rejects(
     () => fixture.dispatcher.message({
       parent: { ...fixture.parent, id: 'parent-别的' },
-      childId,
+      sessionId: childId,
       message: 'hi',
       signal: new AbortController().signal,
     }),
@@ -225,10 +225,10 @@ test('宿主 sendMessage 失败时续聊登记回滚', async () => {
   const store = createNotificationStore({ home })
   const workers = createWorkerRegistry({ home })
   // 同一子会话登记进新 home 的登记表，让 message 走到 sendMessage
-  await workers.register({ childId, parentSessionId: 'parent-1', label: '首轮' })
+  await workers.register({ childId, parentSessionId: 'parent-1', name: '首轮' })
   const dispatcher = createDispatcher({ ctx, store, workers, coordinatorIndex })
   await assert.rejects(
-    () => dispatcher.message({ parent: fixture.parent, childId, message: 'x', signal: new AbortController().signal }),
+    () => dispatcher.message({ parent: fixture.parent, sessionId: childId, message: 'x', signal: new AbortController().signal }),
     /NOT_RESUMABLE/,
   )
   // 回滚后宿主结算事件到达不得再投通知
@@ -242,8 +242,8 @@ test('首轮的 subagent/end 事件不触发第二轮通知', async () => {
   const fixture = await createFixture()
   await fixture.dispatcher.dispatch({
     parent: fixture.parent,
-    task: '做一件事',
-    label: '首轮',
+    initialMessage: '做一件事',
+    name: '首轮',
     signal: new AbortController().signal,
   })
   // 首轮还没结算（result promise 未 resolve）时事件先到：在飞表里还有记录
@@ -262,7 +262,7 @@ test('续聊轮结算投递同格式通知且宿主英文通知被移除', async
   const childId = await dispatchAndSettleFirstRound(fixture)
   await fixture.dispatcher.message({
     parent: fixture.parent,
-    childId,
+    sessionId: childId,
     message: '再核对一遍',
     signal: new AbortController().signal,
   })
@@ -290,7 +290,7 @@ test('宿主通知没移除成时透传兜底、不再自发', async () => {
   const childId = await dispatchAndSettleFirstRound(fixture)
   await fixture.dispatcher.message({
     parent: fixture.parent,
-    childId,
+    sessionId: childId,
     message: '再核对一遍',
     signal: new AbortController().signal,
   })
@@ -314,7 +314,7 @@ test('与本插件无关的结算通知不拦', async () => {
   const childId = await dispatchAndSettleFirstRound(fixture)
   await fixture.dispatcher.message({
     parent: fixture.parent,
-    childId,
+    sessionId: childId,
     message: '再核对',
     signal: new AbortController().signal,
   })

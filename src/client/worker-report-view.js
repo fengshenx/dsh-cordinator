@@ -103,7 +103,7 @@ export function WorkerReportView({ node, openSession }) {
       { className: 'dsh-coordinator-worker-report__identity' },
       createElement('img', {
         className: 'dsh-coordinator-worker-report__avatar',
-        src: agentAvatarDataUri(data.label),
+        src: agentAvatarDataUri(data.name),
         alt: '',
       }),
       createElement(
@@ -111,10 +111,10 @@ export function WorkerReportView({ node, openSession }) {
         {
           type: 'button',
           className: 'dsh-coordinator-worker-report__name',
-          title: `打开 ${data.label} 的子会话`,
+          title: `打开 ${data.name} 的子会话`,
           onClick: () => openSession?.(data.childSessionId),
         },
-        data.label,
+        data.name,
       ),
     ),
     createElement(

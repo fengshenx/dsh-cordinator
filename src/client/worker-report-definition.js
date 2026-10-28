@@ -48,7 +48,7 @@ export const workerReportDefinition = {
       time: event.time,
       messageId: String(event.data.id),
       text: workerReportText(event.data.content),
-      label: source.label,
+      name: source.name,
       childSessionId: source.childSessionId,
       // 最后一次回报的内容：界面渲染它，协议字段（子会话 id、状态、下一步）
       // 留在 text 里给模型读。

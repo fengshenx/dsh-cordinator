@@ -104,7 +104,7 @@ export function createWorkerRegistry({
      * @param {object} worker - worker 记录
      * @param {string} worker.childId - 子会话 id
      * @param {string} worker.parentSessionId - 父会话 id
-     * @param {string} worker.label - 任务标签
+     * @param {string} worker.name - worker 显示名
      * @param {string} [worker.task] - 任务正文
      * @returns {Promise<object>} 登记后的记录
      */
@@ -138,6 +138,25 @@ export function createWorkerRegistry({
     async get(childId) {
       const registry = await read()
       return registry.workers.find((item) => item.childId === childId)
+    },
+
+    /**
+     * 改一个 worker 的显示名。
+     *
+     * 只动登记表里的名字：会话标题由调用方另行改写，两者可能不同步（会话已不在
+     * 内存时宿主拒绝标题改写），登记表这边照样要落到新名字，否则完成通知还喊旧名。
+     *
+     * @param {string} childId - 子会话 id
+     * @param {string} name - 新显示名
+     * @returns {Promise<object | undefined>} 改名后的记录；没有这条时 undefined
+     */
+    async rename(childId, name) {
+      return serialize((registry) => {
+        const existing = registry.workers.find((item) => item.childId === childId)
+        if (existing === undefined) return undefined
+        existing.name = name
+        return existing
+      })
     },
 
     /**

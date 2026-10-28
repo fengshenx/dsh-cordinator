@@ -5,8 +5,9 @@
  * 当前执行；已结束的 worker 由宿主从持久化日志冷恢复，带着完整上下文继续跑。
  * 结束后的完成通知与第一轮同源同格式（`src/host/dispatch.js`）。
  *
- * 不复用宿主全局的 `send_message` 工具：那是 dsh 内部子会话协议，语义与派工
- * 协议不同，且名字已被占用。
+ * 参数面：`sessionId` 寻址目标 worker，`message` 是消息正文，可选 `rename` 与投递
+ * 同次改名。不复用宿主全局的 `send_message` 工具：那是 dsh 内部子会话协议，语义
+ * 与派工协议不同，且名字已被占用。
  *
  * @module dsh-coordinator/host/tools/message-worker
  */
@@ -14,77 +15,88 @@
 /**
  * 创建 `message_worker` 工具定义。
  * @param {object} options - 工具选项
- * @param {{ message: (input: object) => Promise<string> }} options.dispatcher - 派工器
+ * @param {{ message: (input: object) => Promise<{ code: string, name: string }> }} options.dispatcher - 派工器
  * @returns {object} dsh 工具定义
  */
 export function createMessageWorkerTool({ dispatcher }) {
   return {
     name: 'message_worker',
     description:
-      '给一个已派出的 worker 发后续消息：追问结果、补充要求或返工指示。worker 带着完整上下文继续执行，结束后会自动唤醒你并附上完成通知与产物摘要。childId 用 spawn_worker 返回的子会话 id。',
+      '给一个已派出的 worker 发后续消息：追问结果、补充要求或返工指示。worker 带着完整上下文继续执行，结束后会自动唤醒你并附上完成通知与产物摘要。可顺手改名。',
     parameters: {
       type: 'object',
       properties: {
-        childId: {
+        sessionId: {
           type: 'string',
-          description: 'worker 的子会话 id，来自 spawn_worker 的返回值或完成通知。',
+          description: '目标 worker 的会话 id，来自 spawn_worker 的返回值或完成通知里的子会话。',
         },
         message: {
           type: 'string',
           description: '发给 worker 的消息正文，自包含、说清要它接着做什么。',
         },
+        rename: {
+          type: 'string',
+          description: '可选：顺手给 worker 改名（如 research-sources → write-summary），体现它的新角色，与投递同次完成。',
+        },
       },
-      required: ['childId', 'message'],
+      required: ['sessionId', 'message'],
     },
     output: {
       schema: {
         type: 'object',
         properties: {
-          childId: { type: 'string' },
-          label: { type: 'string' },
+          sessionId: { type: 'string' },
+          name: { type: 'string' },
           status: { type: 'string' },
         },
-        required: ['childId', 'status'],
+        required: ['sessionId', 'status'],
       },
       render(args, value) {
-        const result = /** @type {{ childId: string, label?: string, status: string }} */ (value)
+        const result = /** @type {{ sessionId: string, name?: string, status: string }} */ (value)
         if (result.status === 'merged') {
           return [
             {
               type: 'text',
-              text: `worker「${result.label ?? result.childId}」仍在运行，消息已并入当前任务，随本轮执行一并回报。`,
+              text: `worker「${result.name ?? result.sessionId}」仍在运行，消息已并入当前任务，随本轮执行一并回报。`,
             },
           ]
         }
         return [
           {
             type: 'text',
-            text: `已把消息发给 worker「${result.label ?? result.childId}」（子会话 ${result.childId}），它恢复执行后会自动回报。`,
+            text: `已把消息发给 worker「${result.name ?? result.sessionId}」（子会话 ${result.sessionId}），它恢复执行后会自动回报。`,
           },
         ]
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ childId?: unknown, message?: unknown }} */ (args)
-      if (typeof input.childId !== 'string' || input.childId.trim() === '') {
-        throw new Error('message_worker: childId 不能为空')
+      const input = /** @type {{ sessionId?: unknown, message?: unknown, rename?: unknown }} */ (args)
+      if (typeof input.sessionId !== 'string' || input.sessionId.trim() === '') {
+        throw new Error('message_worker: sessionId 不能为空')
       }
       if (typeof input.message !== 'string' || input.message.trim() === '') {
         throw new Error('message_worker: message 不能为空')
       }
+      // 入参 schema 在运行时不生效：rename 传非字符串会被当成没传，调用方以为改了名。
+      if (input.rename !== undefined && typeof input.rename !== 'string') {
+        throw new Error('message_worker: rename 必须是字符串')
+      }
+      const rename = typeof input.rename === 'string' && input.rename.trim() !== ''
+        ? input.rename.trim()
+        : undefined
       const parent = exec.agent
       if (parent === undefined) {
         throw new Error('message_worker: 需要调用方 agent 才能给 worker 发消息')
       }
-      const status = await dispatcher.message({
+      const sessionId = input.sessionId.trim()
+      const result = await dispatcher.message({
         parent,
-        childId: input.childId.trim(),
+        sessionId,
         message: input.message,
+        name: rename,
         signal: exec.signal,
       })
-      const label = status.label
-      const code = status.code
-      return { childId: input.childId.trim(), label, status: code }
+      return { sessionId, name: result.name, status: result.code }
     },
   }
 }

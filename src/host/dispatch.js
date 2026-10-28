@@ -62,7 +62,7 @@ export function buildNotificationText(record, outcome) {
   const status = outcome.ok ? outcome.result?.stopReason ?? 'completed' : 'failed'
   // 正文不带「谁在说话」的前缀：说话人由消息的 source 标记，客户端渲染成
   // 带头像与身份的气泡。前缀写进正文会同时污染模型读的事实与用户看到的界面。
-  lines.push(`任务「${record.label}」已结束。`)
+  lines.push(`任务「${record.name}」已结束。`)
   lines.push(`子会话：${record.childId}`)
   lines.push(`状态：${status}`)
   if (!outcome.ok) {
@@ -230,7 +230,8 @@ export function createDispatcher({
     const message = createUserMessage(
       [{ type: 'text', text: notification.text }],
       workerReportSource(
-        notification.label,
+        // 本轮改名（label → name）之前落盘的通知只有 label，读旧队列时退回它。
+        notification.name ?? notification.label,
         notification.childId,
         // 改造前落盘的记录没有 summary / report / outcome：摘要退回正文首行
         // （与当时的算法一致），回报正文与终态按缺省处理。
@@ -430,7 +431,7 @@ export function createDispatcher({
       id: `note-${record.childId}-${record.startedAt}`,
       childId: record.childId,
       parentSessionId: record.parentSessionId,
-      label: record.label,
+      name: record.name,
       text,
       summary: text.split('\n')[0] ?? '',
       report: buildWorkerReport(outcome),
@@ -443,6 +444,53 @@ export function createDispatcher({
   }
 
   /**
+   * 把 worker 的会话标题改成给定名字（侧栏、项目树里的显示名）。
+   *
+   * 宿主 `SessionTitleService.rename` 只接受 live session：worker 被销毁后标题
+   * 改不动，保持上次的值。会话标题是用户的显示面，改不成不该让派工或投递失败，
+   * 因此这里只记日志。
+   *
+   * @param {string} childId - 子会话 id
+   * @param {string} name - 新显示名
+   * @returns {void}
+   */
+  function renameSessionTitle(childId, name) {
+    const sessions = ctx.get('sessions')
+    const sessionTitle = ctx.get('sessionTitle')
+    if (sessions === undefined || sessionTitle === undefined) {
+      logger('dsh-coordinator: 当前组合缺 sessions 或 sessionTitle 服务，worker 会话标题不会跟着改名')
+      return
+    }
+    const session = sessions.get(childId)
+    if (session === undefined) {
+      logger(`dsh-coordinator: worker ${childId} 的会话不在内存，会话标题未改名`)
+      return
+    }
+    try {
+      sessionTitle.rename(session, name)
+    } catch (error) {
+      logger(`dsh-coordinator: worker ${childId} 会话标题改名被拒：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * 顺手改 worker 的显示名：登记表与会话标题都改。
+   *
+   * @param {string} childId - 子会话 id
+   * @param {string} name - 新显示名
+   * @returns {Promise<void>} 处理完成
+   */
+  async function renameWorker(childId, name) {
+    try {
+      await workers.rename(childId, name)
+    } catch (error) {
+      // 消息已经投进 worker 了，改名落盘失败不该让调用方以为投递失败。
+      logger(`dsh-coordinator: worker ${childId} 登记表改名失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+    renameSessionTitle(childId, name)
+  }
+
+  /**
    * 给已派出的 worker 发后续消息。
    *
    * worker 还在跑时消息并入当前执行（宿主走同一 activation，结算仍是首轮那份
@@ -450,47 +498,56 @@ export function createDispatcher({
    *
    * @param {object} options - 续聊参数
    * @param {object} options.parent - 调用方 agent（宿主要求精确活对象）
-   * @param {string} options.childId - worker 子会话 id
+   * @param {string} options.sessionId - worker 子会话 id
    * @param {string} options.message - 消息正文
+   * @param {string} [options.name] - 顺手改的 worker 显示名
    * @param {AbortSignal} options.signal - 取消信号
-   * @returns {Promise<{ code: 'merged' | 'sent', label: string }>} 投递结果与任务标签
+   * @returns {Promise<{ code: 'merged' | 'sent', name: string }>} 投递结果与 worker 显示名
    */
-  async function message({ parent, childId, message, signal }) {
+  async function message({ parent, sessionId, message, name, signal }) {
     const subagents = ctx.get('subagents')
     if (subagents === undefined) {
       throw new Error('dsh-coordinator: 当前组合未启用 subagents 服务，无法给 worker 发消息')
     }
-    const running = inflight.get(childId)
+    const running = inflight.get(sessionId)
     if (running !== undefined) {
       // 先把记录取到局部变量：`sendMessage` 的往返期间 worker 可能结算，
       // `settle` 会把这条从 `inflight` 里删掉，回来再查表就是 undefined。
       // 那种情况下消息其实已经投进去了，不能说没发出去让模型重发。
-      await subagents.sendMessage(parent, childId, [{ type: 'text', text: message }], { signal })
-      return { code: 'merged', label: running.label }
+      await subagents.sendMessage(parent, sessionId, [{ type: 'text', text: message }], { signal })
+      if (name !== undefined) {
+        running.name = name
+        await renameWorker(sessionId, name)
+      }
+      return { code: 'merged', name: running.name }
     }
-    const worker = await workers.get(childId)
+    const worker = await workers.get(sessionId)
     if (worker === undefined) {
-      throw new Error(`message_worker: 没有子会话 ${childId} 的派工记录，它不是本协调体系派出的 worker`)
+      throw new Error(`message_worker: 没有子会话 ${sessionId} 的派工记录，它不是本协调体系派出的 worker`)
     }
     if (worker.parentSessionId !== parent.id) {
       throw new Error('message_worker: 该 worker 是别的会话派的，不能跨会话给它发消息')
     }
     const record = {
-      childId,
+      childId: sessionId,
       parentSessionId: worker.parentSessionId,
       parent,
-      label: typeof worker.label === 'string' ? worker.label : childId,
+      name: typeof worker.name === 'string' ? worker.name : sessionId,
       startedAt: Date.now(),
     }
     // 先登记再发：冷恢复的结算事件随时可能到，登记晚一步就对不上号。
-    continuations.set(childId, record)
+    continuations.set(sessionId, record)
     try {
-      await subagents.sendMessage(parent, childId, [{ type: 'text', text: message }], { signal })
+      await subagents.sendMessage(parent, sessionId, [{ type: 'text', text: message }], { signal })
     } catch (error) {
-      continuations.delete(childId)
+      continuations.delete(sessionId)
       throw error
     }
-    return { code: 'sent', label: record.label }
+    if (name !== undefined) {
+      record.name = name
+      await renameWorker(sessionId, name)
+    }
+    return { code: 'sent', name: record.name }
   }
 
   /**
@@ -558,12 +615,12 @@ export function createDispatcher({
    *
    * @param {object} options - 派工参数
    * @param {object} options.parent - 发起派工的父 agent
-   * @param {string} options.task - 交给 worker 的任务正文
-   * @param {string} options.label - 任务短标签
+   * @param {string} options.initialMessage - 交给 worker 的任务正文
+   * @param {string} options.name - worker 显示名
    * @param {AbortSignal} options.signal - 取消信号
    * @returns {Promise<object>} 派工记录
    */
-  async function dispatch({ parent, task, label, signal }) {
+  async function dispatch({ parent, initialMessage, name, signal }) {
     const subagents = ctx.get('subagents')
     if (subagents === undefined) {
       throw new Error('dsh-coordinator: 当前组合未启用 subagents 服务，无法派工')
@@ -591,10 +648,11 @@ export function createDispatcher({
     const cwd = resolveWorkerCwd?.(parent.id)
     const activation = await subagents.startActivation({
       provider,
-      label,
+      // 宿主把这层叫 label，是本 bundle 唯一需要它这个名字的地方。
+      label: name,
       request: {
         parent,
-        prompt: [{ type: 'text', text: task }],
+        prompt: [{ type: 'text', text: initialMessage }],
         signal,
         ...cwd === undefined ? {} : { cwd },
       },
@@ -605,10 +663,13 @@ export function createDispatcher({
       childId: activation.childId,
       parentSessionId: parent.id,
       parent,
-      label,
-      task,
+      name,
+      task: initialMessage,
       startedAt: Date.now(),
     }
+    // 会话标题是 worker 在侧栏与项目树里的显示名，派工时就定下来：宿主会按首条
+    // user 消息自动起标题，不在这里钉住，用户看到的就是任务正文前几个字。
+    renameSessionTitle(activation.childId, name)
     inflight.set(record.childId, record)
     // 结算回调必须先挂上：子会话已经启动，内核不管登记成不成功都会跑到底并结算。
     // 先登记后挂回调时，登记一失败（home 只读、磁盘满）回调就永远注册不上，
@@ -628,8 +689,8 @@ export function createDispatcher({
       await workers.register({
         childId: record.childId,
         parentSessionId: parent.id,
-        label,
-        task,
+        name,
+        task: initialMessage,
       })
     } catch (error) {
       logger(`dsh-coordinator: worker ${record.childId} 登记失败，续聊与归属查询会落空：${error instanceof Error ? error.message : String(error)}`)
