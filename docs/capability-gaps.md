@@ -76,7 +76,7 @@ at runProfilePnpm (packages/boot/plugin-manager/src/operations.ts:523:15)
 
 dsh 的 skill 只有 `modelInvocable` / `userInvocable` 两个布尔开关（`packages/skill/skill/src/index.ts:49-54`），没有 per-skill 工具白名单或角色声明。粗粒度角色只能靠 agent preset 换工具集 + persona 换人设。
 
-**影响**：`SLOTS.md` 槽位机制（角色名 → role_context 注入）无对应物。**应对**：P3 自建薄层，只承载方法入口与人设，不承担工具授权——协议层需保留「技能不授予权限」的声明。
+**影响**：角色槽位机制（项目根的 `SLOTS.md`）在 dsh 无对应物。**应对**：P3 自建薄层，只承载方法入口与人设，不承担工具授权——协议层需保留「技能不授予权限」的声明。
 
 ### 6. 无跨会话的项目实体
 
@@ -245,7 +245,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 27. 左栏没有与工作区并列的区块槽——第三方只能靠 DOM 注入取位
 
-**目标形态**：左栏是三个并列区块（项目类目 → 置顶区 → 工作区类目），项目是独立的一等公民。
+**参照形态**：左栏是三个并列区块（项目类目 → 置顶区 → 工作区类目），项目是独立的一等公民。
 
 **dsh 实测**：左栏正文区只有**一个** `sidebar.workspaces` 槽（single，已被宿主的 `WorkspaceBrowser` 占；重复注册抛 `single slot "sidebar.workspaces" already has a registration`，`packages/client/ui-slots/src/index.ts:1220-1222`），slot 机制没有 decorator/HOC 或包装能力（`packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx` 与 `deriveGroups` 都未导出，无法复用渲染逻辑）。左栏可用的 list 槽只有两个：`sidebar.panellist`（occupant 只放 glyph，须与 `main` 同 id 成对注册）与 `sidebar.footer.action`（occupant 可渲染任意内容，位置在工作区下方、设置按钮上方，`packages/client/ui-sidebar/src/client/SidebarRoot.tsx:405-412`）。
 

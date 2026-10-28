@@ -9,7 +9,7 @@ P0–P2 已交付协议层、初始化工具、派工唤醒、卡片存储与右
 
 项目是显式持久实体：`id`/`name`/`directory`/`coordinatorSessionId?`，落盘在独立注册表。建项目 = 建实体 + 建协调者会话 + 绑定，任一步失败则删会话、删实体并重抛；「换新协调者」把旧会话降级为普通会话保留历史。切项目 = 打开该项目的协调者会话。角色槽位是项目根的 `SLOTS.md`，按 `## <槽位名>` 分节，正文作为 role_context 注入会话；每次 turn 构造时重读文件，无 watcher。
 
-dsh 侧最容易误认的是 `workspace` 家族——`ctx.workspaceRegistry`，「提供命名且有序的项目，并按目录归组在其中运行的会话」（`deepseek-harness/packages/workspace/workspace/README.zh.md:27`）。它是**工作区**语义（目录 + 会话归组），不是项目语义：工作区管代码语境，项目管编排语境（协调者 / 卡 / worker / 手册），同一个目录可以挂多个项目，二者不合并。且 `workspace` 只在 web-app bundle 挂载（`packages/bundle/web-app/cordis.patch.yml:91`），第三方 bundle 不能把它写进 `inject`——声明成必需依赖会让 headless 等 profile 整个插件挂起（P1 已踩过 `sessionController` 的同类坑）。
+dsh 侧最容易误认的是 `workspace` 家族——`ctx.workspaceRegistry`，「提供命名且有序的项目，并按目录归组在其中运行的会话」（`packages/workspace/workspace/README.zh.md:27`）。它是**工作区**语义（目录 + 会话归组），不是项目语义：工作区管代码语境，项目管编排语境（协调者 / 卡 / worker / 手册），同一个目录可以挂多个项目，二者不合并。且 `workspace` 只在 web-app bundle 挂载（`packages/bundle/web-app/cordis.patch.yml:91`），第三方 bundle 不能把它写进 `inject`——声明成必需依赖会让 headless 等 profile 整个插件挂起（P1 已踩过 `sessionController` 的同类坑）。
 
 **本轮返工的起因**：P3 首版实现把「项目」做成「有会话的目录集合」（不建实体，项目标识即目录路径）。该方向是错的——项目是显式注册、有名字、可注销、与协调者会话硬绑定的实体，目录只是它的一个属性。首版实现已整体废弃，本轮按此模型重做。
 

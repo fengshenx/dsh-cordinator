@@ -27,8 +27,8 @@ const SLOT_NAME_PATTERN = /^[a-z0-9_-]{1,32}$/
 /**
  * 零合法槽位时回落的默认槽位名。
  *
- * 默认三角色是 discuss/dev/review。回落而非留空，是为了让没写
- * `SLOTS.md` 的项目仍有一份可用的槽位骨架。
+ * 默认三角色 discuss/dev/review 对应讨论、实现、审查三类职责，覆盖一次交付的
+ * 完整链路。回落而非留空，是为了让没写 `SLOTS.md` 的项目仍有一份可用的槽位骨架。
  */
 export const DEFAULT_SLOT_NAMES = Object.freeze(['discuss', 'dev', 'review'])
 
