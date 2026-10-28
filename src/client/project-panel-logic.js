@@ -72,23 +72,48 @@ export function isProjectOpenable(project) {
  * 挑出项目下要列出的会话行。
  *
  * 协调者不在其中——项目名就是它的入口，重复列出会让「点项目名打开协调者」这条
- * 路径变得含糊。宿主侧暂时取不到的会话行（会话刚建、列表还没同步）直接略过。
+ * 路径变得含糊。已归档的会话也不列：归档是「从列表移除」这个动作的结果，宿主
+ * 的会话索引按磁盘目录扫，归档后那条记录仍在索引里，不在这里滤掉就会原地复活。
+ * 宿主侧暂时取不到的会话行（会话刚建、列表还没同步）直接略过。
  *
  * @param {object} options - 选项
  * @param {string[]} options.sessionIds - 该项目的会话 id 列表
  * @param {Record<string, object>} options.sessionRows - 会话 id 到会话行
  * @param {string | undefined} options.coordinatorSessionId - 协调者会话 id
+ * @param {Set<string>} [options.archivedSessionIds] - 已归档的会话 id
  * @returns {object[]} 要渲染的会话行
  */
-export function selectProjectSessionRows({ sessionIds, sessionRows, coordinatorSessionId }) {
+export function selectProjectSessionRows({
+  sessionIds,
+  sessionRows,
+  coordinatorSessionId,
+  archivedSessionIds,
+}) {
   const rows = []
   for (const sessionId of sessionIds ?? []) {
     if (sessionId === coordinatorSessionId) continue
+    if (archivedSessionIds?.has(sessionId) === true) continue
     const row = sessionRows?.[sessionId]
     if (row === undefined) continue
     rows.push(row)
   }
   return rows
+}
+
+/**
+ * 判定归档失败是不是「会话还在跑」。
+ *
+ * 宿主对有心跳任务的会话默认拒绝归档（`workspace/session-active`），确认后才肯
+ * 停掉任务再归档。其余失败（没有该会话、没有权限、通道断了）都不该问用户「要
+ * 不要停」——那种提示只会把人引到一个同样失败的确认框。
+ *
+ * @param {unknown} reason - 宿主抛出的错误
+ * @returns {boolean} 是否为「会话仍在执行」的拒绝
+ */
+export function isArchiveActiveRefusal(reason) {
+  if (!(reason instanceof Error) || reason.name !== 'WorkspaceArchiveError') return false
+  const code = reason.rpcError?.code
+  return code === 'workspace/session-active'
 }
 
 /**

@@ -39,4 +39,5 @@ export const PROJECT_REMOTE_METHODS = Object.freeze({
   sessionsByProject: Object.freeze([]),
   resolveProject: Object.freeze(['sessionId']),
   boardCards: Object.freeze(['projectId']),
+  detachSession: Object.freeze(['sessionId']),
 })

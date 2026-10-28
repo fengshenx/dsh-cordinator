@@ -213,3 +213,60 @@ test('改卡不改变归属：卡片始终留在建卡时的项目里', async ()
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('摘会话：删掉指向它的槽位，同卡其它槽位与其它卡不动', async () => {
+  const { store, home } = await createStore()
+  try {
+    const bound = await store.create({
+      title: '绑了两个槽位',
+      slots: { builder: { sessionId: 's1' }, reviewer: { sessionId: 's2' } },
+    })
+    const other = await store.create({ title: '别的卡', slots: { builder: { sessionId: 's9' } } })
+    await store.loadSlotIndex()
+
+    const result = await store.detachSession('s1')
+    assert.deepEqual(result, { cards: [bound.id], slots: 1 })
+
+    const after = await store.get(bound.id)
+    assert.deepEqual(after.slots, { reviewer: { sessionId: 's2' } })
+    // 内容变了就要 bump 版本：否则别的会话拿着旧 revision 改卡会被误判成并发冲突。
+    assert.equal(after.revision, 1)
+    const untouched = await store.get(other.id)
+    assert.deepEqual(untouched.slots, { builder: { sessionId: 's9' } })
+    assert.equal(untouched.revision, 0)
+    // 槽位反查索引必须同步：不然归档的会话下一轮 turn 仍会被注入角色。
+    assert.equal(store.slotIndex.has('s1'), false)
+    assert.equal(store.slotIndex.get('s2'), 'reviewer')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('摘会话：没有绑定时不改任何卡、不落盘', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '没绑槽位' })
+    assert.deepEqual(await store.detachSession('s1'), { cards: [], slots: 0 })
+    assert.equal((await store.get(card.id)).revision, 0)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('摘会话：已归档的卡片也摘，槽位索引不区分卡片状态', async () => {
+  const { store, home } = await createStore()
+  try {
+    const card = await store.create({ title: '已归档', slots: { builder: { sessionId: 's1' } } })
+    await store.update({ id: card.id, status: 'archived' })
+    await store.loadSlotIndex()
+    assert.equal(store.slotIndex.has('s1'), true)
+
+    assert.deepEqual(await store.detachSession('s1'), { cards: [card.id], slots: 1 })
+    const after = await store.get(card.id)
+    assert.deepEqual(after.slots, {})
+    assert.equal(after.status, 'archived')
+    assert.equal(store.slotIndex.has('s1'), false)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})

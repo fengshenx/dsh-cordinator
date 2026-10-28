@@ -8,6 +8,7 @@ import {
   isProjectOpenable,
   openCoordinatorSession,
   selectProjectSessionRows,
+  isArchiveActiveRefusal,
   validateProjectName,
 } from '../src/client/project-panel-logic.js'
 
@@ -77,6 +78,32 @@ test('会话列表还没同步到时先略过该会话', () => {
 
 test('没有会话时列表为空', () => {
   assert.deepEqual(selectProjectSessionRows({ sessionIds: [], sessionRows: {} }), [])
+})
+
+test('已归档的会话不再列出——宿主的会话索引按磁盘扫，不过滤就会原地复活', () => {
+  const rows = selectProjectSessionRows({
+    sessionIds: ['s-live', 's-archived'],
+    sessionRows: { 's-live': { id: 's-live' }, 's-archived': { id: 's-archived' } },
+    coordinatorSessionId: undefined,
+    archivedSessionIds: new Set(['s-archived']),
+  })
+  assert.deepEqual(rows.map((row) => row.id), ['s-live'])
+})
+
+test('归档失败只在「会话还在跑」时要求确认', () => {
+  const active = Object.assign(new Error('会话正在执行'), {
+    name: 'WorkspaceArchiveError',
+    rpcError: { code: 'workspace/session-active', details: { activity: [] } },
+  })
+  assert.equal(isArchiveActiveRefusal(active), true)
+  // 其余失败不该问「要不要停」：确认了也一样失败。
+  const missing = Object.assign(new Error('没有该会话'), {
+    name: 'WorkspaceArchiveError',
+    rpcError: { code: 'workspace/session-not-found' },
+  })
+  assert.equal(isArchiveActiveRefusal(missing), false)
+  assert.equal(isArchiveActiveRefusal(new Error('通道断了')), false)
+  assert.equal(isArchiveActiveRefusal(undefined), false)
 })
 
 test('打开协调者会先挂工作区再打开会话', async () => {

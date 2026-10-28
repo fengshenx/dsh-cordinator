@@ -48,6 +48,18 @@ test('跨实例读同一份落盘（进程重启后续聊找得到工）', async
   assert.equal(reloaded.label, '工')
 })
 
+test('删掉记录后取不到，且改动落盘', async () => {
+  const home = await makeTempDir('dsh-coordinator-registry-')
+  const registry = createWorkerRegistry({ home })
+  await registry.register({ childId: 'child-1', parentSessionId: 'parent-1', label: '工' })
+  assert.equal(await registry.remove('child-1'), true)
+  assert.equal(await registry.get('child-1'), undefined)
+  // 第二个实例也读不到：归档是跨进程的事实，不能只改内存。
+  assert.equal(await createWorkerRegistry({ home }).get('child-1'), undefined)
+  // 不存在的记录不报错，返回 false 让调用方自己判断
+  assert.equal(await registry.remove('child-1'), false)
+})
+
 test('登记表损坏时重建空表并保留备份', async () => {
   const home = await makeTempDir('dsh-coordinator-registry-')
   const directory = `${home}/dsh-coordinator`

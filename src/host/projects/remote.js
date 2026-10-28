@@ -46,18 +46,29 @@ function buildMethodDescriptor() {
  * @param {object} options - 装配选项
  * @param {object} options.service - 项目服务（`src/host/projects/service.js`）
  * @param {object} options.cards - 卡片存储（`src/host/cards/store.js`）
+ * @param {object} options.workers - worker 登记表（`src/host/worker-registry.js`）
  * @param {object} options.ctx - 宿主 Cordis 上下文
  * @returns {object} 已注册的远程服务实例
  */
-export function createProjectRemote({ service, cards, ctx }) {
+export function createProjectRemote({ service, cards, workers, ctx }) {
+  // 归档后的收尾要同时改两张表：漏传任何一张，问题都要等到会话真的被归档时才
+  // 以 `Cannot read properties of undefined` 暴露，那时用户看到的是「归档失败」。
+  if (typeof cards?.detachSession !== 'function') {
+    throw new Error('dsh-coordinator: createProjectRemote 缺少 cards，归档后无法摘卡')
+  }
+  if (typeof workers?.remove !== 'function') {
+    throw new Error('dsh-coordinator: createProjectRemote 缺少 workers，归档后无法摘派工登记')
+  }
   class ProjectRemote {
     /**
      * @param {object} service - 项目服务
      * @param {object} cards - 卡片存储
+     * @param {object} workers - worker 登记表
      */
-    constructor(service, cards) {
+    constructor(service, cards, workers) {
       this.projects = service
       this.cards = cards
+      this.workers = workers
       // 服务绑定：宿主据此认出「这个服务导出哪个命名空间」。绑定里的 service 必须
       // 指向服务实例本身，宿主会拿它与调用时取到的实例比对。
       this.typertRemote = {
@@ -162,6 +173,26 @@ export function createProjectRemote({ service, cards, ctx }) {
     }
 
     /**
+     * 摘掉一个会话在卡片槽位与派工登记表上的痕迹。
+     *
+     * 由浏览器侧在会话归档成功后调用：归档本身走宿主的 `workspaces` 服务（会话
+     * 还在跑时会被拒绝，那时不该动卡片），这里只做归档之后的收尾。
+     *
+     * 两处收尾是**顺序的两次独立落盘**，不是一次事务：摘卡失败就直接抛出，登记表
+     * 不会被碰，因此不会出现「卡没摘、登记先没了」；反过来摘卡成功而摘登记失败时，
+     * 会留下一条指向已归档会话的登记（`message_worker` 会走进一条宿主注定拒绝的
+     * 路径）。这个方向的不一致比反过来轻，所以顺序保持「先卡后表」。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {Promise<{cards: string[], slots: number, worker: boolean}>} 摘除结果
+     */
+    async detachSession(sessionId) {
+      const detached = await this.cards.detachSession(sessionId)
+      const worker = await this.workers.remove(sessionId)
+      return { ...detached, worker }
+    }
+
+    /**
      * 列某个项目的看板卡片。
      *
      * 看板按项目取卡：一个项目一个看板，跨会话聚合（协调者建的卡与 worker 建的
@@ -180,7 +211,7 @@ export function createProjectRemote({ service, cards, ctx }) {
     value: buildMethodDescriptor(),
   })
 
-  const remote = new ProjectRemote(service, cards)
+  const remote = new ProjectRemote(service, cards, workers)
   ctx.provide(PROJECT_REMOTE_SERVICE_KEY, remote)
   return remote
 }

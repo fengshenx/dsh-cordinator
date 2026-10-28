@@ -301,8 +301,9 @@ const STYLE_TEXT = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
-  line-height: 18px;
+  /* 与官方工作区会话行同字号（宿主 Rows.module.css 的 .title）。 */
+  font-size: 14px;
+  line-height: 20px;
 }
 .dsh-coordinator-session-spinner {
   flex: none;
@@ -313,6 +314,44 @@ const STYLE_TEXT = `
   border-top-color: transparent;
   border-radius: 50%;
   animation: dsh-coordinator-spin 0.8s linear infinite;
+}
+/* 归档按钮：外观照官方会话行的 hover 动作（24×24、三级标签色、悬停提亮）。 */
+.dsh-coordinator-session-actions {
+  flex: none;
+  display: none;
+  align-items: center;
+  margin-left: 4px;
+}
+@media (hover: hover) {
+  .dsh-coordinator-session-row:hover .dsh-coordinator-session-actions {
+    display: inline-flex;
+  }
+}
+.dsh-coordinator-session-archive {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-xs, 4px);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.dsh-coordinator-session-archive:focus-visible {
+  outline-offset: -2px;
+}
+@media (hover: hover) {
+  .dsh-coordinator-session-archive:hover:not(:disabled) {
+    color: var(--dsw-alias-label-primary);
+  }
+}
+.dsh-coordinator-session-archive:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 /* 展开/收起按钮：外观照官方工作区树的 overflow 按钮（12px、三级标签色、
    与会话行同样的行高与内边距，悬停时提亮到二级色）。 */
@@ -365,7 +404,8 @@ export function ProjectSection(props) {
     naming, onConfirmNaming, onCancelNaming, onNamingChange,
     onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
     sessionsByProject, sessionRows, expandedProjects,
-    onToggleExpand, onOpenSession,
+    onToggleExpand, onOpenSession, onArchiveSession,
+    archivedSessionIds,
     listExpanded, onToggleList,
   } = props
 
@@ -445,6 +485,8 @@ export function ProjectSection(props) {
                 expanded: expandedProjects.has(project.id),
                 onToggleExpand,
                 onOpenSession,
+                onArchiveSession,
+                archivedSessionIds,
               })),
             ))
       : null,
@@ -503,7 +545,8 @@ export function ProjectSection(props) {
 function ProjectRow(props) {
   const {
     project, busy, onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
-    sessions, sessionRows, expanded, onToggleExpand, onOpenSession,
+    sessions, sessionRows, expanded, onToggleExpand, onOpenSession, onArchiveSession,
+    archivedSessionIds,
   } = props
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -535,6 +578,7 @@ function ProjectRow(props) {
     sessionIds: sessions,
     sessionRows,
     coordinatorSessionId: project.coordinatorSessionId,
+    archivedSessionIds,
   })
   // 会话列表按水位折叠：默认露出 5 条，点「展开其余」再加一页。状态留在组件
   // 本地（宿主也不持久化它），每个项目各算各的。
@@ -668,6 +712,8 @@ function ProjectRow(props) {
                   key: row.id,
                   row,
                   onOpenSession,
+                  onArchiveSession,
+                  busy,
                 })),
                 folded.hiddenCount === 0 && !folded.expanded
                   ? null
@@ -770,17 +816,19 @@ function ProjectMenu(props) {
  * 项目下的一个会话行。
  *
  * 纯文字行：左边的会话图标与右边的执行者标记都不画——会话名在项目树里已经能
- * 看清，再加图标只会挤占标题的宽度。运行中的会话仍在行首留一个状态位。
+ * 看清，再加图标只会挤占标题的宽度。运行中的会话仍在行首留一个状态位；悬停整
+ * 行时右端露出归档入口（与官方会话行的 hover 动作同位）。
  *
  * @param {object} props - 组件属性
  * @returns {object} React 元素
  */
 function SessionRow(props) {
-  const { row, onOpenSession } = props
+  const { row, onOpenSession, onArchiveSession, busy } = props
   return createElement(
     'div',
     {
       className: 'dsh-coordinator-session-row',
+      'data-session-id': row.id,
       onClick: () => onOpenSession(row.id),
       title: row.displayTitle ?? row.title ?? row.id,
     },
@@ -793,6 +841,26 @@ function SessionRow(props) {
       'span',
       { className: 'dsh-coordinator-session-title' },
       row.title ?? row.displayTitle ?? row.id,
+    ),
+    createElement(
+      'div',
+      { className: 'dsh-coordinator-session-actions' },
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'dsh-coordinator-session-archive',
+          title: '归档会话：从列表移除，并摘掉卡片上绑定的槽位',
+          'aria-label': `归档会话 ${row.title ?? row.displayTitle ?? row.id}`,
+          disabled: busy,
+          onClick: (event) => {
+            // 归档按钮在行内：不拦下来会连带打开会话。
+            event.stopPropagation()
+            onArchiveSession(row.id)
+          },
+        },
+        productIcon('archive-outline', { size: 14 }),
+      ),
     ),
   )
 }
