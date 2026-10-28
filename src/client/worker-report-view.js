@@ -12,7 +12,7 @@
  * @module dsh-coordinator/client/worker-report-view
  */
 
-import { createElement, useEffect, useState } from 'react'
+import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { agentAvatarDataUri } from './worker-report-avatar.js'
 import { workerReportBody } from '../shared/worker-report.js'
 import { ensureWorkerReportStyles } from './worker-report-styles.js'
@@ -57,9 +57,28 @@ export function WorkerReportView({ node, openSession }) {
     ensureWorkerReportStyles()
   }, [])
   const [copied, setCopied] = useState(false)
+  /** 是否展开全文。默认折叠：worker 的回报常常一屏，先给摘要。 */
+  const [expanded, setExpanded] = useState(false)
+  /** 折叠后是否真的有两行以上的内容——没有就不必给「展示更多」。 */
+  const [overflowing, setOverflowing] = useState(false)
+  const bubbleRef = useRef(null)
   const data = node?.data
+  const body = data === undefined ? '' : workerReportBody(data)
+
+  // 只有折叠态才量：展开后 `scrollHeight === clientHeight`，一量就会把按钮收掉，
+  // 用户也就点不回折叠了。宽度变化（窗口缩放、字体档位）要重算，所以也听 resize。
+  useLayoutEffect(() => {
+    const node = bubbleRef.current
+    if (node === null || expanded) return undefined
+    const measure = () => { setOverflowing(node.scrollHeight > node.clientHeight + 1) }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [body, expanded])
+
   if (data === undefined) return null
-  const body = workerReportBody(data)
 
   /**
    * 把回报正文复制到剪贴板。
@@ -98,7 +117,27 @@ export function WorkerReportView({ node, openSession }) {
         data.label,
       ),
     ),
-    createElement('div', { className: 'dsh-coordinator-worker-report__bubble' }, body),
+    createElement(
+      'div',
+      {
+        ref: bubbleRef,
+        className: 'dsh-coordinator-worker-report__bubble',
+        'data-collapsed': expanded ? undefined : 'true',
+      },
+      body,
+    ),
+    overflowing
+      ? createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'dsh-coordinator-worker-report__toggle',
+            'aria-expanded': expanded,
+            onClick: () => setExpanded((value) => !value),
+          },
+          expanded ? '收起' : '展示更多',
+        )
+      : null,
     createElement(
       'div',
       { className: 'dsh-coordinator-worker-report__meta' },

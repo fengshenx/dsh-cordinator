@@ -49,8 +49,8 @@ const STYLE_TEXT = `
 
 .dsh-coordinator-worker-report__bubble {
   max-width: min(calc(var(--dsh-chat-content-width, 748px) * 0.702), 82%);
-  /* 淡底：按前景色混出极淡的一层，浅色主题是几乎看不出的灰，深色主题是微亮。 */
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+  /* 极淡底：按前景色混出几乎看不出的一层，靠 1px 边框交代气泡边界。 */
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 2%, transparent);
   border: 1px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-xl);
   padding: 10px 16px;
@@ -59,6 +59,30 @@ const STYLE_TEXT = `
   color: var(--dsw-alias-label-primary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 默认只露两行：worker 的回报动辄一屏，协调者扫一眼摘要就够，细节按需展开。 */
+.dsh-coordinator-worker-report__bubble[data-collapsed='true'] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.dsh-coordinator-worker-report__toggle {
+  margin-top: -2px;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.dsh-coordinator-worker-report__toggle:hover {
+  color: var(--dsw-alias-label-secondary);
 }
 
 .dsh-coordinator-worker-report__meta {
