@@ -12,7 +12,7 @@
  * @module dsh-coordinator/client/worker-report-view
  */
 
-import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createElement, useLayoutEffect, useRef, useState } from 'react'
 import { agentAvatarDataUri } from './worker-report-avatar.js'
 import { workerReportBody } from '../shared/worker-report.js'
 import { ensureWorkerReportStyles } from './worker-report-styles.js'
@@ -51,11 +51,6 @@ export function formatReportClock(time) {
  * @returns {object} React 元素
  */
 export function WorkerReportView({ node, openSession }) {
-  // 样式在副作用里注入，不在渲染期：渲染期做 DOM 查询是副作用，会在并发渲染下
-  // 与 React 的渲染阶段交错（与看板面板的处理一致）。
-  useEffect(() => {
-    ensureWorkerReportStyles()
-  }, [])
   const [copied, setCopied] = useState(false)
   /** 是否展开全文。默认折叠：worker 的回报常常一屏，先给摘要。 */
   const [expanded, setExpanded] = useState(false)
@@ -65,16 +60,21 @@ export function WorkerReportView({ node, openSession }) {
   const data = node?.data
   const body = data === undefined ? '' : workerReportBody(data)
 
+  // 样式必须在测量之前进 DOM，所以放在 layout 阶段而不是被动 effect：后者晚于
+  // 绘制，首帧的 clamp 规则还没生效，`scrollHeight === clientHeight` 会量成「没
+  // 溢出」，气泡先铺开全文再收起。注入本身幂等，跟着 body 变化重入也无所谓。
+  //
   // 只有折叠态才量：展开后 `scrollHeight === clientHeight`，一量就会把按钮收掉，
   // 用户也就点不回折叠了。宽度变化（窗口缩放、字体档位）要重算，所以也听 resize。
   useLayoutEffect(() => {
-    const node = bubbleRef.current
-    if (node === null || expanded) return undefined
-    const measure = () => { setOverflowing(node.scrollHeight > node.clientHeight + 1) }
+    ensureWorkerReportStyles()
+    const element = bubbleRef.current
+    if (element === null || expanded) return undefined
+    const measure = () => { setOverflowing(element.scrollHeight > element.clientHeight + 1) }
     measure()
     if (typeof ResizeObserver === 'undefined') return undefined
     const observer = new ResizeObserver(measure)
-    observer.observe(node)
+    observer.observe(element)
     return () => observer.disconnect()
   }, [body, expanded])
 
