@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import {
   basenameOf,
   buildProjectMenuItems,
+  collectExcludedSessionIds,
   defaultProjectName,
   describeWorkspaceRemoval,
   isProjectOpenable,
@@ -88,6 +89,30 @@ test('已归档的会话不再列出——宿主的会话索引按磁盘扫，�
     archivedSessionIds: new Set(['s-archived']),
   })
   assert.deepEqual(rows.map((row) => row.id), ['s-live'])
+})
+
+test('官方工作区树的排除集含协调者与全部 worker 会话', () => {
+  const projects = [
+    { id: 'p1', coordinatorSessionId: 'session-c1' },
+    { id: 'p2', coordinatorSessionId: '' },
+  ]
+  const sessionsByProject = new Map([
+    ['p1', ['worker-a', 'worker-b']],
+    ['p2', []],
+  ])
+  // worker 是普通根会话，官方树不会自己滤掉，不排除就会同时出现在两棵树里。
+  assert.deepEqual(
+    [...collectExcludedSessionIds(projects, sessionsByProject)].sort(),
+    ['session-c1', 'worker-a', 'worker-b'],
+  )
+})
+
+test('没有项目或没有 worker 会话时排除集为空', () => {
+  assert.equal(collectExcludedSessionIds([], new Map()).size, 0)
+  assert.deepEqual(
+    [...collectExcludedSessionIds([{ id: 'p1', coordinatorSessionId: 'c' }], new Map())],
+    ['c'],
+  )
 })
 
 test('归档失败只在「会话还在跑」时要求确认', () => {

@@ -101,6 +101,29 @@ export function selectProjectSessionRows({
 }
 
 /**
+ * 挑出要从官方工作区树里排除的会话 id。
+ *
+ * 项目的协调者与 worker 都由项目区块呈现，官方树里再来一份就是重复。worker 是
+ * 普通根会话（不是 subagent），官方树不会自己滤掉，所以按 id 显式排除。
+ *
+ * @param {object[]} projects - 项目记录
+ * @param {Map<string, string[]>} sessionsByProject - 项目 id 到 worker 会话 id
+ * @returns {Set<string>} 要排除的会话 id
+ */
+export function collectExcludedSessionIds(projects, sessionsByProject) {
+  const excluded = new Set()
+  for (const project of projects ?? []) {
+    if (typeof project?.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
+      excluded.add(project.coordinatorSessionId)
+    }
+  }
+  for (const sessionIds of sessionsByProject?.values() ?? []) {
+    for (const sessionId of sessionIds ?? []) excluded.add(sessionId)
+  }
+  return excluded
+}
+
+/**
  * 判定归档失败是不是「会话还在跑」。
  *
  * 宿主对有心跳任务的会话默认拒绝归档（`workspace/session-active`），确认后才肯

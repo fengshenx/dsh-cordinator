@@ -188,7 +188,7 @@ test('方法把调用转给项目服务', async () => {
   assert.deepEqual(await remote.resolveProject('s1'), { id: 'p1', name: 'demo', directory: '/tmp/demo' })
   assert.deepEqual(service.calls.at(-1), ['resolveProjectOfSession', 's1'])
   // 归档后的收尾：摘卡 + 摘派工登记，两处都要走到
-  assert.deepEqual(await remote.detachSession('s5'), { cards: ['c1'], slots: 1, worker: true })
+  assert.deepEqual(await remote.detachSession('s5'), { cards: ['c1'], slots: 1, worker: true, disposed: false })
   assert.deepEqual(cards.calls.at(-1), ['detachSession', 's5'])
   assert.deepEqual(workers.calls.at(-1), ['remove', 's5'])
 })
@@ -201,4 +201,28 @@ test('注销项目返回布尔结果，不返回可能缺失的项目对象', as
   assert.deepEqual(await remote.unregister('p1'), { removed: true })
   service.remove = async () => undefined
   assert.deepEqual(await remote.unregister('p1'), { removed: false })
+})
+
+test('归档 worker 会话时顺带销毁常驻 agent', async () => {
+  const { ctx } = fakeCtx()
+  const disposed = []
+  const workerSessions = {
+    async dispose(sessionId) {
+      disposed.push(sessionId)
+      return true
+    },
+  }
+  const remote = createProjectRemote({
+    service: fakeService(),
+    cards: fakeCards(),
+    workers: fakeWorkers(),
+    workerSessions,
+    ctx,
+  })
+
+  const result = await remote.detachSession('s5')
+
+  // 归档只从列表里摘掉是不够的：常驻会话不 dispose 就还在内存里跑、还在写日志。
+  assert.deepEqual(disposed, ['s5'])
+  assert.equal(result.disposed, true)
 })

@@ -343,6 +343,37 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
         .filter((card) => status === undefined || card.status === status)
         .filter((card) => projectId === undefined || projectIdOf(card) === projectId)
     },
+
+    /**
+     * 列出某个会话挂在哪些卡片的哪些槽位上。
+     *
+     * 一个会话可以被多张卡同时绑定（槽位是投影，不是排他归属），所以这里返回
+     * 全部匹配项而不是挑一个——投递门禁要按「任一 active 卡」判断，只看最新的
+     * 那张会漏判。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {Promise<{ cardId: string, number: number, title: string, status: string, slot: string }[]>} 绑定列表
+     */
+    async bindingsOf(sessionId) {
+      const store = await readStore(file, recoverFromCorruption, io)
+      const bindings = []
+      for (const card of [...store.cards].sort((a, b) => (a.number ?? 0) - (b.number ?? 0))) {
+        const slots = card?.slots
+        if (slots === null || typeof slots !== 'object' || Array.isArray(slots)) continue
+        for (const [slot, binding] of Object.entries(slots)) {
+          if (binding === null || typeof binding !== 'object' || Array.isArray(binding)) continue
+          if (binding.sessionId !== sessionId) continue
+          bindings.push({
+            cardId: String(card.id),
+            number: typeof card.number === 'number' ? card.number : 0,
+            title: String(card.title ?? ''),
+            status: String(card.status ?? 'active'),
+            slot,
+          })
+        }
+      }
+      return bindings
+    },
   }
 }
 

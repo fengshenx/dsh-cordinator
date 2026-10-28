@@ -38,6 +38,10 @@ export function createMessageWorkerTool({ dispatcher }) {
           type: 'string',
           description: '可选：顺手给 worker 改名（如 research-sources → write-summary），体现它的新角色，与投递同次完成。',
         },
+        cardId: {
+          type: 'string',
+          description: '可选：本次任务所属卡 id。目标 worker 挂着未完成的卡时必填且必须等于它挂的卡——同卡续跑的显式声明；卡已完成或未挂卡时可省略。',
+        },
       },
       required: ['sessionId', 'message'],
     },
@@ -70,7 +74,7 @@ export function createMessageWorkerTool({ dispatcher }) {
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ sessionId?: unknown, message?: unknown, rename?: unknown }} */ (args)
+      const input = /** @type {{ sessionId?: unknown, message?: unknown, rename?: unknown, cardId?: unknown }} */ (args)
       if (typeof input.sessionId !== 'string' || input.sessionId.trim() === '') {
         throw new Error('message_worker: sessionId 不能为空')
       }
@@ -81,8 +85,15 @@ export function createMessageWorkerTool({ dispatcher }) {
       if (input.rename !== undefined && typeof input.rename !== 'string') {
         throw new Error('message_worker: rename 必须是字符串')
       }
+      // cardId 同理：传错了会被当没声明，门禁拒绝时调用方还以为是别的原因。
+      if (input.cardId !== undefined && typeof input.cardId !== 'string') {
+        throw new Error('message_worker: cardId 必须是字符串')
+      }
       const rename = typeof input.rename === 'string' && input.rename.trim() !== ''
         ? input.rename.trim()
+        : undefined
+      const cardId = typeof input.cardId === 'string' && input.cardId.trim() !== ''
+        ? input.cardId.trim()
         : undefined
       const parent = exec.agent
       if (parent === undefined) {
@@ -94,6 +105,7 @@ export function createMessageWorkerTool({ dispatcher }) {
         sessionId,
         message: input.message,
         name: rename,
+        cardId,
         signal: exec.signal,
       })
       return { sessionId, name: result.name, status: result.code }

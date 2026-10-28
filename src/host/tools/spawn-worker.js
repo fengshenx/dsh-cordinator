@@ -33,6 +33,10 @@ export function createSpawnWorkerTool({ dispatcher }) {
           type: 'string',
           description: '任务简报：要做什么、改哪些文件、验收标准是什么。worker 即刻开跑。',
         },
+        force: {
+          type: 'string',
+          description: '名册到顶（未归档 worker 上限）时的逃逸理由：非空即强制新建，仅当返回的可复用候选都不适合时使用，理由进会话历史可审计。',
+        },
       },
       required: ['name', 'initialMessage'],
     },
@@ -57,7 +61,7 @@ export function createSpawnWorkerTool({ dispatcher }) {
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ name?: unknown, initialMessage?: unknown }} */ (args)
+      const input = /** @type {{ name?: unknown, initialMessage?: unknown, force?: unknown }} */ (args)
       // 入参 schema 在运行时不生效：名字缺了会被静默换成任务正文前几个字，
       // 侧栏标题与调用方以为的对不上。
       if (typeof input.name !== 'string' || input.name.trim() === '') {
@@ -65,6 +69,10 @@ export function createSpawnWorkerTool({ dispatcher }) {
       }
       if (typeof input.initialMessage !== 'string' || input.initialMessage.trim() === '') {
         throw new Error('spawn_worker: initialMessage 不能为空')
+      }
+      // force 传非字符串会被当成没传，名册到顶时调用方以为已强制新建。
+      if (input.force !== undefined && typeof input.force !== 'string') {
+        throw new Error('spawn_worker: force 必须是字符串')
       }
       const parent = exec.agent
       if (parent === undefined) {
@@ -74,6 +82,7 @@ export function createSpawnWorkerTool({ dispatcher }) {
         parent,
         initialMessage: input.initialMessage,
         name: input.name.trim(),
+        force: typeof input.force === 'string' && input.force.trim() !== '' ? input.force.trim() : undefined,
         signal: exec.signal,
       })
       return { childId: record.childId, name: record.name, status: 'dispatched' }

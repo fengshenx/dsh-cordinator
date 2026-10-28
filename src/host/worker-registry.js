@@ -141,6 +141,16 @@ export function createWorkerRegistry({
     },
 
     /**
+     * 列出登记表里的全部 worker，按登记时间倒序（最近的在前）。
+     *
+     * @returns {Promise<object[]>} 记录列表
+     */
+    async list() {
+      const registry = await read()
+      return [...registry.workers].sort((left, right) => (right.registeredAt ?? 0) - (left.registeredAt ?? 0))
+    },
+
+    /**
      * 改一个 worker 的显示名。
      *
      * 只动登记表里的名字：会话标题由调用方另行改写，两者可能不同步（会话已不在

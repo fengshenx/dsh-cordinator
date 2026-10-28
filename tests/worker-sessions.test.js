@@ -1,0 +1,344 @@
+/**
+ * worker 会话的生命周期：建、投、销毁。
+ *
+ * 这一层是「worker 常驻」的落点——根会话由本模块持有的 AgentHandle 决定生死，
+ * 归档或插件卸载时才 dispose。
+ */
+
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { createWorkerSessions } from '../src/host/worker-sessions.js'
+
+/**
+ * 造一个假的宿主上下文：记录建/恢复/投递/销毁。
+ *
+ * @param {{ missingAgents?: boolean, missingModel?: boolean }} [options] - 夹具选项
+ * @returns {object} 上下文与记录
+ */
+function createFixture({ missingAgents = false, missingModel = false } = {}) {
+  const created = []
+  const resumed = []
+  const titles = []
+  let sequence = 0
+
+  const agents = {
+    async create(options) {
+      sequence += 1
+      const sessionId = options.sessionId ?? `worker-${sequence}`
+      const entry = { options, sessionId, messages: [], disposed: false }
+      created.push(entry)
+      return {
+        agent: {
+          id: sessionId,
+          session: { id: sessionId, header: { id: sessionId } },
+          followup(message) {
+            entry.messages.push(message)
+          },
+        },
+        async dispose() {
+          entry.disposed = true
+        },
+      }
+    },
+    async resume(options) {
+      resumed.push(options.resumeSessionId)
+      const entry = { options, sessionId: options.resumeSessionId, messages: [], disposed: false }
+      created.push(entry)
+      return {
+        agent: {
+          id: entry.sessionId,
+          session: { id: entry.sessionId, header: { id: entry.sessionId } },
+          followup(message) {
+            entry.messages.push(message)
+          },
+        },
+        async dispose() {
+          entry.disposed = true
+        },
+      }
+    },
+  }
+
+  const ctx = {
+    get(key) {
+      if (key === 'agents') return missingAgents ? undefined : agents
+      if (key === 'agentDefaultModel' && !missingModel) {
+        return { currentSelection: () => ({ provider: 'mock', model: 'mock-echo', reasoningEffort: 'low' }) }
+      }
+      if (key === 'sessionTitle') {
+        return {
+          rename(session, title) {
+            titles.push({ sessionId: session.id, title })
+          },
+        }
+      }
+      return undefined
+    },
+  }
+  return { ctx, created, resumed, titles }
+}
+
+test('建会话时用带前缀的会话 id，并把任务简报即刻投进去', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  const sessionId = await sessions.spawn({
+    cwd: '/repo',
+    name: 'research-sources',
+    initialMessage: '查一下上游依赖',
+    parentSessionId: 'coordinator-1',
+    signal: new AbortController().signal,
+  })
+
+  assert.match(sessionId, /^worker-/)
+  const entry = fixture.created[0]
+  assert.equal(entry.options.sessionId, sessionId)
+  // 工作目录决定会话归属哪个项目，必须传给宿主而不是事后改。
+  assert.equal(entry.options.meta.cwd, '/repo')
+  assert.equal(entry.messages.length, 1)
+  assert.equal(entry.messages[0].content[0].text, '查一下上游依赖')
+  assert.equal(entry.messages[0].source.kind, 'dsh-coordinator/worker-task')
+  assert.equal(entry.messages[0].source.name, 'research-sources')
+  assert.equal(entry.messages[0].source.parentSessionId, 'coordinator-1')
+})
+
+test('建会话时把显示名钉成会话标题', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  const sessionId = await sessions.spawn({
+    name: 'research-sources',
+    initialMessage: '查',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  // 不钉住标题时宿主会拿首条 user 消息自动起名，侧栏看到的是任务正文。
+  assert.deepEqual(fixture.titles, [{ sessionId, title: 'research-sources' }])
+})
+
+test('建会话时带上默认模型选择，否则系统提示里的 {{model}} 变量没值', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  const options = fixture.created[0].options.agentOptions
+  assert.equal(options.provider, 'mock')
+  assert.equal(options.model, 'mock-echo')
+  assert.equal(options.reasoningEffort, 'low')
+})
+
+test('没有默认模型服务时不塞空的 agentOptions', async () => {
+  const fixture = createFixture({ missingModel: true })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  assert.equal('agentOptions' in fixture.created[0].options, false)
+})
+
+test('没有 cwd 时不给宿主塞空的 meta', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  assert.equal('meta' in fixture.created[0].options, false)
+})
+
+test('派出的会话立刻算 worker，供同步的工具面裁剪判定', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+  assert.equal(sessions.isWorkerSession('worker-1'), false)
+
+  const sessionId = await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+  assert.equal(sessions.isWorkerSession(sessionId), true)
+})
+
+test('登记表收编的历史会话也算 worker', () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  // 进程启动时按落盘登记表灌入：这些会话不在内存里，工具面也要当 worker 裁剪。
+  sessions.adopt('session-from-last-run')
+  assert.equal(sessions.isWorkerSession('session-from-last-run'), true)
+  assert.equal(sessions.get('session-from-last-run'), undefined)
+})
+
+test('活着时续聊直接投到当前会话，不算冷恢复', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+  const sessionId = await sessions.spawn({
+    name: 'w',
+    initialMessage: '首轮',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  const form = await sessions.send({
+    sessionId,
+    text: '续聊',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(form, 'live')
+  assert.deepEqual(fixture.resumed, [])
+  assert.equal(fixture.created.length, 1)
+  assert.equal(fixture.created[0].messages.at(-1).content[0].text, '续聊')
+})
+
+test('不在内存时续聊走冷恢复，并重新算作 worker', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  const form = await sessions.send({
+    sessionId: 'worker-from-last-run',
+    text: '接着做',
+    name: '新名字',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(form, 'resumed')
+  assert.deepEqual(fixture.resumed, ['worker-from-last-run'])
+  assert.equal(sessions.isWorkerSession('worker-from-last-run'), true)
+  assert.equal(fixture.titles.at(-1).title, '新名字')
+})
+
+test('续聊不带名字时不改标题，消息署名取会话头里的标题', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+  const sessionId = await sessions.spawn({
+    name: 'w',
+    initialMessage: '首轮',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  await sessions.send({
+    sessionId,
+    text: '续聊',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  // 只有建会话那一次改名。
+  assert.equal(fixture.titles.length, 1)
+})
+
+test('销毁调宿主 dispose，并从活表与 worker 集合里移除', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+  const sessionId = await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(await sessions.dispose(sessionId), true)
+  assert.equal(fixture.created[0].disposed, true)
+  assert.equal(sessions.get(sessionId), undefined)
+  assert.equal(sessions.isWorkerSession(sessionId), false)
+  // 再删一次没有可销毁的会话，但也不该报错（归档与注销项目都会走到）。
+  assert.equal(await sessions.dispose(sessionId), false)
+})
+
+test('销毁全部只收在内存的会话', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+  const first = await sessions.spawn({
+    name: 'a',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+  const second = await sessions.spawn({
+    name: 'b',
+    initialMessage: 'y',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+  sessions.adopt('never-in-memory')
+
+  await sessions.disposeAll()
+
+  assert.deepEqual(fixture.created.map((item) => item.disposed), [true, true])
+  assert.equal(sessions.isWorkerSession(first), false)
+  assert.equal(sessions.isWorkerSession(second), false)
+  // 只在登记表里的历史会话不该被这次卸载抹掉身份。
+  assert.equal(sessions.isWorkerSession('never-in-memory'), true)
+})
+
+test('缺 agents 服务时报错说清是哪个缺口', async () => {
+  const fixture = createFixture({ missingAgents: true })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await assert.rejects(
+    () => sessions.spawn({
+      name: 'w',
+      initialMessage: 'x',
+      parentSessionId: 'c',
+      signal: new AbortController().signal,
+    }),
+    (error) => {
+      assert.match(error.message, /agents/)
+      return true
+    },
+  )
+  await assert.rejects(
+    () => sessions.send({
+      sessionId: 'worker-x',
+      text: 'y',
+      parentSessionId: 'c',
+      signal: new AbortController().signal,
+    }),
+    (error) => {
+      assert.match(error.message, /agents/)
+      return true
+    },
+  )
+})
+
+test('宿主销毁失败只记日志，不改判成没销毁', async () => {
+  const fixture = createFixture()
+  const warnings = []
+  const sessions = createWorkerSessions({ ctx: fixture.ctx, logger: (message) => warnings.push(message) })
+  const sessionId = await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+  // 会话已经在宿主那边出问题：句柄的 dispose 抛错。
+  sessions.get(sessionId).dispose = async () => {
+    throw new Error('ALREADY_GONE')
+  }
+
+  assert.equal(await sessions.dispose(sessionId), false)
+  assert.ok(warnings.some((message) => message.includes('ALREADY_GONE')))
+  // 内存里已经没有它了，工具面判定也要跟着失效。
+  assert.equal(sessions.isWorkerSession(sessionId), false)
+})

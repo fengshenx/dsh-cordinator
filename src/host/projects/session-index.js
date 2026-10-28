@@ -53,11 +53,13 @@ export function createCanonicalizer(realpath) {
  *
  * @param {object} options - 选项
  * @param {object[]} options.projects - 项目记录，每条至少有 `id` 与 `directory`
- * @param {object[]} options.sessions - 会话摘要，每条至少有 `id`、`cwd` 与 `origin`
+ * @param {object[]} options.sessions - 会话摘要，每条至少有 `id` 与 `cwd`
  * @param {(path: string) => Promise<string>} options.canonicalize - 路径归一器
+ * @param {(sessionId: string) => boolean} options.isWorkerSession - worker 会话判定。
+ *   会话头看不出身份（根会话没有 `origin` 标记），只能按登记表判，所以这里是必需的。
  * @returns {Promise<Map<string, string[]>>} 项目 id 到 worker 会话 id 列表；没有 worker 的项目不在映射里
  */
-export async function groupSessionsByProject({ projects, sessions, canonicalize }) {
+export async function groupSessionsByProject({ projects, sessions, canonicalize, isWorkerSession }) {
   /** @type {Map<string, string>} 归一后的项目目录到项目 id */
   const projectIdByDirectory = new Map()
   for (const project of projects) {
@@ -72,9 +74,10 @@ export async function groupSessionsByProject({ projects, sessions, canonicalize 
   /** @type {Map<string, string[]>} 项目 id 到会话 id 列表 */
   const grouped = new Map()
   for (const session of sessions) {
-    // 只有 worker（子代理会话）属于项目：协调者会话的入口在项目行上，用户在项目
-    // 目录里手动开的会话也不该混进项目的编排视图。
-    if (session.origin !== 'subagent') continue
+    // 只有本 bundle 派出的 worker 属于项目：协调者会话的入口在项目行上，用户在项目
+    // 目录里手动开的会话也不该混进项目的编排视图。身份只能按登记表判——worker 是
+    // 普通根会话（由 `agents.create` 建），会话头没有 `origin` 标记。
+    if (!isWorkerSession(session.id)) continue
     if (typeof session.cwd !== 'string' || session.cwd === '') continue
     const canonical = await canonicalize(session.cwd)
     const projectId = projectIdByDirectory.get(canonical)

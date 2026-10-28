@@ -8,7 +8,8 @@
  * 三种角色：
  *
  * - **协调者**：项目注册表里 `coordinatorSessionId` 指向的会话，建项目时就定下；
- * - **worker**：子会话，会话头带 `origin: 'subagent'`；
+ * - **worker**：本 bundle 派出的根会话，判定依据是 `worker-sessions.js` 的内存集合
+ *   （会话由 `agents.create` 建，会话头没有 `origin` 标记，只能按登记判）；
  * - **普通会话**：其余会话。
  *
  * 协调者拿到全部工具；普通会话不碰 worker 编排与全库查询；worker 再少掉项目
@@ -31,18 +32,10 @@ export const WORKER_HIDDEN_TOOLS = Object.freeze([
   'init_project',
 ])
 
-/**
- * worker 会话判定。
- *
- * 子会话由宿主建在父会话之下，会话头带 `origin: 'subagent'`；用户在项目目录
- * 里手动开的会话没有这个标记，算普通会话。
- *
- * @param {object} agent - 调用方 agent
- * @returns {boolean} 是否 worker 会话
- */
-export function isWorkerAgent(agent) {
-  return agent?.session?.header?.origin === 'subagent'
-}
+/** 只有 worker 能用的工具：收尾交作业。 */
+export const WORKER_ONLY_TOOLS = Object.freeze([
+  'worker_done',
+])
 
 /**
  * 算出某个会话要禁掉的工具名。
@@ -50,12 +43,14 @@ export function isWorkerAgent(agent) {
  * @param {object} options - 选项
  * @param {object} options.agent - 即将开始工作的 agent
  * @param {(sessionId: string) => boolean} options.isCoordinatorSession - 协调者判定
+ * @param {(sessionId: string) => boolean} [options.isWorkerSession] - worker 判定
  * @returns {string[]} 要禁掉的工具名；协调者返回空数组
  */
-export function deniedToolsFor({ agent, isCoordinatorSession }) {
-  if (isWorkerAgent(agent)) return [...COORDINATOR_ONLY_TOOLS, ...WORKER_HIDDEN_TOOLS]
-  if (isCoordinatorSession(agent?.id)) return []
-  return [...COORDINATOR_ONLY_TOOLS]
+export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession }) {
+  const worker = typeof isWorkerSession === 'function' && isWorkerSession(agent?.id) === true
+  if (worker) return [...COORDINATOR_ONLY_TOOLS, ...WORKER_HIDDEN_TOOLS]
+  if (isCoordinatorSession(agent?.id)) return [...WORKER_ONLY_TOOLS]
+  return [...COORDINATOR_ONLY_TOOLS, ...WORKER_ONLY_TOOLS]
 }
 
 /**
@@ -67,10 +62,11 @@ export function deniedToolsFor({ agent, isCoordinatorSession }) {
  * @param {object} options - 选项
  * @param {object} options.agent - 刚创建的 agent
  * @param {(sessionId: string) => boolean} options.isCoordinatorSession - 协调者判定
+ * @param {(sessionId: string) => boolean} [options.isWorkerSession] - worker 判定
  * @returns {string[]} 实际禁掉的工具名
  */
-export function applyToolGate({ agent, isCoordinatorSession }) {
-  const denied = deniedToolsFor({ agent, isCoordinatorSession })
+export function applyToolGate({ agent, isCoordinatorSession, isWorkerSession }) {
+  const denied = deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
   if (denied.length === 0) return denied
   agent.ctx.tools.restrict({ deny: denied })
   return denied

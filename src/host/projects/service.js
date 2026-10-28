@@ -75,6 +75,8 @@ export function assertUsableName(name) {
  * @param {object} options.ctx - Cordis 上下文
  * @param {(directory: string) => Promise<string>} [options.createCoordinatorSession] - 建协调者会话
  * @param {(sessionId: string) => Promise<boolean | undefined>} [options.sessionExists] - 判断会话是否仍存在
+ * @param {(sessionId: string) => boolean} options.isWorkerSession - worker 会话判定。
+ *   会话头看不出身份（worker 是普通根会话），列项目的会话树只能按登记表判。
  * @param {(message: string) => void} [options.logger] - 日志输出
  * @returns {object} 项目服务接口
  */
@@ -83,8 +85,12 @@ export function createProjectService({
   ctx,
   createCoordinatorSession,
   sessionExists,
+  isWorkerSession,
   logger = () => {},
 }) {
+  if (typeof isWorkerSession !== 'function') {
+    throw new Error('dsh-coordinator: createProjectService 缺少 isWorkerSession，无法判定哪些会话属于项目')
+  }
   const openCoordinatorSession = createCoordinatorSession
     ?? ((directory) => createCoordinatorSessionWithCtx(ctx, directory))
   const coordinatorExists = sessionExists
@@ -403,9 +409,10 @@ export function createProjectService({
     /**
      * 列项目下的 worker 会话。
      *
-     * 判据是会话跑的目录加上 worker 身份：只有 `origin: 'subagent'` 的子代理会话
-     * 才算项目的 worker。协调者会话（入口在项目行上）与用户在项目目录里手动开的
-     * 会话都不算。子目录里开的 worker 不算——那属于另一个目录。
+     * 判据是会话跑的目录加上 worker 身份。worker 现在是普通根会话（由
+     * `agents.create` 建），会话头没有 `origin: 'subagent'` 标记，身份由 worker
+     * 登记表给（`isWorkerSession`）。协调者会话（入口在项目行上）与用户在项目目录
+     * 里手动开的会话都不算。子目录里开的 worker 不算——那属于另一个目录。
      *
      * `sessionQuery` 缺失时返回空映射：会话索引是增强能力，缺了不该让项目列表
      * 整体不可用。
@@ -421,11 +428,15 @@ export function createProjectService({
         .map((record) => ({
           id: record?.header?.id,
           cwd: record?.header?.cwd,
-          // `origin: 'subagent'` 标记子代理会话——项目下的 worker 就是这一类。
           origin: record?.header?.origin,
         }))
         .filter((session) => typeof session.id === 'string' && session.id !== '')
-      const grouped = await groupSessionsByProject({ projects, sessions, canonicalize })
+      const grouped = await groupSessionsByProject({
+        projects,
+        sessions,
+        canonicalize,
+        isWorkerSession,
+      })
       return [...grouped.entries()].map(([projectId, sessionIds]) => ({ projectId, sessionIds }))
     },
 

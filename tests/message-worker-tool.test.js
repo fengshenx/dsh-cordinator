@@ -40,6 +40,19 @@ test('rename 非字符串时报错', async () => {
   await assert.rejects(() => run(tool, { sessionId: 'child-1', message: 'hi', rename: 7 }), /rename/)
 })
 
+test('cardId 非字符串时报错', async () => {
+  const tool = createMessageWorkerTool({ dispatcher: createFakeDispatcher() })
+  await assert.rejects(() => run(tool, { sessionId: 'child-1', message: 'hi', cardId: 7 }), /cardId/)
+})
+
+test('cardId 与 rename 一起透传给派工器', async () => {
+  const dispatcher = createFakeDispatcher()
+  const tool = createMessageWorkerTool({ dispatcher })
+  await run(tool, { sessionId: 'child-1', message: '同卡续跑', cardId: ' card-1 ', rename: 'dev-2' })
+  assert.equal(dispatcher.calls[0].cardId, 'card-1')
+  assert.equal(dispatcher.calls[0].name, 'dev-2')
+})
+
 test('没有调用方 agent 时报错', async () => {
   const tool = createMessageWorkerTool({ dispatcher: createFakeDispatcher() })
   await assert.rejects(() => tool.execute({ sessionId: 'child-1', message: 'hi' }, { signal: new AbortController().signal }), /agent/)

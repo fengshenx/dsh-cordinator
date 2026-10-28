@@ -2,9 +2,10 @@
  * dsh-coordinator 的宿主侧插件。
  *
  * 贡献九件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
- * worker 续聊（登记表落盘 + `message_worker` 工具 + 续聊轮完成唤醒）、派工完成后
- * 的自动唤醒、任务看板卡片存储与卡片工具、项目注册表与项目作用域工具、项目数据
- * 的 Typert 远程通道，以及角色槽位到系统提示词的注入。
+ * worker 会话的创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具 + worker
+ * 自己用 `worker_done` 交作业）、派工完成后的自动唤醒、任务看板卡片存储与卡片工具、
+ * 项目注册表与项目作用域工具、项目数据的 Typert 远程通道，以及角色槽位到系统提示词
+ * 的注入。
  *
  * 客户端侧（交付看板 UI 与左栏项目区块）在 `src/client/`，跑在浏览器进程，与本
  * 模块不共处。
@@ -27,6 +28,8 @@ import {
 } from './tools/projects.js'
 import { createNotificationStore, resolveDshHome } from './notification-store.js'
 import { createWorkerRegistry } from './worker-registry.js'
+import { createWorkerSessions } from './worker-sessions.js'
+import { createWorkerDoneTool } from './tools/worker-done.js'
 import { createCardStore } from './cards/store.js'
 import { createProjectStore } from './projects/store.js'
 import { createProjectService } from './projects/service.js'
@@ -44,10 +47,11 @@ export const name = 'dsh-coordinator-host'
 // `systemPrompt` 必须声明：角色槽位靠它注册运行时上下文，服务不在作用域内时
 // 注入静默失效（实测：不声明时上下文不进组装结果）。该服务由 base bundle 提供，
 // 官方各 profile 都有。
-// `sessionQuery`、`sessionController`、`agents` 与 `webServer` 都走 `ctx.get()`
-// 惰性获取：前者由 sqlite 引擎提供（引擎可能被部署替换），后两者只挂在 web-app
-// bundle 上。声明成必需依赖会让不含该服务的 profile 整个插件挂起。
-export const inject = ['skills', 'tools', 'subagents', 'systemPrompt']
+// `sessionQuery`、`sessionController`、`agents` 与 `workspaceRegistry` 都走
+// `ctx.get()` 惰性获取：前者由 sqlite 引擎提供（引擎可能被部署替换），后几者只挂
+// 在特定 bundle 上。声明成必需依赖会让不含该服务的 profile 整个插件挂起。
+// 建 worker 会话要的 `agents` 也在这里——缺它时派工报错说清是哪个缺口。
+export const inject = ['skills', 'tools', 'systemPrompt']
 
 /**
  * 挂载本 bundle 的能力。
@@ -68,7 +72,15 @@ export function apply(ctx) {
 
   // 项目注册表：编排语境的容器。目录是代码语境，项目是编排语境，二者不合并。
   const projects = createProjectStore({ home: resolveDshHome(), logger })
-  const projectService = createProjectService({ store: projects, ctx, logger })
+  // worker 会话管理器要先建：项目服务列 worker 时要用它的同步判定（会话头没有
+  // subagent 标记了，只有登记知道谁是 worker）。
+  const workerSessions = createWorkerSessions({ ctx, logger })
+  const projectService = createProjectService({
+    store: projects,
+    ctx,
+    isWorkerSession: workerSessions.isWorkerSession,
+    logger,
+  })
 
   // 工具面按角色分配：协调者拿到编排与全库查询，worker 再少掉项目注册表的
   // 读写，普通会话两者都没有。裁剪在 `agent/created` 时对 agent 作用域做
@@ -94,23 +106,39 @@ export function apply(ctx) {
   // 共享通道），与工作区控制器同构。
   const store = createNotificationStore({ logger })
   const workers = createWorkerRegistry({ home: resolveDshHome(), logger })
+  // 启动时按登记表收编既有 worker 会话 id：工具面裁剪是同步判定，登记表是异步的，
+  // 需要一份内存集合；不灌入的话重启后老 worker 会被当成普通会话，拿到协调者工具。
+  void workers.list().then((records) => {
+    for (const record of records) workerSessions.adopt(record.childId)
+  }).catch((error) => {
+    logger(`dsh-coordinator: 读取 worker 登记表失败，重启后的老 worker 工具面可能偏宽：${error instanceof Error ? error.message : String(error)}`)
+  })
   // 归档会话后的收尾（摘卡 + 摘派工登记）也走这条通道：归档本身由宿主的
   // `workspaces` 服务执行，浏览器侧只负责按顺序调用。
-  createProjectRemote({ service: projectService, cards, workers, ctx })
+  createProjectRemote({ service: projectService, cards, workers, workerSessions, ctx })
 
   const dispatcher = createDispatcher({
     ctx,
     store,
     workers,
+    // worker 是普通根会话（不是 subagent）：常驻、可被人下钻对话、进程重启后能
+    // 用 `agents.resume` 接着跑。会话的创建与销毁都归它管。
+    workerSessions,
     // worker 跑在项目目录里：协调者不能指定 worker 的工作目录。
     resolveWorkerCwd: (sessionId) => projectService.directoryOfCoordinator(sessionId),
     // 派工前要确认调用方是协调者，且索引真的读出来了，不能靠工具面的宽松放行。
     coordinatorIndex: projectService,
+    // 名册上限与投递卡门禁都读宿主现状：归档集合来自工作区注册表，卡绑定来自
+    // 卡片库。两者缺失时各自降级（不限数量 / 不做门禁），不阻塞派工。
+    archivedSessionIds: () => ctx.get('workspaceRegistry')?.archivedSessionIds ?? [],
+    listCardBindings: (sessionId) => cards.bindingsOf(sessionId),
     logger,
   })
 
   ctx.tools.register(createSpawnWorkerTool({ dispatcher }))
   ctx.tools.register(createMessageWorkerTool({ dispatcher }))
+  // worker 收尾交作业的入口：只有 worker 会话能看见（见 gate.js 的工具面分配）。
+  ctx.tools.register(createWorkerDoneTool({ dispatcher }))
 
   // 建卡与改卡对所有会话开放：worker 边干活边把状态写回卡片，普通会话也能为
   // 项目登记待办；查全库卡片只给协调者。
@@ -156,7 +184,7 @@ export function apply(ctx) {
   // 工具面也在这里裁：`agent/created` 早于首轮请求组装，作用域是新建的，每次
   // 会话创建（含冷恢复）都重算一遍，不会带着上一次的限制。
   ctx.on('agent/created', ({ agent }) => {
-    applyToolGate({ agent, isCoordinatorSession })
+    applyToolGate({ agent, isCoordinatorSession, isWorkerSession: workerSessions.isWorkerSession })
     dispatcher.markAlive(agent.id)
     void dispatcher.redeliverPending(agent).catch((error) => {
       logger(`dsh-coordinator: 补投完成通知失败：${error instanceof Error ? error.message : String(error)}`)
@@ -169,25 +197,18 @@ export function apply(ctx) {
   })
 
   // 外部输入抵达即重置该会话的自动续行计数——人工介入后护栏应重新开始计数。
-  // 宿主的 subagent 结算通知先经派工器甄别：被移除的续聊通知不是外部输入，
-  // 不该重置计数；移除失败时它兜底透传，同样不算人工介入。
   ctx.on('agent/inbox/inserted', ({ agent, message }) => {
-    if (dispatcher.maybeSwallowSettlementNotice(agent, message)) return
     if (!dispatcher.isInjected(message.id)) {
       dispatcher.resetResumeCount(agent.id)
     }
   })
 
-  // 续聊轮的完成信号：宿主在子会话结算时发出，负载带子会话 id、终态原因与
-  // 最后一次 assistant 输出（见 dispatch.js 的续聊说明）。
-  ctx.on('subagent/end', (info) => {
-    dispatcher.onSubagentEnd(info)
-  })
-
-  // 空闲检测的定时器随插件卸载一起停掉。
+  // 空闲检测的定时器随插件卸载一起停掉；活着的 worker 会话也一并销毁，否则插件
+  // 卸载后它们仍在跑、仍在写会话日志。
   ctx.on('dispose', () => {
     disposed = true
     clearTimeout(indexRetryTimer)
     dispatcher.dispose()
+    void workerSessions.disposeAll()
   })
 }
