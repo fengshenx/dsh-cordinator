@@ -75,6 +75,8 @@ export function apply(ctx) {
       callRemote: (method, args) => callProjectRemote(ctx, method, args),
       getUiWorkspace: () => ctx.get('uiWorkspace'),
       getSessions: () => ctx.sessions,
+      // 归档走宿主的工作区服务：它是既有能力，别处归档的会话这里也要跟着消失。
+      getWorkspaces: () => ctx.get('workspaces'),
     }),
   }, ProjectPanel)), 'dsh-coordinator 左栏项目区块')
 

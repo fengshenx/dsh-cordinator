@@ -92,10 +92,12 @@ export function apply(ctx) {
 
   // 浏览器侧要读项目、也要建项目，走 dsh 官方的 Typert 远程调用（`/api`
   // 共享通道），与工作区控制器同构。
-  createProjectRemote({ service: projectService, cards, ctx })
-
   const store = createNotificationStore({ logger })
   const workers = createWorkerRegistry({ home: resolveDshHome(), logger })
+  // 归档会话后的收尾（摘卡 + 摘派工登记）也走这条通道：归档本身由宿主的
+  // `workspaces` 服务执行，浏览器侧只负责按顺序调用。
+  createProjectRemote({ service: projectService, cards, workers, ctx })
+
   const dispatcher = createDispatcher({
     ctx,
     store,

@@ -81,12 +81,31 @@ function fakeCards() {
       calls.push(['list', filter])
       return [{ id: 'c1', number: 1, title: '任务' }]
     },
+    async detachSession(sessionId) {
+      calls.push(['detachSession', sessionId])
+      return { cards: ['c1'], slots: 1 }
+    },
+  }
+}
+
+/**
+ * 造一个记录调用的假 worker 登记表。
+ * @returns {object} 登记表
+ */
+function fakeWorkers() {
+  const calls = []
+  return {
+    calls,
+    async remove(childId) {
+      calls.push(['remove', childId])
+      return true
+    },
   }
 }
 
 test('远程服务注册进 Cordis，服务键与命名空间对齐契约', () => {
   const { ctx, provided } = fakeCtx()
-  const remote = createProjectRemote({ service: fakeService(), cards: fakeCards(), ctx })
+  const remote = createProjectRemote({ service: fakeService(), cards: fakeCards(), workers: fakeWorkers(), ctx })
 
   assert.equal(provided.get(PROJECT_REMOTE_SERVICE_KEY), remote)
   assert.equal(remote.typertRemote.serviceKey, PROJECT_REMOTE_SERVICE_KEY)
@@ -97,7 +116,7 @@ test('远程服务注册进 Cordis，服务键与命名空间对齐契约', () =
 
 test('原型上的方法标记覆盖契约里的每个方法', () => {
   const { ctx } = fakeCtx()
-  const remote = createProjectRemote({ service: fakeService(), ctx })
+  const remote = createProjectRemote({ service: fakeService(), cards: fakeCards(), workers: fakeWorkers(), ctx })
   const descriptor = Object.getOwnPropertyDescriptor(
     Object.getPrototypeOf(remote),
     DESCRIPTOR_PROPERTY,
@@ -115,7 +134,7 @@ test('原型上的方法标记覆盖契约里的每个方法', () => {
 
 test('方法的形参名与契约一致——宿主按源码里的形参名建 wire 字段', () => {
   const { ctx } = fakeCtx()
-  const remote = createProjectRemote({ service: fakeService(), cards: fakeCards(), ctx })
+  const remote = createProjectRemote({ service: fakeService(), cards: fakeCards(), workers: fakeWorkers(), ctx })
 
   for (const [method, expected] of Object.entries(PROJECT_REMOTE_METHODS)) {
     const source = Function.prototype.toString.call(remote[method])
@@ -130,7 +149,8 @@ test('方法把调用转给项目服务', async () => {
   const { ctx } = fakeCtx()
   const service = fakeService()
   const cards = fakeCards()
-  const remote = createProjectRemote({ service, cards, ctx })
+  const workers = fakeWorkers()
+  const remote = createProjectRemote({ service, cards, workers, ctx })
 
   assert.deepEqual(await remote.list(), [
     { id: 'p1', name: 'demo', directory: '/tmp/demo', coordinatorSessionId: 's1' },
@@ -155,12 +175,16 @@ test('方法把调用转给项目服务', async () => {
   // 会话归属项目由项目服务判定
   assert.deepEqual(await remote.resolveProject('s1'), { id: 'p1', name: 'demo', directory: '/tmp/demo' })
   assert.deepEqual(service.calls.at(-1), ['resolveProjectOfSession', 's1'])
+  // 归档后的收尾：摘卡 + 摘派工登记，两处都要走到
+  assert.deepEqual(await remote.detachSession('s5'), { cards: ['c1'], slots: 1, worker: true })
+  assert.deepEqual(cards.calls.at(-1), ['detachSession', 's5'])
+  assert.deepEqual(workers.calls.at(-1), ['remove', 's5'])
 })
 
 test('注销项目返回布尔结果，不返回可能缺失的项目对象', async () => {
   const { ctx } = fakeCtx()
   const service = fakeService()
-  const remote = createProjectRemote({ service, cards: fakeCards(), ctx })
+  const remote = createProjectRemote({ service, cards: fakeCards(), workers: fakeWorkers(), ctx })
 
   assert.deepEqual(await remote.unregister('p1'), { removed: true })
   service.remove = async () => undefined

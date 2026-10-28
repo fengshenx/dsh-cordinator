@@ -46,18 +46,21 @@ function buildMethodDescriptor() {
  * @param {object} options - 装配选项
  * @param {object} options.service - 项目服务（`src/host/projects/service.js`）
  * @param {object} options.cards - 卡片存储（`src/host/cards/store.js`）
+ * @param {object} options.workers - worker 登记表（`src/host/worker-registry.js`）
  * @param {object} options.ctx - 宿主 Cordis 上下文
  * @returns {object} 已注册的远程服务实例
  */
-export function createProjectRemote({ service, cards, ctx }) {
+export function createProjectRemote({ service, cards, workers, ctx }) {
   class ProjectRemote {
     /**
      * @param {object} service - 项目服务
      * @param {object} cards - 卡片存储
+     * @param {object} workers - worker 登记表
      */
-    constructor(service, cards) {
+    constructor(service, cards, workers) {
       this.projects = service
       this.cards = cards
+      this.workers = workers
       // 服务绑定：宿主据此认出「这个服务导出哪个命名空间」。绑定里的 service 必须
       // 指向服务实例本身，宿主会拿它与调用时取到的实例比对。
       this.typertRemote = {
@@ -162,6 +165,21 @@ export function createProjectRemote({ service, cards, ctx }) {
     }
 
     /**
+     * 摘掉一个会话在卡片槽位与派工登记表上的痕迹。
+     *
+     * 由浏览器侧在会话归档成功后调用：归档本身走宿主的 `workspaces` 服务（会话
+     * 还在跑时会被拒绝，那时不该动卡片），这里只做归档之后的收尾。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {Promise<{cards: string[], slots: number, worker: boolean}>} 摘除结果
+     */
+    async detachSession(sessionId) {
+      const detached = await this.cards.detachSession(sessionId)
+      const worker = await this.workers.remove(sessionId)
+      return { ...detached, worker }
+    }
+
+    /**
      * 列某个项目的看板卡片。
      *
      * 看板按项目取卡：一个项目一个看板，跨会话聚合（协调者建的卡与 worker 建的
@@ -180,7 +198,7 @@ export function createProjectRemote({ service, cards, ctx }) {
     value: buildMethodDescriptor(),
   })
 
-  const remote = new ProjectRemote(service, cards)
+  const remote = new ProjectRemote(service, cards, workers)
   ctx.provide(PROJECT_REMOTE_SERVICE_KEY, remote)
   return remote
 }

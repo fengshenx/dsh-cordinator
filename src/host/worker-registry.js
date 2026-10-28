@@ -139,5 +139,23 @@ export function createWorkerRegistry({
       const registry = await read()
       return registry.workers.find((item) => item.childId === childId)
     },
+
+    /**
+     * 删掉一个 worker 记录。
+     *
+     * 归档的会话不再能被续聊——宿主的归档闸门会拒绝对它的模型步——记录留着只会
+     * 让 `message_worker` 走进一条注定失败的路径。
+     *
+     * @param {string} childId - 子会话 id
+     * @returns {Promise<boolean>} 是否确实删掉了一条
+     */
+    async remove(childId) {
+      return serialize((registry) => {
+        const index = registry.workers.findIndex((item) => item.childId === childId)
+        if (index === -1) return false
+        registry.workers.splice(index, 1)
+        return true
+      })
+    },
   }
 }

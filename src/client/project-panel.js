@@ -36,6 +36,7 @@ import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import {
   defaultProjectName,
+  isArchiveActiveRefusal,
   isProjectOpenable,
   openCoordinatorSession,
   validateProjectName,
@@ -52,10 +53,11 @@ import { describeWorkspaceRemoval } from './project-panel-logic.js'
  * @param {(method: string, args: unknown[]) => Promise<unknown>} props.callRemote - 调用宿主远程方法
  * @param {() => object | undefined} props.getUiWorkspace - 取导航服务
  * @param {() => object | undefined} props.getSessions - 取会话服务
+ * @param {() => object | undefined} props.getWorkspaces - 取工作区服务（归档会话走它）
  * @returns {object} React 元素
  */
 export function ProjectPanel(props) {
-  const { wide, callRemote, getUiWorkspace, getSessions } = props
+  const { wide, callRemote, getUiWorkspace, getSessions, getWorkspaces } = props
   const [projects, setProjects] = useState([])
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -71,6 +73,16 @@ export function ProjectPanel(props) {
   /** 待确认移除工作区的项目；null 表示没有待确认的移除。 */
   const [pendingRemoval, setPendingRemoval] = useState(null)
   const [removalError, setRemovalError] = useState('')
+  /**
+   * 待确认「停止并归档」的会话；null 表示没有。
+   *
+   * 只在宿主以 `workspace/session-active` 拒绝时出现：会话还在跑，归档会打断它，
+   * 这件事得用户点头。
+   */
+  const [pendingArchive, setPendingArchive] = useState(null)
+  const [archiveError, setArchiveError] = useState('')
+  /** 已归档的会话 id：宿主快照是真源，左栏只按它把行藏起来。 */
+  const [archivedSessionIds, setArchivedSessionIds] = useState(() => new Set())
   /**
    * 等待用户改名的待建项目；null 表示没有。
    *
@@ -160,6 +172,22 @@ export function ProjectPanel(props) {
       if (pending !== null) clearTimeout(pending)
     }
   }, [getSessions, refreshSessionIndex])
+
+  // 订阅已归档集合：宿主的工作区快照是真源。归档是宿主的既有能力，别处（官方
+  // 工作区树）归档的会话在这里也要一起消失，所以不靠本地记账。
+  useEffect(() => {
+    const workspaces = getWorkspaces?.()
+    const list = workspaces?.list
+    if (list?.getSnapshot === undefined || list.subscribe === undefined) return undefined
+    const sync = () => {
+      const snapshot = list.getSnapshot()
+      setArchivedSessionIds(new Set(Array.isArray(snapshot?.archivedSessionIds)
+        ? snapshot.archivedSessionIds
+        : []))
+    }
+    sync()
+    return list.subscribe(sync)
+  }, [getWorkspaces])
 
   // 项目的协调者会话不在官方工作区树里重复出现：它由项目区块呈现。worker 会话
   // 不必排除——宿主官方树已经把 subagent 会话滤掉（`tree.ts` 的 `sessionVisible`
@@ -349,6 +377,61 @@ export function ProjectPanel(props) {
     }
   }, [busy, callRemote, refresh])
 
+  /**
+   * 归档一个会话，并摘掉它留在卡片与派工登记表上的痕迹。
+   *
+   * 顺序是先归档后摘卡：归档被宿主拒绝（会话还在跑）时不该先动卡片——那会让
+   * 「会话仍在列表里，卡上槽位却没了」这种半截状态出现。
+   *
+   * @param {string} sessionId - 会话 id
+   * @param {object} [options] - 选项
+   * @param {boolean} [options.stopActivity] - 停止正在执行的任务再归档
+   * @returns {Promise<void>} 完成
+   */
+  const archiveSession = useCallback(async (sessionId, { stopActivity = false } = {}) => {
+    const workspaces = getWorkspaces?.()
+    if (workspaces?.archiveSession === undefined) {
+      setNotice('工作区服务不可用：无法归档会话。')
+      return
+    }
+    setBusy(true)
+    try {
+      await workspaces.archiveSession(sessionId, stopActivity ? { stopActivity: true } : undefined)
+      // 摘卡失败不该说成「归档失败」：归档已经生效，会话已从列表消失。
+      try {
+        await callRemote('detachSession', [sessionId])
+      } catch (error) {
+        setNotice(`会话已归档，但摘卡失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+      setPendingArchive(null)
+      await refreshSessionIndex()
+    } catch (error) {
+      if (!stopActivity && isArchiveActiveRefusal(error)) {
+        setArchiveError('')
+        setPendingArchive({ sessionId })
+        return
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      if (stopActivity) {
+        setArchiveError(`停止并归档失败：${message}`)
+        return
+      }
+      setNotice(`归档会话失败：${message}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [callRemote, getWorkspaces, refreshSessionIndex])
+
+  const confirmArchive = useCallback(async () => {
+    if (busy || pendingArchive === null) return
+    await archiveSession(pendingArchive.sessionId, { stopActivity: true })
+  }, [archiveSession, busy, pendingArchive])
+
+  const cancelArchive = useCallback(() => {
+    setArchiveError('')
+    setPendingArchive(null)
+  }, [])
+
   const body = createElement(ProjectSection, {
     projects,
     busy,
@@ -384,6 +467,8 @@ export function ProjectPanel(props) {
       }
       uiWorkspace.openSession(sessionId)
     },
+    onArchiveSession: (sessionId) => { void archiveSession(sessionId) },
+    archivedSessionIds,
   })
 
   // 弹窗自己 portal 到 body，但必须挂在不会被浮层收起卸载的位置：窄栏下浮层
@@ -399,6 +484,19 @@ export function ProjectPanel(props) {
     error: removalError,
     onConfirm: () => { void removeWorkspace() },
     onCancel: cancelRemoveWorkspace,
+  })
+
+  const archiveDialog = createElement(ConfirmDialog, {
+    open: pendingArchive !== null,
+    title: '会话还在执行',
+    description: '这个会话正在跑。归档会先停掉它的任务，再从列表移除并摘掉卡片上绑定的槽位。会话记录保留。',
+    confirmLabel: '停止并归档',
+    cancelLabel: '取消',
+    danger: true,
+    busy,
+    error: archiveError,
+    onConfirm: () => { void confirmArchive() },
+    onCancel: cancelArchive,
   })
 
   if (!wide) {
@@ -452,10 +550,17 @@ export function ProjectPanel(props) {
           )
         : null,
       dialog,
+      archiveDialog,
     )
   }
 
-  return createElement(Fragment, null, createElement(SidebarPlacement, null, body), dialog)
+  return createElement(
+    Fragment,
+    null,
+    createElement(SidebarPlacement, null, body),
+    dialog,
+    archiveDialog,
+  )
 }
 
 /**

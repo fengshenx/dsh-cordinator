@@ -254,6 +254,54 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
     },
 
     /**
+     * 摘掉所有卡片上指向某个会话的槽位绑定。
+     *
+     * 会话归档后它的绑定就是死引用：卡片还在看板上挂着「执行者」，点开却没有去处；
+     * 槽位索引也仍会把这个会话的角色注入下一轮 turn。归档是「这个会话收工了」的
+     * 声明，绑定理应一起失效。
+     *
+     * 已归档的卡片一起摘：它们不再出现在看板上，槽位索引却不区分卡片状态，留着
+     * 就是留一条继续注入的残留。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {Promise<{cards: string[], slots: number}>} 被改的卡片 id 与摘掉的槽位数
+     */
+    async detachSession(sessionId) {
+      return serialize(async () => {
+        const store = await readStore(file, recoverFromCorruption, io)
+        const touched = []
+        let removed = 0
+        const now = clock()
+        store.cards = store.cards.map((card) => {
+          const slots = card?.slots
+          if (slots === null || typeof slots !== 'object' || Array.isArray(slots)) return card
+          const kept = {}
+          let changed = false
+          for (const [name, binding] of Object.entries(slots)) {
+            if (binding?.sessionId === sessionId) {
+              changed = true
+              removed += 1
+              continue
+            }
+            kept[name] = binding
+          }
+          if (!changed) return card
+          touched.push(card.id)
+          return {
+            ...card,
+            slots: kept,
+            revision: (card.revision ?? 0) + 1,
+            updatedAt: now,
+          }
+        })
+        if (touched.length === 0) return { cards: [], slots: 0 }
+        await writeStore(store)
+        rebuildSlotIndex(store.cards, slotIndex)
+        return { cards: touched, slots: removed }
+      })
+    },
+
+    /**
      * 读单张卡片。
      * @param {string} id - 卡片 id
      * @returns {Promise<object | undefined>} 卡片，不存在时 undefined
