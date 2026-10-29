@@ -1,7 +1,7 @@
 # 开发实例与 worktree 封装
 
 **状态**：implemented（2026-10-29）
-**范围**：`scripts/dev.mjs`、`scripts/dev-plan.mjs`、`scripts/worktree-spawn.mjs`、`scripts/worktree-common.mjs`、`package.json`、`.gitignore`、`README.md`、`AGENTS.md`
+**范围**：`scripts/dev.mjs`、`scripts/dev-plan.mjs`、`scripts/worktree-spawn.mjs`、`scripts/worktree-prune.mjs`、`scripts/worktree-common.mjs`、`package.json`、`.gitignore`、`README.md`、`AGENTS.md`
 
 ## 背景
 
@@ -28,11 +28,12 @@
 
 ## 验证
 
-- `npm run check`：417 例全绿（新增 `tests/dev-plan.test.js` 9 例、`tests/worktree-common.test.js` 3 例）。`npm run build:client` 通过。
+- `npm run check`：422 例全绿（新增 `tests/dev-plan.test.js` 9 例、`tests/worktree-common.test.js` 8 例）。`npm run build:client` 通过。
 - 双向验证：把 `planNodeModules` 的插件链接改成指向源 profile → 「node_modules 逐条链到源，只有插件本体指工作树」红；还原后全绿。
 - 真机（`dsh 0.2.1-rc.2`，隔离实例）：`npm run dev` 一条命令起实例，页面项目区与输入框都在；数据根只有 `profiles/ sessions/ storages/`；`profiles/web/node_modules/dsh-coordinator` 指向工作树，其余条目指向源 profile。
 - 重复运行幂等：第二次 `npm run dev` 复用现有 profile，`DEV_PORT=5877` 生效。
 - **代码即生效**：临时把 `project-section.js` 的标题改成「项目·工作树」，`npm run dev` 后页面读到新文案，确认加载的是工作树当前代码而非某个装好的旧版本；改回后 `git diff` 无残留。
+- `worktree:prune` dry-run 在当前仓库实测：已合并的四条判为可删（走 PR 状态），仍在开 PR 的 p6 与当前所在的 dev-script 判为拒绝。
 
 ## 边界
 
@@ -41,3 +42,11 @@
 - **并行实例共享源 `node_modules` 的只读假设**：多个 worktree 的 dev 实例同时跑时，读的是同一份依赖；只要没人往源 profile 装包就安全。
 - **Windows 未实测**：符号链接用 `junction`（对目录有效），文件型条目未覆盖到。
 - **客户端改动要重跑 `npm run dev` 或 `npm run build:client`**：没有 watch。
+
+## 收尾：`worktree:prune`
+
+默认 dry-run 打印每个 worktree 的结论，`--apply` 才删（`git worktree remove --force` + `git branch -D`，远端分支要 `--delete-remote`）。守卫顺序是「先排掉会丢东西的理由」：未提交改动 → 当前所在的 worktree → 分支没进 main 且 PR 未合并。
+
+**两条「已合并」判据都留着**，因为合并方式不设限：`git merge-base --is-ancestor <branch> main` 在 merge commit 下成立；squash 合并下不成立（提交不在 main 祖先链上），但 PR 状态仍是 MERGED。任一成立即可删。PR 状态查不到（gh 不可用/未登录）按拒绝处理，不猜。
+
+删目录时 `.dev/home` 的数据与 `node_modules` 符号链接一起清掉——链接指向主 checkout，删的只是链接本身，不会动主 checkout 的依赖。

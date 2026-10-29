@@ -107,6 +107,16 @@ npm run dev                       # 起开发实例
 - 依赖共享主 checkout 的 `node_modules`（本仓库只有 esbuild 与 minidenticons），改 `package.json` 请在主 checkout 安装。
 - 覆盖项：`DSH_HOME`（数据根）、`DSH_HOME_SOURCE`（源 HOME，默认 `~/.dsh`）、`DEV_PORT`、`DEV_NO_OPEN=1`（不自动开浏览器）。
 
+收尾时清掉已合并的 worktree：
+
+```sh
+npm run worktree:prune                 # 只打印结论（dry-run）
+npm run worktree:prune -- --apply      # 真删：worktree 目录 + 本地分支
+npm run worktree:prune -- --apply --delete-remote   # 连远端分支一起删
+```
+
+守卫：有未提交改动的、当前所在的、分支没进 `main` 且 PR 未合并的，一律拒绝。分支是否已合并看两条判据——`merge-base --is-ancestor main`（merge 合并成立）与 PR 状态（squash 合并只有这条成立）。删 worktree 时 `.dev/home` 的数据与 `node_modules` 链接随之清掉，链接指向主 checkout，删的只是链接本身。
+
 也可以不用脚本、手工把插件装进某个 profile：`dsh plugin --profile dev add ../dsh-coordinator`（改代码即生效，但会与装进同一 profile 的其他工作树互相覆盖）。
 
 ## 使用

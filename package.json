@@ -26,6 +26,7 @@
     "build:client": "node build/client.mjs",
     "dev": "node scripts/dev.mjs",
     "worktree:spawn": "node scripts/worktree-spawn.mjs",
+    "worktree:prune": "node scripts/worktree-prune.mjs",
     "prepublishOnly": "npm run build:client"
   },
   "engines": {

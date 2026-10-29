@@ -48,6 +48,7 @@ npm run test                      # 只跑单测
 npm run build:client              # 重建客户端产物 lib/client.js
 npm run dev                       # 起一个挂当前工作树插件版本的 dsh 实例
 npm run worktree:spawn <任务名>    # 建 .worktrees/<任务名> + feature/<任务名>
+npm run worktree:prune            # 清已合并的 worktree（默认只打印，--apply 才删）
 ```
 
 ## 测试
@@ -83,6 +84,7 @@ npm run worktree:spawn <任务名>    # 建 .worktrees/<任务名> + feature/<�
 - PR 附证据：单测数与新增用例、双向验证结果、真机读数；截图等临时证据不入库。
 - 行为变更同步 README 与相关 `docs/`。
 - 交付做到 PR 为止；合并与 approve 需用户明确指令。
+- **收尾才清 worktree**：`worktree:prune` 只在 PR 合并后跑，且先确认工作区干净。未合并的分支即使 PR 关掉也不删——那是没进 `main` 的代码。
 
 ## 编辑本文件
 
