@@ -80,16 +80,21 @@ export async function agentPresetOptions(ctx, logger) {
  * registry 自己也是从 `sessionProjections.stateOf(session, 'agentPreset')` 读，
  * 这里照同一条路走。
  *
- * 投影服务缺席（组合没有它）时返回 undefined，调用方按默认 preset 处理；
- * 服务在却缺 `stateOf()` 属于契约变化，直接抛错。
+ * 投影服务缺席（组合没有它）时记一行日志再按默认 preset 处理——用户换过的
+ * preset 会静默丢失，正是这一系列 bug 的原始形态，不能无声。服务在却缺
+ * `stateOf()` 属于契约变化，直接抛错。
  *
  * @param {object} ctx - Cordis 上下文
  * @param {object} agent - 正在恢复的 agent
+ * @param {((message: string) => void)} [logger] - 日志输出
  * @returns {string | undefined} 会话投影里的 preset id
  */
-function recordedPreset(ctx, agent) {
+function recordedPreset(ctx, agent, logger) {
   const projections = ctx.get('sessionProjections')
-  if (projections === undefined) return undefined
+  if (projections === undefined) {
+    warn(ctx, logger, 'dsh-coordinator: 当前组合没有 sessionProjections 服务，冷恢复用默认 preset——会话之前换过的 preset 会丢')
+    return undefined
+  }
   if (typeof projections.stateOf !== 'function') {
     throw new Error('dsh-coordinator: sessionProjections 服务缺少 stateOf()，宿主契约已变；读不回会话的 preset')
   }
@@ -114,7 +119,7 @@ export function agentPresetResumeSetup(ctx, logger) {
   }
   return {
     setup: async (agentCtx, agent) => {
-      await presets.mount(agentCtx, recordedPreset(ctx, agent))
+      await presets.mount(agentCtx, recordedPreset(ctx, agent, logger))
     },
   }
 }

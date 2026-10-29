@@ -45,4 +45,5 @@
 - worker 现在拿到的是**整个标准组合**，不只是 bash / read：persona、`agent-instructions`（会读项目 AGENTS.md）、`time-context`、`subagent` / `workflow`、`ask_user_question`、`todo`、`web` 等都在。常驻后台会话因此也能向用户提问——这是「变成官方标准会话」的预期结果，用之前要知道。
 - 摘掉 `list_agents` / `send_message` / `interrupt_agent` 后，preset 提供的 `subagent` / `subagent_fork` 仍在，协调者「能派不能跟」。这两个是通用能力，暂留；协议层立场是协调者不拿它们当 worker 用。
 - `agentPresetOptions()` 建会话时先 `resolve()`（一次 `diagnostic()`）再 `mount()`（`retain()` 里又一次），都在缓存后；只是建 worker 的路径上多一次审计。真机读数时顺带看建会话延迟。
+- 会话投影里记的 preset 若已被删除，冷恢复会在 `mount` 抛 `agent-preset/not-found`，冒到协调者的 `message_worker` 回执上。与官方 `sessionController.composeAgent` 的行为一致，Fail Loud 合理；错误文案带宿主内部口吻，要不要包装以后再说。
 - 这类「绕开官方建会话路径就要自己补组合」的缺口与 `get()` 探测面的坑都记在 `docs/capability-gaps.md` 第 38 条。

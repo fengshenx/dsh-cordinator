@@ -15,7 +15,7 @@ import { createWorkerSessions } from '../src/host/worker-sessions.js'
  * @param {{ missingAgents?: boolean, missingModel?: boolean, missingPresets?: boolean, createError?: Error, followupError?: Error }} [options] - 夹具选项
  * @returns {object} 上下文与记录
  */
-function createFixture({ missingAgents = false, missingModel = false, missingPresets = false, brokenPresets = false, createError, followupError } = {}) {
+function createFixture({ missingAgents = false, missingModel = false, missingPresets = false, brokenPresets = false, missingProjections = false, brokenProjections = false, createError, followupError } = {}) {
   const created = []
   const resumed = []
   /** 每次冷恢复传给 `agents.resume` 的完整 options */
@@ -99,7 +99,8 @@ function createFixture({ missingAgents = false, missingModel = false, missingPre
       }
       // 冷恢复的 preset 从会话投影读（rc.2 的 registry 也走这条路）。投影值与
       // 默认 id 故意不同，否则用例区分不出「读了投影」和「用了默认」。
-      if (key === 'sessionProjections') {
+      if (key === 'sessionProjections' && brokenProjections) return {}
+      if (key === 'sessionProjections' && !missingProjections) {
         return {
           stateOf: (session, name) => (name === 'agentPreset' ? 'custom' : null),
         }
@@ -285,6 +286,43 @@ test('冷恢复也挂 agent preset：新作用域不会自己带着 preset 回�
   assert.deepEqual(fixture.mounts, [agentCtx])
   // 读的是会话投影里记的 preset（'custom'），不是默认的 'standard'
   assert.deepEqual(fixture.mountIds, ['custom'])
+})
+
+test('冷恢复缺投影服务时记一行日志，再用默认 preset', async () => {
+  const fixture = createFixture({ missingProjections: true })
+  const lines = []
+  const sessions = createWorkerSessions({ ctx: fixture.ctx, logger: (line) => lines.push(line) })
+
+  await sessions.send({
+    sessionId: 'worker-1',
+    text: '继续',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+  const setup = fixture.resumeOptions[0].setup
+  await setup({ scope: 'resumed' }, { session: { id: 'worker-1' } })
+
+  // 缺投影服务时只能用默认 preset，但「用户换过的 preset 丢了」必须留痕
+  assert.deepEqual(fixture.mountIds, [undefined])
+  assert.match(lines.at(-1), /没有 sessionProjections 服务/)
+})
+
+test('投影服务缺 stateOf() 时抛错，不静默用默认', async () => {
+  const fixture = createFixture({ brokenProjections: true })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.send({
+    sessionId: 'worker-1',
+    text: '继续',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+  const setup = fixture.resumeOptions[0].setup
+
+  await assert.rejects(
+    () => setup({ scope: 'resumed' }, { session: { id: 'worker-1' } }),
+    /缺少 stateOf\(\)/,
+  )
 })
 
 test('没有 cwd 时不给宿主塞空的 cwd 键', async () => {
