@@ -20,6 +20,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { agentPresetSetup } from './agent-preset.js'
 import { createUserMessage } from './message.js'
 
 /**
@@ -193,6 +194,9 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
           sessionId,
           signal,
           ...agentOptionsFromDefaults(),
+          // 不挂 preset 就没有 bash / read：内建工具在 preset 组合里，只有
+          // `sessionController.create` 会替调用方挂，worker 得自己挂。
+          ...agentPresetSetup(ctx),
           ...cwd === undefined ? {} : { meta: { cwd } },
         })
       } catch (error) {
@@ -232,7 +236,8 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
         if (agents === undefined) {
           throw new Error('dsh-coordinator: 当前组合未启用 agents 服务，无法唤醒 worker 会话')
         }
-        handle = await agents.resume({ resumeSessionId: sessionId, signal })
+        // 冷恢复建的是新的作用域，preset 组合不会自己回来，和新建一样要挂。
+        handle = await agents.resume({ resumeSessionId: sessionId, signal, ...agentPresetSetup(ctx) })
         live.set(sessionId, handle)
         workerIds.add(sessionId)
       }

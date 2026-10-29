@@ -333,6 +333,21 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ---
 
+### 38. 内建工具挂在 agent preset 组合里，只有 `sessionController.create` 会替调用方挂
+
+**目标形态**：自己用 `agents.create` 建的根会话（本 bundle 的 worker）能拿到 `bash` / `read` / `write` 这些内建工具。
+
+**dsh 实测**（`0.2.1-rc.2`）：
+
+- `bash`、`read` 等工具由 `@deepseek-ai/dsh-tool-*` 提供，按 **agent preset** 的组合挂载（`packages/bundle/web-app/presets/standard.patch.yml` 里逐条 `- id: tool-bash` / `tool-read`）。没有 preset 层的会话只有全局注册的工具。
+- 挂载只发生在 `sessionController.create()` 的 `composeAgent()` 里：`presets.resolve(id)` 之后以 `setup: agentCtx => presets.mount(agentCtx, resolvedId)` 交给宿主（`packages/api/session-controller/src/agent.ts`）。
+- `agents.create({ sessionId, setup })` 接受 `setup`，但**不会**自己解析或挂 preset；不传 `setup` 的会话，工具面里没有这些内建工具。
+- `agentPresets.mount(ctx, id?)` 在 rc.2 就有（`packages/preset/agent-preset-registry/src/index.ts`），省略 id 用 `defaultId`。
+
+**影响**：绕开 `sessionController` 建会话时（本 bundle 为了 worker 常驻与冷恢复必须走 `agents.create`），必须自己把 `agentPresets.mount(agentCtx)` 塞进 `setup`。漏了三处都中招：建 worker、冷恢复 worker、没有 `sessionController` 时建协调者——症状统一为「会话能建起来，但模型没有 bash / read，连 `pwd` 都跑不了」。
+
+---
+
 ## 四、工具级（已验证可用，无缺口）
 
 表里的工具名反映实测当时的版本：项目注册表工具（`add_project` 等）与 `init_project` 已在后续版本删除，项目改由左栏区块操作、初始化改为纯 skill；这些行保留为宿主能力的实测证据。

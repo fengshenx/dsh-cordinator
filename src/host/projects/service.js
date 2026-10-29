@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
+import { agentPresetSetup } from '../agent-preset.js'
 import { createCanonicalizer, groupSessionsByProject } from './session-index.js'
 import { MAX_PROJECT_NAME_LENGTH } from '../../shared/projects.js'
 
@@ -753,6 +754,7 @@ export async function createCoordinatorSessionWithCtx(ctx, directory, sessionId)
     throw new Error('当前组合既没有 sessionController 也没有 agents 服务，无法建立协调者会话')
   }
   const defaults = ctx.get('agentDefaultModel')
+  // 和 worker 同理：`agents.create` 不挂 preset，不挂就没有 bash / read。
   const handle = await agents.create({
     sessionId,
     ...defaults === undefined
@@ -764,6 +766,7 @@ export async function createCoordinatorSessionWithCtx(ctx, directory, sessionId)
             get reasoningEffort() { return defaults.currentSelection().reasoningEffort },
           },
         },
+    ...agentPresetSetup(ctx),
     meta: { cwd: directory },
   })
   return handle?.agent?.id ?? sessionId

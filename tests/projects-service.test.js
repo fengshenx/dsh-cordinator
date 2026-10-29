@@ -70,6 +70,34 @@ function createSessionFactory({ fail = false, onCreate } = {}) {
   return factory
 }
 
+test('没有 sessionController 时也挂 agent preset：否则协调者没有 bash / read', async () => {
+  const mounts = []
+  let captured
+  const ctx = {
+    get: (name) => {
+      if (name === 'agents') {
+        return {
+          async create(options) {
+            captured = options
+            return { agent: { id: options.sessionId } }
+          },
+        }
+      }
+      if (name === 'agentPresets') {
+        return { async mount(agentCtx) { mounts.push(agentCtx) } }
+      }
+      return undefined
+    },
+  }
+
+  const sessionId = await createCoordinatorSessionWithCtx(ctx, '/repo', 'session-x')
+  assert.equal(sessionId, 'session-x')
+  assert.equal(typeof captured.setup, 'function')
+  const agentCtx = { scope: 'coordinator' }
+  await captured.setup(agentCtx)
+  assert.deepEqual(mounts, [agentCtx])
+})
+
 test('建项目会建协调者会话并绑定', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })

@@ -12,13 +12,15 @@ import { createWorkerSessions } from '../src/host/worker-sessions.js'
 /**
  * 造一个假的宿主上下文：记录建/恢复/投递/销毁。
  *
- * @param {{ missingAgents?: boolean, missingModel?: boolean, createError?: Error, followupError?: Error }} [options] - 夹具选项
+ * @param {{ missingAgents?: boolean, missingModel?: boolean, missingPresets?: boolean, createError?: Error, followupError?: Error }} [options] - 夹具选项
  * @returns {object} 上下文与记录
  */
-function createFixture({ missingAgents = false, missingModel = false, createError, followupError } = {}) {
+function createFixture({ missingAgents = false, missingModel = false, missingPresets = false, createError, followupError } = {}) {
   const created = []
   const resumed = []
   const titles = []
+  /** 被挂上 agent preset 的作用域，按调用顺序 */
+  const mounts = []
   /** 传给 `agents.create` 的会话 id，含没建成的那些 */
   const requested = []
   let sequence = 0
@@ -77,10 +79,17 @@ function createFixture({ missingAgents = false, missingModel = false, createErro
           },
         }
       }
+      if (key === 'agentPresets' && !missingPresets) {
+        return {
+          async mount(agentCtx) {
+            mounts.push(agentCtx)
+          },
+        }
+      }
       return undefined
     },
   }
-  return { ctx, created, resumed, titles, requested }
+  return { ctx, created, resumed, titles, requested, mounts }
 }
 
 test('建会话时用带前缀的会话 id，并把任务简报即刻投进去', async () => {
@@ -151,6 +160,58 @@ test('没有默认模型服务时不塞空的 agentOptions', async () => {
   })
 
   assert.equal('agentOptions' in fixture.created[0].options, false)
+})
+
+test('建会话时挂默认 agent preset：不挂就没有 bash / read', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  // 宿主把内建工具挂在 preset 组合里，只有 sessionController 会替调用方挂；
+  // 走 agents.create 的会话必须自己给 setup。
+  const setup = fixture.created[0].options.setup
+  assert.equal(typeof setup, 'function')
+  const agentCtx = { scope: 'worker' }
+  await setup(agentCtx)
+  assert.deepEqual(fixture.mounts, [agentCtx])
+})
+
+test('组合里没有 agent preset 服务时不传 setup', async () => {
+  const fixture = createFixture({ missingPresets: true })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  assert.equal('setup' in fixture.created[0].options, false)
+})
+
+test('冷恢复也挂 agent preset：新作用域不会自己带着 preset 回来', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.send({
+    sessionId: 'worker-1',
+    text: '继续',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  const setup = fixture.created[0].options.setup
+  assert.equal(typeof setup, 'function')
+  const agentCtx = { scope: 'resumed' }
+  await setup(agentCtx)
+  assert.deepEqual(fixture.mounts, [agentCtx])
 })
 
 test('没有 cwd 时不给宿主塞空的 meta', async () => {
