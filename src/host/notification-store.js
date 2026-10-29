@@ -102,12 +102,18 @@ export function createNotificationStore({ home, logger = () => {} } = {}) {
 
     /**
      * 追加一条待投递通知。
+     *
+     * 按 `id` 幂等：同一轮的通知在落盘失败重试、投递失败后重结算时都带同一个
+     * `note-<child>-<startedAt>`，重复入队会让父会话被同一任务唤醒两次，第二条
+     * 还可能是新一轮的内容被误标成这一轮。
+     *
      * @param {object} notification - 通知记录
      * @returns {Promise<void>} 落盘完成
      */
     enqueue(notification) {
       return serialize(async () => {
         const queue = await read()
+        if (queue.pending.some((item) => item.id === notification.id)) return
         queue.pending.push(notification)
         await write(queue)
       })

@@ -331,14 +331,14 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：同进程内「先建会话、再登记身份」的顺序一定裁错档，且裁错的限制不会自己松开（要等该会话下次冷恢复重算）。绕法只有两条：让身份先于会话存在（预生成 `sessionId` 先登记，本仓采用），或保存 `restrict()` 的 disposer + `ctx.agents.get()` 事后重裁（多三个不确定点，还得赌重裁早于首轮请求组装）。前者是唯一不需要事后纠正的做法。
 
-### 38. 轮次结束只有一个信号（`session/event` 的 `turn/end`），产出要自己从 `assistant/message` 折叠
+### 39. 轮次结束只有一个信号（`session/event` 的 `turn/end`），产出要自己从 `assistant/message` 折叠
 
 **目标形态**：worker 那一轮结束时由机制侧取产出并回报，不要求模型调用任何「报告完成」的工具。
 
 **dsh 实测**（`0.2.1-rc.2`）：
 
 - `session/event` 是公开 emit 事件，回调收到 `(session, event)`，`event` 是完整的 `SessionEvent`（`{ type, seq, time, data }`，声明在 `packages/core/session/src/index.ts:76`）。宿主自己的 `agent-loop`、`token-meter`、`agent-instructions`、`agent-team` 等都在订阅它——仓外插件同样可用（第 8 条只禁**新增**事件类型）。
-- `turn/end` 是真正的 session event（`packages/core/session/src/known-event-types.ts:79`），由 agent-loop 在 `finally` 里 append，payload 是 `{ turn, reason }`。`reason.kind` ∈ `completed` / `aborted` / `blocked` / `error` / `max-tokens` / `interrupted`（`packages/core/session/src/types.ts:206-237`），可直接当终态判据。
+- `turn/end` 是真正的 session event（`packages/core/session/src/known-event-types.ts:79`），由 agent-loop 在 `finally` 里 append，payload 是 `{ turn, reason }`。`reason.kind` ∈ `completed` / `aborted` / `blocked` / `error` / `max-tokens` / `interrupted` / `forked`（`packages/core/session/src/types.ts:206-237`；`forked` 是 fork seed 关闭未结束的 turn 时用的），可直接当终态判据。
 - 一个 turn 是 `agent.run()` 的一次调用，内部含多个 step（`packages/core/agent-loop/src/agent.ts:336-422`），所以「一次派工 = 一个 `turn/end`」。轮次内的 assistant 文本在 `assistant/message` 事件里（`data.message.content` 是块数组），同一 turn 有多条，取最后一条非空即可。
 - 宿主 subagent 就是这么做的：`captureLocalResult()` 用 `finalAssistantOutput(events)` + `epochStopReason(events)` 从会话事件折叠产出与 stopReason（`packages/subagent/subagent/src/activation.ts:154`）。但那是内部包导出，仓外插件不能依赖——同样的折叠要自己写，量很小（文本块拼接 + `turn/end.reason` 映射）。
 

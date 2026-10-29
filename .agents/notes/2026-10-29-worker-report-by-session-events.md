@@ -1,7 +1,7 @@
 # worker 的完成回报由机制侧从会话事件结算
 
 **状态**：implemented（2026-10-29）
-**范围**：`src/host/dispatch.js`、`src/host/tools/gate.js`、`src/host/tools/worker-done.js`（删除）、`src/host/index.js`、`skills/coordinator-mode/`、`README.md`、`docs/capability-gaps.md`、测试
+**范围**：`src/host/dispatch.js`、`src/host/notification-store.js`、`src/host/tools/gate.js`、`src/host/tools/worker-done.js`（删除）、`src/host/index.js`、`skills/coordinator-mode/`、`README.md`、`docs/capability-gaps.md`、测试
 
 ## 背景
 
@@ -24,11 +24,13 @@
 
 ## 边界
 
-- **订阅不可缺**：`createDispatcher` 装配期检查 `ctx.on`，缺失直接抛错。否则会得到一个「协调者永远等不到回报」的运行态，比装配失败难查得多。
+- **订阅是版本契约，不是装配期能力探测**：cordis 的 `Context` 永远有 `on`（返回 disposer），所以探测 `typeof ctx.on` 在哪个宿主上都不会触发；`engines.dsh` 下限 rc.2 已提供 `session/event` 与 `turn/end`，低于下限的宿主只会静默订阅一个没人 emit 的名字。这是版本契约问题，写在 `engines.dsh` 里，不在装配期判定。
 - **结算绑在 `turn/end`**：进程在轮次结束前被杀，那一轮就不结算（在飞表在内存里，重启即空）。这是用机制换来的确定性代价——相比「模型漏调」，它只在进程崩溃时发生，而且重启后人能看到 worker 会话还在。
-- **落盘失败保留在飞记录**：`reportDone` 抛出时不删记录、不删已攒的文本，该 worker 下一轮结束时再结算一次。`turn/end` 只来一次，所以这里不能像工具式回报那样「等 worker 再报一次」。
+- **落盘即结算成功，摘要冻结进记录**：第一次结算就把摘要与终态写进在飞记录；`enqueue` 成功后才删记录。落盘失败时记录与冻结的摘要都还在，该 worker 下一轮结束时重试**这一轮**的内容——下一轮的 `assistant/message` 只会覆盖新轮次的文本，不会改写已冻结的摘要。投递（`followup` / `markDelivered`）失败不撤销结算：通知已经落盘，重复结算会再唤醒父会话一次，第二条还可能是新一轮产物被误标成这一轮。
+- **通知按 id 幂等**：`note-<child>-<startedAt>` 在同一次结算里稳定，`enqueue` 按 id 去重，重试不会多出一条。
 - **同一轮只结算一次**：结算即从 `inflight` 删除，后续 `turn/end` 可得 `false`（inbox 还有消息时会连着跑多个 turn，每个都会触发一次 `turn/end`）。
+- **只给在飞会话攒文本**：`assistant/message` 的采集判据是「`inflight` 有记录」。它守的是两件事：不给全进程每个会话攒文本（内存收敛），以及不把人在 worker 会话里自己聊的内容当成派工产物——人那一轮的文本若被攒下来，紧跟着的派工轮在没产出文本时就会误用它当摘要。
 - **不能依赖宿主的 `finalAssistantOutput`**：那是内部包导出，本仓对 dsh 没有依赖（peer 依赖禁令）。折叠逻辑自己写，量只有「拼 text 块 + 映射 `reason.kind`」。
 - **摘要取不到时的兜底**：这一轮只调了工具没说话时文本为空，通知正文如实写「（worker 未产出文本）」，不编造。
 
-宿主侧的能力事实见 [能力第 38 条](../../docs/capability-gaps.md)。
+宿主侧的能力事实见 [能力第 39 条](../../docs/capability-gaps.md)。

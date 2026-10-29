@@ -13,7 +13,7 @@ dsh 原生的 subagent 工具是阻塞式：父 agent 调工具 → 子 agent �
 
 > **2026-10-29 修订**：这条已被推翻。subagent 结算即销毁、界面上只读，worker 既不能常驻也不能由人下钻对话。派工改走 `ctx.agents.create()` 建普通根会话。理由与新机制见 [worker 常驻化与交作业](2026-10-29-worker-as-root-session.md)；本文件其余决策（唤醒走 `followup`、通知先落盘、队列串行化、服务惰性获取）仍然有效。
 >
-> **同日再修订**：完成信号最终不是由 worker 调工具上报，而是 `dispatch.js` 订阅 `session/event`、在 `turn/end` 时折叠产出。原计划的机制方向（结算由机制侧做）复活了，只是入口从 `activation.result` 换成了会话事件（见能力第 38 条）。
+> **同日再修订**：完成信号最终不是由 worker 调工具上报，而是 `dispatch.js` 订阅 `session/event`、在 `turn/end` 时折叠产出。原计划的机制方向（结算由机制侧做）复活了，只是入口从 `activation.result` 换成了会话事件（见能力第 39 条）。
 
 **唤醒走 `agent.followup()`**——dsh 唯一能开新 turn 的入口。实测推翻了此前的判断：唤醒失败的真因不是 inbox 投影未注册，而是**父会话已被销毁**（headless 一次性 CLI 在 turn 结束后 dispose 会话）。只要父会话存活，对空闲 agent 调 `followup()` 就能可靠唤醒。
 

@@ -402,10 +402,14 @@ export function createDispatcher({
   }
 
   /**
-   * 落盘一条完成通知并投递。首轮与续聊轮共用：通知形态、投递时机、护栏都一样。
+   * 落盘一条完成通知。首轮与续聊轮共用：通知形态、投递时机、护栏都一样。
+   *
+   * 落盘与投递分开：落盘是结算的判据（写进队列就再也不会丢），投递失败的通知
+   * 留在队列里由空闲检测或补投通道处理。
+   *
    * @param {object} record - 通知记录源（首轮派工记录或续聊登记）
    * @param {{ ok: boolean, result?: object, error?: unknown }} outcome - 终态
-   * @returns {Promise<void>} 处理完成
+   * @returns {Promise<object>} 已落盘的通知记录
    */
   async function emitNotification(record, outcome) {
     const text = buildNotificationText(record, outcome)
@@ -422,7 +426,7 @@ export function createDispatcher({
       attempts: 0,
     }
     await store.enqueue(notification)
-    await deliver(notification, record.parent)
+    return notification
   }
 
   /**
@@ -615,8 +619,10 @@ export function createDispatcher({
    */
   function describeTurnFailure(reason) {
     switch (reason?.kind) {
-      case 'aborted': return `被取消：${reason.reason ?? '未说明原因'}`
-      case 'blocked': return '被阻断：这一轮需要审批或权限，没能开始'
+      // `aborted.reason` 是对象（`{ kind: 'user' | 'parent' | 'hook' | … }`），
+      // 直接插值会渲染成 `[object Object]`——给协调者看的就是这句原因。
+      case 'aborted': return `被取消：${reason.reason?.kind ?? '未说明原因'}`
+      case 'blocked': return '被阻断：这一轮被宿主拦下，没有开始'
       case 'max-tokens': return '输出达到 token 上限，这一轮没有正常收尾'
       case 'error': return `失败：${reason.error?.message ?? '未知错误'}`
       default: return `这一轮没有正常结束（${reason?.kind ?? '未知原因'}）`
@@ -625,6 +631,9 @@ export function createDispatcher({
 
   /**
    * 结算一个 worker 的轮次：把这一轮的产物或失败原因交给协调者。
+   *
+   * 产出取这一轮的 `assistant/message`，终态取 `turn/end` 的 `reason`——与宿主
+   * subagent 的 `captureLocalResult()` 同源，不依赖 worker 主动交付。
    *
    * @param {string} sessionId - worker 会话 id
    * @param {object} reason - `turn/end` 的 `reason`
@@ -636,17 +645,31 @@ export function createDispatcher({
       turnText.delete(sessionId)
       return false
     }
-    const text = turnText.get(sessionId) ?? ''
-    const completed = reason?.kind === 'completed'
-    const settled = await reportDone({
-      sessionId,
-      summary: completed ? text : describeTurnFailure(reason),
-      outcome: completed ? 'completed' : 'failed',
-    })
-    // 落盘失败时 `reportDone` 抛出，此时记录与文本都还在：这个 worker 下一轮结束时
-    // 会再结算一次。turn/end 只会来一次，所以不在这里丢掉这一轮的产出。
-    if (settled) turnText.delete(sessionId)
-    return settled
+    // 摘要与终态在第一次结算时冻结进记录：落盘失败后下一轮结束时重试的必须是
+    // **这一轮**的产物，不能被下一轮的 assistant 文本覆盖。
+    if (record.summary === undefined) {
+      record.outcome = reason?.kind === 'completed' ? 'completed' : 'failed'
+      record.summary = record.outcome === 'completed'
+        ? turnText.get(sessionId) ?? ''
+        : describeTurnFailure(reason)
+    }
+    const judged = record.outcome === 'completed'
+      ? { ok: true, result: { stopReason: 'completed', output: [{ type: 'text', text: record.summary }] } }
+      : { ok: false, error: new Error(record.summary) }
+    // 落盘即结算成功：通知进了队列就不会丢。落盘失败时记录（连同冻结的摘要）
+    // 还在，这个 worker 下一轮结束时再结算同一份内容；`enqueue` 按 id 幂等，
+    // 重试不会多出一条通知。
+    const notification = await emitNotification(record, judged)
+    inflight.delete(sessionId)
+    turnText.delete(sessionId)
+    try {
+      await deliver(notification, record.parent)
+    } catch (error) {
+      // 已经落盘：投递失败留给空闲检测与补投通道，一次 IO 抖动不能让这一轮
+      // 重结算一遍（那会再唤醒父会话一次，且第二条正文是新一轮的产物）。
+      logger(`dsh-coordinator: 投递 worker ${sessionId} 的完成通知失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+    return true
   }
 
   /**
@@ -678,37 +701,10 @@ export function createDispatcher({
     })
   }
 
-  // 没有事件通道就无从替 worker 结算——装配期报错，不留一个「协调者永远等不到
-  // 回报」的运行时状态。
-  if (typeof ctx?.on !== 'function') {
-    throw new Error('dsh-coordinator: createDispatcher 缺少 ctx.on，无法订阅会话事件结算 worker 回报')
-  }
+  // cordis 的 Context 永远有 `on`（返回 disposer），所以这里不做出厂能力探测：
+  // 订阅不到事件只可能是宿主低于 `engines.dsh` 下限（rc.2 已提供 `session/event`
+  // 与 `turn/end`），那是版本契约问题，不是装配期能判定的事。
   const stopTurns = ctx.on('session/event', (session, event) => observeTurn(session, event))
-
-  /**
-   * worker 一轮结束时的结算入口。
-   *
-   * 产出取这一轮的 `assistant/message`，终态取 `turn/end` 的 `reason`——与宿主
-   * subagent 的 `captureLocalResult()` 同源，不依赖 worker 主动交付。
-   *
-   * @param {object} options - 结算参数
-   * @param {string} options.sessionId - worker 会话 id
-   * @param {string} options.summary - 产物摘要（或失败原因）
-   * @param {'completed' | 'failed'} [options.outcome] - 终态
-   * @returns {Promise<boolean>} 是否确实结算了一条在飞的派工/续聊
-   */
-  async function reportDone({ sessionId, summary, outcome = 'completed' }) {
-    const record = inflight.get(sessionId)
-    if (record === undefined) return false
-    const judged = outcome === 'completed'
-      ? { ok: true, result: { output: [{ type: 'text', text: summary }] } }
-      : { ok: false, error: new Error(summary) }
-    // 先落盘再删在飞记录：落盘失败时记录还在，worker 再报一次就能重试；先删的话
-    // 通知直接丢掉，没有任何回收入口，而协调者还在等这一轮的回报。
-    await emitNotification(record, judged)
-    inflight.delete(sessionId)
-    return true
-  }
 
   return {
     dispatch,

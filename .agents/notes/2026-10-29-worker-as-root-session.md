@@ -30,7 +30,7 @@
 > `worker_done` 工具删除，`WORKER_ONLY_TOOLS` 随之消失，协议层「每轮必须调一次」的
 > 要求一并撤掉——回报不再占工具面，也不再依赖模型自律。下两段的「依赖 worker 真的
 > 去调」这条代价随之消失，其余判断（人直聊不结算、登记集合、归档连带销毁、官方树
-> 排除）仍然有效。细节见 [能力第 38 条](../../docs/capability-gaps.md)。
+> 排除）仍然有效。细节见 [能力第 39 条](../../docs/capability-gaps.md)。
 
 **完成信号改由 worker 自报（`worker_done` 工具）**。根会话没有 `activation.result` 那样的终态 promise；宿主也没给第三方留「读最后一轮产出」的稳定 API（`Session.snapshotEvents` 已标废弃，`sessionQuery.observeSession()` 只返回会话头）。让 worker 收尾时自己调 `worker_done({ summary, outcome })`，派工器据此结算并唤醒协调者——与宿主完成回调等价，而且谁调的、报了什么都在会话历史里可查。
 

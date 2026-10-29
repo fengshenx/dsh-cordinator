@@ -21,7 +21,7 @@ import {
  */
 function makeAgent(id, registered = [
   'list_agents', 'send_message', 'interrupt_agent', 'read', 'write',
-  'worker_done', 'spawn_worker', 'message_worker', 'list_cards',
+  'spawn_worker', 'message_worker', 'list_cards',
 ]) {
   const restrictions = []
   const names = new Set(registered)
@@ -114,8 +114,8 @@ test('三件宿主工具改由 preset 子树注册时仍然被 deny', () => {
     isWorkerSession: () => false,
   })
 
-  assert.deepEqual(denied, [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS])
-  assert.deepEqual(coordinator.restrictions, [{ deny: [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS] }])
+  assert.deepEqual(denied, [...COORDINATOR_UNUSABLE_TOOLS])
+  assert.deepEqual(coordinator.restrictions, [{ deny: [...COORDINATOR_UNUSABLE_TOOLS] }])
 })
 
 test('restrict 抛的不是「未知工具名」时照常抛出，不吞装配错误', () => {
@@ -136,7 +136,7 @@ test('restrict 抛的不是「未知工具名」时照常抛出，不吞装配�
 
 test('宿主没装 subagent 控制工具时跳过那三件，不拿未注册的工具名去 restrict', () => {
   // `restrict()` 对没注册过的全局工具名直接报错，而这三件来自可被禁用的宿主组合。
-  const coordinator = makeAgent('c', ['read', 'write', 'worker_done', 'spawn_worker', 'message_worker', 'list_cards'])
+  const coordinator = makeAgent('c', ['read', 'write', 'spawn_worker', 'message_worker', 'list_cards'])
   const denied = applyToolGate({
     agent: coordinator,
     isCoordinatorSession: (id) => id === 'c',
