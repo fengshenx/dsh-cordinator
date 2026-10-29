@@ -73,7 +73,8 @@ export const CARD_SIGNALS = Object.freeze([
  * 失败信息——宿主没有在会话状态里带失败原因，那一项只能从会话快照取。
  *
  * 宿主给出运行态但它还没建立基线（`running` 为 `undefined`）时，状态判为未知：
- * 快照里的 `running` 对 subagent 子会话是列表兜底值，据此说「空闲」是撒谎。
+ * 快照里的 `running` 对列表兜底出来的会话（如历史 subagent 时代的 worker）只是
+ * 兜底值，据此说「空闲」是撒谎。
  *
  * @param {object|undefined} status - 宿主会话状态
  * @param {object|undefined} snapshot - 保留会话的快照状态

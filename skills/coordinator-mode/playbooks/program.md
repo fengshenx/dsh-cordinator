@@ -22,7 +22,7 @@
 
 worker 是常驻根会话，人可以在项目树里打开它直接下钻对话。**人自己聊的那几轮你要当没发生**：它不会调 `worker_done`、也不会唤醒你；除非用户回来让你接着推进，否则不要凭猜测去追问它在聊什么。
 
-worker 的一切交互只有 `spawn_worker` 与 `message_worker` 两个入口。宿主的 `list_agents` / `send_message` / `interrupt_agent` 只认宿主 subagent 体系：我们的 worker 是普通根会话，不在它们的子会话名录里，传话与中止都落不到它身上——`interrupt_agent` 尤其危险，它对找不到的目标静默返回成功，你不会知道它没生效。worker 卡住时只能请人去那个会话里处理。宿主另有同伴模型的一套同名工具，按成员名寻址，与本流程的 worker 不是同一批，同样不要混用。
+worker 的一切交互只有 `spawn_worker` 与 `message_worker` 两个入口。宿主的 `list_agents` / `send_message` / `interrupt_agent` 只认宿主 subagent 体系：我们的 worker 是普通根会话，不在它们的子会话名录里，传话与中止都落不到它身上（这三件已从你的工具面摘掉）。worker 卡住时只能请人去那个会话里处理。宿主另有同伴模型的一套同名工具，按成员名寻址，与本流程的 worker 不是同一批，同样不要混用。
 
 worker 的产物摘要在完成通知里，不需要轮询查询。通知缺失、截断或需要深挖时，用 `message_worker` 向该 worker 追问，它会被唤醒并回话。
 

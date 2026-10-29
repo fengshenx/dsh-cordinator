@@ -63,7 +63,7 @@ bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ct
 
 **worker 不走宿主的三件 subagent 控制工具**：`list_agents` 只列 subagent 目录里的子会话（worker 是根会话，列表里没有它）；`send_message` 要校验子会话的 `parentSession` 血统（worker 没有，走不通）；`interrupt_agent` 找不到目标时**静默返回成功**——拿它当中止手段会得到一个假回执。worker 的一切交互只经 `spawn_worker` 与 `message_worker`。
 
-**工具面按角色分配**（会话创建时裁剪，不是靠参数隐藏）：协调者拿到全部工具但没有 `worker_done`（它不是在干活的那个，调它只会指向不存在的派工记录）；普通会话既没有 `spawn_worker` / `message_worker` / `list_cards`（它连项目都没进，看不到项目里有哪些卡，也不该派工），也没有 `worker_done`；worker 再少掉 `list_projects` / `add_project` / `switch_project` / `remove_project` / `init_project`（它派工时已经拿到目录与任务，改项目表只会制造并发写）。`create_card` / `update_card` 对所有会话开放——worker 边干活边把状态写回卡片。
+**工具面按角色分配**（会话创建时裁剪，不是靠参数隐藏）：协调者拿到全部工具但没有 `worker_done`（它不是在干活的那个，调它只会指向不存在的派工记录），也没有 `list_agents` / `send_message` / `interrupt_agent`（下面一段解释了它们为什么对 worker 无效——从工具面直接摘掉，模型就不会照描述去用一个拿不到效果的东西）；普通会话既没有 `spawn_worker` / `message_worker` / `list_cards`（它连项目都没进，看不到项目里有哪些卡，也不该派工），也没有 `worker_done`；worker 再少掉 `list_projects` / `add_project` / `switch_project` / `remove_project` / `init_project`（它派工时已经拿到目录与任务，改项目表只会制造并发写）。`create_card` / `update_card` 对所有会话开放——worker 边干活边把状态写回卡片。普通会话保留那三件宿主工具：它可能真的用官方 subagent，那时它们是有效的。
 
 dsh 另有一套同名的同伴模型工具（`tool-agent-team`，experimental，base bundle 未启用），按 teammate 名字寻址，与本流程的 worker 不是同一批，不要混用。
 

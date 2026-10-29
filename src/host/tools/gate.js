@@ -38,18 +38,35 @@ export const WORKER_ONLY_TOOLS = Object.freeze([
 ])
 
 /**
+ * 协调者不该看到的三件宿主工具：它们只作用在 subagent 体系上。
+ *
+ * 协调者的 worker 由本 bundle 用 `agents.create` 建成普通根会话，因此在宿主那三
+ * 件工具里都不是合法目标——`list_agents` 列不到、`send_message` 过不了血统校验、
+ * `interrupt_agent` 找不到目标却仍返回成功。留着它们只会让模型照描述去用，拿到
+ * 一个假回执（中止尤其危险：以为停了，其实还在跑）。协议层也写了不要用，这里是
+ * 从工具面结构上消除诱因。
+ *
+ * 只裁协调者：普通会话可能真的用官方 subagent，那时这三件是有效的。
+ */
+export const COORDINATOR_UNUSABLE_TOOLS = Object.freeze([
+  'list_agents',
+  'send_message',
+  'interrupt_agent',
+])
+
+/**
  * 算出某个会话要禁掉的工具名。
  *
  * @param {object} options - 选项
  * @param {object} options.agent - 即将开始工作的 agent
  * @param {(sessionId: string) => boolean} options.isCoordinatorSession - 协调者判定
  * @param {(sessionId: string) => boolean} [options.isWorkerSession] - worker 判定
- * @returns {string[]} 要禁掉的工具名；协调者返回空数组
+ * @returns {string[]} 要禁掉的工具名
  */
 export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession }) {
   const worker = typeof isWorkerSession === 'function' && isWorkerSession(agent?.id) === true
   if (worker) return [...COORDINATOR_ONLY_TOOLS, ...WORKER_HIDDEN_TOOLS]
-  if (isCoordinatorSession(agent?.id)) return [...WORKER_ONLY_TOOLS]
+  if (isCoordinatorSession(agent?.id)) return [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS]
   return [...COORDINATOR_ONLY_TOOLS, ...WORKER_ONLY_TOOLS]
 }
 
@@ -58,6 +75,10 @@ export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
  *
  * 会话每次创建（含冷恢复）都会发 `agent/created`，这里跟着重算一次：作用域是
  * 新建的，上一次的限制不会留下。
+ *
+ * `COORDINATOR_UNUSABLE_TOOLS` 来自宿主的 subagent 组合，那个组合可以被部署禁用；
+ * 而 `restrict()` 遇到没注册过的名字会直接报错，所以只 deny 当前确实存在的。
+ * 本 bundle 自己注册的工具不走这一步——那些缺失是装配错误，应该大声报出来。
  *
  * @param {object} options - 选项
  * @param {object} options.agent - 刚创建的 agent
@@ -68,6 +89,9 @@ export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
 export function applyToolGate({ agent, isCoordinatorSession, isWorkerSession }) {
   const denied = deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
   if (denied.length === 0) return denied
-  agent.ctx.tools.restrict({ deny: denied })
-  return denied
+  const registered = new Set(agent.ctx.tools.definitions(agent).map((definition) => definition.name))
+  const present = denied.filter((name) => !COORDINATOR_UNUSABLE_TOOLS.includes(name) || registered.has(name))
+  if (present.length === 0) return present
+  agent.ctx.tools.restrict({ deny: present })
+  return present
 }

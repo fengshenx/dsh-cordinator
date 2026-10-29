@@ -158,6 +158,9 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
      *
      * 只摘记录，不调宿主 dispose：会话已经没了，再销毁一次是多余动作。
      *
+     * `workerIds` 故意保留：会话 id 不复用，留着「这个 id 曾是我的 worker」不会
+     * 误判（工具面照旧按 worker 裁），冷恢复时 `send` 会重新把它放回活表。
+     *
      * @param {string} sessionId - 会话 id
      * @returns {void}
      */
