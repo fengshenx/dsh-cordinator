@@ -47,17 +47,38 @@ export function isCoordinatorProject(project, sessionId) {
 }
 
 /**
- * 这个会话当前能不能看项目看板。
+ * 看板面板该显示什么。
  *
- * 是协调者还不够：协调者会话可能已被归档或替换，项目里的绑定不会因此自动改。
+ * 把「归属、协调者身份、协调者存活」三件事收敛成一个判定，面板的取卡条件与
+ * 展示分支都读它，避免两处守卫各写一套。
+ *
+ * - `no-project`：会话不属于任何项目；
+ * - `coordinator-dead`：项目在，但绑定的协调者会话已失效（归档或被替换）；
+ * - `not-viewable`：项目里能解析到，但当前会话不是协调者（worker / 普通会话）；
+ * - `coordinator`：当前会话就是该项目的协调者，可展示卡片。
+ *
  * `coordinatorAlive` 为 `undefined`（不知道）时按「还在」处理，不误报失效。
+ *
+ * @param {object | undefined} project - 项目摘要
+ * @param {string} sessionId - 当前面板所属会话
+ * @returns {'no-project' | 'coordinator-dead' | 'not-viewable' | 'coordinator'} 视图状态
+ */
+export function boardViewState(project, sessionId) {
+  if (project === undefined) return 'no-project'
+  if (project.coordinatorAlive === false) return 'coordinator-dead'
+  if (!isCoordinatorProject(project, sessionId)) return 'not-viewable'
+  return 'coordinator'
+}
+
+/**
+ * 这个会话当前能不能看项目看板。
  *
  * @param {object | undefined} project - 项目摘要
  * @param {string} sessionId - 当前面板所属会话
  * @returns {boolean} 是否可展示看板
  */
 export function isBoardViewable(project, sessionId) {
-  return isCoordinatorProject(project, sessionId) && project?.coordinatorAlive !== false
+  return boardViewState(project, sessionId) === 'coordinator'
 }
 
 /**

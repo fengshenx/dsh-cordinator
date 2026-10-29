@@ -28,8 +28,8 @@ import {
 } from './board-projection.js'
 import {
   BOARD_REFRESH_MS,
+  boardViewState,
   fetchBoardCards,
-  isBoardViewable,
   resolveProject,
   sameProjectSummary,
 } from './project-board-data.js'
@@ -355,7 +355,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   useEffect(() => {
     // 看板只对项目协调者开放：项目目录里的普通会话与 worker 也能解析到项目
     // （卡片归属要用），但这里不给它们取卡。协调者会话已失效时同样不取。
-    if (project === undefined || !isBoardViewable(project, sessionId)) return undefined
+    if (boardViewState(project, sessionId) !== 'coordinator') return undefined
     let cancelled = false
     const refresh = () => {
       fetchBoardCards(callRemote, project.id)
@@ -403,6 +403,9 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
 
   const openDetail = useCallback((card, anchor) => { setDetail({ card, anchor }) }, [])
 
+  // 取卡条件与下面的展示分支读同一个判定，避免两处守卫各写一套。
+  const view = boardViewState(project, sessionId)
+
   if (error !== null) {
     return createElement(
       'div',
@@ -413,7 +416,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
 
   // 会话不属于任何项目：没有项目看板可看。这不是错误状态，是「这里没有看板」。
   // 解析还没回来时先给骨架——早闪一句「不属于任何项目」是还没问完就下的结论。
-  if (project === undefined) {
+  if (view === 'no-project') {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
@@ -445,8 +448,8 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 属于项目但不是可看的协调者：拆两种出口——执行会话指路去协调者；协调者
   // 本身已失效（归档或被替换但绑定没改）时指路去左栏换新协调者，不把人指向
   // 一个打不开的会话。
-  if (!isBoardViewable(project, sessionId)) {
-    const coordinatorDead = project.coordinatorAlive === false
+  if (view === 'coordinator-dead' || view === 'not-viewable') {
+    const coordinatorDead = view === 'coordinator-dead'
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  boardViewState,
   fetchBoardCards,
   isBoardViewable,
   isCoordinatorProject,
@@ -31,6 +32,18 @@ test('看板只认项目协调者：worker 与同目录普通会话都不算', (
   assert.equal(isCoordinatorProject({ id: 'p1' }, 'coordinator-1'), false)
   assert.equal(isCoordinatorProject({ id: 'p1', coordinatorSessionId: '' }, ''), false)
   assert.equal(isCoordinatorProject(undefined, 'coordinator-1'), false)
+})
+
+test('看板视图状态：归属、身份与存活收敛成四种出口', () => {
+  const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  assert.equal(boardViewState(undefined, 'coordinator-1'), 'no-project')
+  // 协调者失效优先于身份：执行会话与旧协调者本人都该看到「去换新协调者」
+  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'coordinator-1'), 'coordinator-dead')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'worker-1'), 'coordinator-dead')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'worker-1'), 'not-viewable')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'coordinator-1'), 'coordinator')
+  // 存活状态未知按「还在」处理
+  assert.equal(boardViewState(base, 'coordinator-1'), 'coordinator')
 })
 
 test('看板可看性：协调者会话还得没失效', () => {
