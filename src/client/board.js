@@ -299,7 +299,10 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 不能先闪一句「不属于任何项目」——那是还没问完就下的结论。
   const [resolved, setResolved] = useState(false)
   const [cards, setCards] = useState(() => [])
-  const [error, setError] = useState(null)
+  // 两个错误源分开存：项目复核失败与卡片刷新失败各自有出口，否则一方成功
+  // 会把另一方的错误清掉，错误页闪进闪出且提示与真实原因不符。
+  const [projectError, setProjectError] = useState(null)
+  const [cardsError, setCardsError] = useState(null)
   const [loaded, setLoaded] = useState(false)
   const [detail, setDetail] = useState(null)
   const [doneOpen, setDoneOpen] = useState(false)
@@ -319,7 +322,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 身份与存活状态不能只在挂载时问一次。
   useEffect(() => {
     let cancelled = false
-    setError(null)
+    setProjectError(null)
     setResolved(false)
     // 换了会话就是换了项目，上一个项目的卡片不能留在面板里。
     setCards([])
@@ -331,11 +334,13 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
           // 摘要没变时保持旧引用：否则卡片取数的 effect 会跟着每 30 秒重启一次。
           setProject((previous) => (sameProjectSummary(previous, resolvedProject) ? previous : resolvedProject))
           setResolved(true)
-          setError(null)
+          setProjectError(null)
         })
         .catch((cause) => {
           if (cancelled) return
-          setError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
+          // 复核失败只在还没有摘要时才算错误；已有摘要就保留旧值——面板每 30 秒
+          // 复核一次，一次 RPC 抖动不该把已显示的看板打回错误页。
+          setProjectError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
         })
     }
     load()
@@ -365,12 +370,12 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
           setLoaded(true)
           // 成功就清掉上一次的错误：项目通道比面板晚就绪、或一次 RPC 抖动，
           // 都不该把面板判死在错误页上——2 秒轮询本来就是干这个的。
-          setError(null)
+          setCardsError(null)
         })
         .catch((cause) => {
           if (cancelled) return
           // 轮询失败保留已加载的卡片，只是把错误挂出来，不清空列表。
-          setError(`读取卡片失败：${cause instanceof Error ? cause.message : String(cause)}`)
+          setCardsError(`读取卡片失败：${cause instanceof Error ? cause.message : String(cause)}`)
         })
     }
     refresh()
@@ -406,11 +411,12 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 取卡条件与下面的展示分支读同一个判定，避免两处守卫各写一套。
   const view = boardViewState(project, sessionId)
 
-  if (error !== null) {
+  // 只有还没解析出项目时，项目错误才占满面板；已有摘要就让复核失败静默重试。
+  if (projectError !== null && project === undefined) {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-empty' },
-      createElement('div', { className: 'dsh-coordinator-board-empty-title' }, error),
+      createElement('div', { className: 'dsh-coordinator-board-empty-title' }, projectError),
     )
   }
 
@@ -469,6 +475,15 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
             : `这是「${project.name ?? '本项目'}」里的执行会话；去该项目的协调者会话查看交付看板。`,
         ),
       ),
+    )
+  }
+
+  // 首次取卡就失败才占满面板；已经有卡片时刷新失败只留着列表等下一轮。
+  if (cardsError !== null && cards.length === 0) {
+    return createElement(
+      'div',
+      { className: 'dsh-coordinator-board-empty' },
+      createElement('div', { className: 'dsh-coordinator-board-empty-title' }, cardsError),
     )
   }
 

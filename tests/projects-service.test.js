@@ -191,6 +191,29 @@ test('列表标注协调者会话是否还在', async () => {
   assert.equal(projects[1].coordinatorAlive, false)
 })
 
+test('归档的协调者会话按失效处理', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = makeService({
+    store,
+    // 归档只往工作区注册表里加 id，会话记录还在；存活判定不能只看会话是否存在
+    ctx: {
+      get: (name) => (name === 'workspaceRegistry'
+        ? { archivedSessionIds: ['session-1'] }
+        : undefined),
+    },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const created = await service.create({ directory: workspace, name: 'alpha' })
+  assert.equal(created.coordinatorSessionId, 'session-1')
+  const projects = await service.list()
+  assert.equal(projects[0].coordinatorAlive, false)
+  const resolved = await service.resolveProjectOfSession('session-1')
+  assert.equal(resolved.coordinatorAlive, false)
+})
+
 test('协调者索引在增删改后保持同步', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })

@@ -56,11 +56,13 @@ test('看板可看性：协调者会话还得没失效', () => {
   assert.equal(isBoardViewable(undefined, 'coordinator-1'), false)
 })
 
-test('项目摘要比较：协调者或存活状态变了才算变化', () => {
+test('项目摘要比较：名字、协调者或存活状态变了才算变化', () => {
   const base = { id: 'p1', coordinatorSessionId: 'c1', coordinatorAlive: true }
   assert.equal(sameProjectSummary(base, { ...base }), true)
   assert.equal(sameProjectSummary(base, { ...base, coordinatorAlive: false }), false)
   assert.equal(sameProjectSummary(base, { ...base, coordinatorSessionId: 'c2' }), false)
+  // 重命名也要算变化：否则看板上的项目名会一直停在旧值
+  assert.equal(sameProjectSummary(base, { ...base, name: '改名' }), false)
   assert.equal(sameProjectSummary(undefined, undefined), true)
   assert.equal(sameProjectSummary(undefined, base), false)
 })

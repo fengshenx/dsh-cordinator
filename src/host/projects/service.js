@@ -156,10 +156,38 @@ export function createProjectService({
   }
 
   /**
-   * 项目摘要：客户端拿它判定看板可见性，以及协调者会话是否还在。
+   * 协调者会话是否已被归档。
    *
-   * `coordinatorAlive` 与 `list()` 同口径；判定不出来时是 `undefined`（不知道），
-   * 客户端按「还在」处理，不把未知误报成失效。
+   * 归档只往工作区注册表的归档集合里加 id，不删会话记录；只看会话是否存在会把
+   * 归档的协调者当成还活着。
+   *
+   * @param {string} sessionId - 会话 id
+   * @returns {boolean} 已归档时 true
+   */
+  function isArchived(sessionId) {
+    const archived = ctx.get('workspaceRegistry')?.archivedSessionIds
+    return Array.isArray(archived) && archived.includes(sessionId)
+  }
+
+  /**
+   * 协调者会话是否还在。
+   *
+   * 存活 = 会话记录存在且未被归档。`undefined` 表示宿主没有会话查询后端（不知道），
+   * 调用方按「还在」处理，不把未知误报成失效。
+   *
+   * @param {string} sessionId - 会话 id
+   * @returns {Promise<boolean | undefined>} 是否还在
+   */
+  async function coordinatorAliveOf(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') return false
+    const exists = await coordinatorExists(sessionId)
+    if (exists === undefined) return undefined
+    if (!exists) return false
+    return !isArchived(sessionId)
+  }
+
+  /**
+   * 项目摘要：客户端拿它判定看板可见性，以及协调者会话是否还在。
    *
    * @param {object} project - 项目记录
    * @returns {Promise<object>} 项目摘要
@@ -170,7 +198,7 @@ export function createProjectService({
       name: project.name,
       directory: project.directory,
       coordinatorSessionId: project.coordinatorSessionId ?? '',
-      coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+      coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
     }
   }
 
@@ -346,7 +374,7 @@ export function createProjectService({
       const projects = await store.list()
       return Promise.all(projects.map(async (project) => ({
         ...project,
-        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
         workspaceId: recordedWorkspaceId(ctx, project),
       })))
@@ -470,7 +498,7 @@ export function createProjectService({
       if (project === undefined) return undefined
       return {
         ...project,
-        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
         workspaceId: recordedWorkspaceId(ctx, project),
       }
@@ -490,7 +518,7 @@ export function createProjectService({
       if (project === undefined) return undefined
       return {
         ...project,
-        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
         workspaceId: recordedWorkspaceId(ctx, project),
       }

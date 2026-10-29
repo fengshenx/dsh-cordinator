@@ -85,7 +85,8 @@ export function isBoardViewable(project, sessionId) {
  * 两份项目摘要是否描述同一个可展示状态。
  *
  * 面板每 30 秒复核一次项目：内容没变时保持旧对象引用，否则卡片取数的
- * effect 会跟着重启轮询。协调者或存活状态变了才算变化。
+ * effect 会跟着重启轮询。名字、协调者或存活状态变了才算变化——项目重命名后
+ * 看板空态与提示文案要跟着换。
  *
  * @param {object | undefined} left - 旧摘要
  * @param {object | undefined} right - 新摘要
@@ -95,6 +96,7 @@ export function sameProjectSummary(left, right) {
   if (left === right) return true
   if (left === undefined || right === undefined) return false
   return left.id === right.id
+    && left.name === right.name
     && left.coordinatorSessionId === right.coordinatorSessionId
     && left.coordinatorAlive === right.coordinatorAlive
 }
