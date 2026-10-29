@@ -72,7 +72,8 @@ npm run worktree:prune            # 清已合并的 worktree（默认只打印�
 ## 宿主契约要点
 
 - `tools.restrict({ deny })` 对**未注册的全局工具名直接抛错**，deny 之前先探存在性。
-- 工具面按会话角色裁剪，在 `agent/created` 上应用——每次创建与冷恢复都会重算。
+- 工具面按会话角色裁剪，在 `agent/created` 上应用——每次创建与冷恢复都会重算。那个事件在**建会话内部**就发出来了，所以「按身份分配工具面」的会话必须在建会话**之前**把身份登记好，晚一步就只能按默认档裁，且裁错的限制不会自己松开（`restrict()` 是追加，撤回要等下次冷恢复）。
+- 建会话的实现接受调用方传入的 `sessionId`（`sessionController.create({ sessionId })` 与 `agents.create({ sessionId })`），预生成 id 是让身份先于会话存在的唯一手段。
 - 仓外插件不能新增 session event 类型（capability-gaps 第 8 条），卡片与项目状态只能走独立存储域 + session projection。
 - client 产物不能用 `node:` 内置模块（第 23 条）。
 - `ctx.sessions.list()` 只返回 live session，从会话推导的列表会随重启漂移（第 21 条）。
