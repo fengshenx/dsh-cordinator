@@ -57,7 +57,9 @@ bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ct
 
 `spawn_worker` / `message_worker` / `worker_done` 这套接口是为「协调者派活、worker 交作业」设计的：会话由 `agents.create` 建，生命周期归本 bundle 管，不经 dsh 的 subagent 机制（subagent 结算即销毁，界面上还只读，既不能常驻也不能让人下钻对话）。
 
-`agents.create` 不会自己挂 **agent preset**，而 `bash` / `read` / `write` 这些内建工具就在 preset 组合里——建 worker 与冷恢复 worker 都要显式把 `agentPresets.mount()` 交给 `setup`，漏了 worker 就没有这些工具（见 [capability-gaps 第 38 条](docs/capability-gaps.md)）。
+`agents.create` 不会自己挂 **agent preset**，而内建工具（`bash` / `read` / `write`…）就在 preset 组合里——建 worker 与冷恢复 worker 都要显式把 `agentPresets.mount()` 交给 `setup`，并把 preset id 写进 `meta.agentPreset`（宿主从会话投影读回），漏了就只剩全局工具（见 [capability-gaps 第 38 条](docs/capability-gaps.md)）。
+
+挂上的是**整个标准组合**，不只一两个工具：persona、`agent-instructions`（会读项目 `AGENTS.md`）、time-context、`subagent` / `workflow`、`ask_user_question`、`todo`、`web` 等一起进来。worker 是常驻后台会话，因此它现在也能向用户提问。
 
 **worker 不走宿主的三件 subagent 控制工具**：`list_agents` 只列 subagent 目录里的子会话（worker 是根会话，列表里没有它）；`send_message` 要校验子会话的 `parentSession` 血统（worker 没有，走不通）；`interrupt_agent` 找不到目标时**静默返回成功**——拿它当中止手段会得到一个假回执。worker 的一切交互只经 `spawn_worker` 与 `message_worker`。
 

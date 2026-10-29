@@ -15,12 +15,16 @@ import { createWorkerSessions } from '../src/host/worker-sessions.js'
  * @param {{ missingAgents?: boolean, missingModel?: boolean, missingPresets?: boolean, createError?: Error, followupError?: Error }} [options] - 夹具选项
  * @returns {object} 上下文与记录
  */
-function createFixture({ missingAgents = false, missingModel = false, missingPresets = false, createError, followupError } = {}) {
+function createFixture({ missingAgents = false, missingModel = false, missingPresets = false, brokenPresets = false, createError, followupError } = {}) {
   const created = []
   const resumed = []
+  /** 每次冷恢复传给 `agents.resume` 的完整 options */
+  const resumeOptions = []
   const titles = []
   /** 被挂上 agent preset 的作用域，按调用顺序 */
   const mounts = []
+  /** 每次 mount 用的 preset id */
+  const mountIds = []
   /** 传给 `agents.create` 的会话 id，含没建成的那些 */
   const requested = []
   let sequence = 0
@@ -49,6 +53,7 @@ function createFixture({ missingAgents = false, missingModel = false, missingPre
     },
     async resume(options) {
       resumed.push(options.resumeSessionId)
+      resumeOptions.push(options)
       const entry = { options, sessionId: options.resumeSessionId, messages: [], disposed: false }
       created.push(entry)
       return {
@@ -79,17 +84,23 @@ function createFixture({ missingAgents = false, missingModel = false, missingPre
           },
         }
       }
+      if (key === 'agentPresets' && brokenPresets) {
+        return { resolve: async () => ({ id: 'standard' }) }
+      }
       if (key === 'agentPresets' && !missingPresets) {
         return {
-          async mount(agentCtx) {
+          async resolve(id) { return { id: id ?? 'standard' } },
+          async mount(agentCtx, id) {
             mounts.push(agentCtx)
+            mountIds.push(id)
           },
+          presetForSession: () => 'standard',
         }
       }
       return undefined
     },
   }
-  return { ctx, created, resumed, titles, requested, mounts }
+  return { ctx, created, resumed, resumeOptions, titles, requested, mounts, mountIds }
 }
 
 test('建会话时用带前缀的会话 id，并把任务简报即刻投进去', async () => {
@@ -180,6 +191,56 @@ test('建会话时挂默认 agent preset：不挂就没有 bash / read', async (
   const agentCtx = { scope: 'worker' }
   await setup(agentCtx)
   assert.deepEqual(fixture.mounts, [agentCtx])
+  assert.deepEqual(fixture.mountIds, ['standard'])
+})
+
+test('建会话把 preset id 写进 meta.agentPreset，投影才读得到', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  // 官方 sessionController 建会话时就写这个字段，resume 与 UI 都从投影读回。
+  assert.equal(fixture.created[0].options.meta.agentPreset, 'standard')
+})
+
+test('agentPresets 存在但缺 mount() 时当场报错，不静默建一个没有工具的会话', async () => {
+  const fixture = createFixture({ brokenPresets: true })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await assert.rejects(
+    () => sessions.spawn({
+      name: 'w',
+      initialMessage: 'x',
+      parentSessionId: 'c',
+      signal: new AbortController().signal,
+    }),
+    /缺少 mount\(\)/,
+  )
+  assert.deepEqual(fixture.requested, [])
+})
+
+test('组合里没有 agentPresets 服务时记一行日志再退化', async () => {
+  const fixture = createFixture({ missingPresets: true })
+  const lines = []
+  const sessions = createWorkerSessions({ ctx: fixture.ctx, logger: (line) => lines.push(line) })
+
+  await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  // 退化是允许的（headless / sdk），但必须留痕：否则 worker 没有 bash / read
+  // 又是一次无声故障。
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /没有 agentPresets 服务/)
 })
 
 test('组合里没有 agent preset 服务时不传 setup', async () => {
@@ -207,14 +268,18 @@ test('冷恢复也挂 agent preset：新作用域不会自己带着 preset 回�
     signal: new AbortController().signal,
   })
 
-  const setup = fixture.created[0].options.setup
+  // 断言落在恢复路径上：create 分支同样带 setup，读 created[0] 会让用例
+  // 在「send 回归成新建会话」时仍然绿。
+  assert.deepEqual(fixture.resumed, ['worker-1'])
+  const setup = fixture.resumeOptions[0].setup
   assert.equal(typeof setup, 'function')
   const agentCtx = { scope: 'resumed' }
-  await setup(agentCtx)
+  await setup(agentCtx, { session: { id: 'worker-1' } })
   assert.deepEqual(fixture.mounts, [agentCtx])
+  assert.deepEqual(fixture.mountIds, ['standard'])
 })
 
-test('没有 cwd 时不给宿主塞空的 meta', async () => {
+test('没有 cwd 时不给宿主塞空的 cwd 键', async () => {
   const fixture = createFixture()
   const sessions = createWorkerSessions({ ctx: fixture.ctx })
 
@@ -225,7 +290,7 @@ test('没有 cwd 时不给宿主塞空的 meta', async () => {
     signal: new AbortController().signal,
   })
 
-  assert.equal('meta' in fixture.created[0].options, false)
+  assert.equal('cwd' in fixture.created[0].options.meta, false)
 })
 
 test('派出的会话立刻算 worker，供同步的工具面裁剪判定', async () => {

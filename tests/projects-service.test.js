@@ -84,7 +84,10 @@ test('没有 sessionController 时也挂 agent preset：否则协调者没有 ba
         }
       }
       if (name === 'agentPresets') {
-        return { async mount(agentCtx) { mounts.push(agentCtx) } }
+        return {
+          async resolve(id) { return { id: id ?? 'standard' } },
+          async mount(agentCtx) { mounts.push(agentCtx) },
+        }
       }
       return undefined
     },
@@ -93,6 +96,8 @@ test('没有 sessionController 时也挂 agent preset：否则协调者没有 ba
   const sessionId = await createCoordinatorSessionWithCtx(ctx, '/repo', 'session-x')
   assert.equal(sessionId, 'session-x')
   assert.equal(typeof captured.setup, 'function')
+  // preset 投影同样要写，否则 resume 与 UI 都读不到这个会话跑在哪个 preset 上
+  assert.equal(captured.meta.agentPreset, 'standard')
   const agentCtx = { scope: 'coordinator' }
   await captured.setup(agentCtx)
   assert.deepEqual(mounts, [agentCtx])
