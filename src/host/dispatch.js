@@ -538,7 +538,7 @@ export function createDispatcher({
       throw new Error('spawn_worker: 项目注册表尚未读出，无法确认协调者身份，暂不能派工')
     }
     if (!coordinatorIndex.isCoordinatorSession(parent.id)) {
-      throw new Error('spawn_worker: 只有项目协调者能派工，请先 add_project 或用项目协调者会话')
+      throw new Error('spawn_worker: 只有项目协调者能派工，请在左栏项目区块建项目并进入协调者会话')
     }
     // 续聊是 worker 的既定能力：缺持久化后端（日志不落盘）或查询后端（冷恢复
     // 读不了日志）时 worker 只能跑一轮，拒绝派工而不是静默降级成一次性 worker。

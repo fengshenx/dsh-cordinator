@@ -249,7 +249,8 @@ export function createProjectService({
      * 明确说「不归属任何项目」，不猜：把卡挂到猜出来的项目上，比不挂更难查。
      *
      * @param {string} sessionId - 会话 id
-     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory }`）；不归属时 undefined
+     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory, coordinatorSessionId }`）；
+     *   不归属时 undefined
      */
     async resolveProjectOfSession(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return undefined
@@ -260,7 +261,12 @@ export function createProjectService({
       if (coordinator !== undefined) {
         const project = await store.get(coordinator.projectId)
         if (project !== undefined) {
-          return { id: project.id, name: project.name, directory: project.directory }
+          return {
+            id: project.id,
+            name: project.name,
+            directory: project.directory,
+            coordinatorSessionId: project.coordinatorSessionId ?? '',
+          }
         }
       }
       const cwd = ctx.get('sessions')?.get?.(sessionId)?.header?.cwd
@@ -269,7 +275,14 @@ export function createProjectService({
       if (projectId === undefined) return undefined
       const project = await store.get(projectId)
       if (project === undefined) return undefined
-      return { id: project.id, name: project.name, directory: project.directory }
+      // 项目里的普通会话与 worker 也能解析到项目（卡片归属要用），但看板只对
+      // 协调者开放——客户端拿这条指针判断。
+      return {
+        id: project.id,
+        name: project.name,
+        directory: project.directory,
+        coordinatorSessionId: project.coordinatorSessionId ?? '',
+      }
     },
 
     /**

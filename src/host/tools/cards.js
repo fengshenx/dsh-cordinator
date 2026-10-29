@@ -1,11 +1,9 @@
 /**
  * 任务看板卡片工具：`create_card`、`update_card`、`list_cards`。
  *
- * 卡片是协调者维护的任务事实：标题、规格、状态、链接、槽位绑定与检查点。看板 UI
- * 从工具的结构化输出重建卡片列表，因此工具返回完整卡片对象；模型看到的是
- * `render` 给出的简短确认，不需要读全量卡片。
- *
- * 检查点的维护者与确认时间由宿主写入，调用方只能提供事实部分。
+ * 卡片是协调者维护的任务事实：标题、规格、状态、链接与槽位绑定。看板 UI 从工具
+ * 的结构化输出重建卡片列表，因此工具返回完整卡片对象；模型看到的是 `render`
+ * 给出的简短确认，不需要读全量卡片。
  *
  * @module dsh-coordinator/host/tools/cards
  */
@@ -69,23 +67,6 @@ function linkSchema() {
 }
 
 /**
- * 检查点事实的 JSON Schema。
- * @returns {object} schema
- */
-function checkpointSchema() {
-  return {
-    type: 'object',
-    properties: {
-      summary: { type: 'string' },
-      nextAction: { type: 'string' },
-      blocker: { type: 'string' },
-      outputVersion: { type: 'string' },
-    },
-    required: ['summary'],
-  }
-}
-
-/**
  * 槽位绑定的 JSON Schema。
  * @returns {object} schema
  */
@@ -123,17 +104,6 @@ function cardSchema() {
       status: { type: 'string', enum: ['active', 'done', 'archived'] },
       links: { type: 'array', items: linkSchema() },
       slots: slotsSchema(),
-      checkpoint: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string' },
-          nextAction: { type: 'string' },
-          blocker: { type: 'string' },
-          outputVersion: { type: 'string' },
-          updatedBy: { type: 'string' },
-          updatedAt: { type: 'number' },
-        },
-      },
       sortOrder: { type: 'number' },
       doneAt: { type: 'number' },
       createdAt: { type: 'number' },
@@ -180,28 +150,6 @@ function normalizeLinks(links) {
       ...link.purpose === undefined ? {} : { purpose: link.purpose },
     }
   })
-}
-
-/**
- * 校验检查点事实。
- *
- * 检查点的四个事实字段都进输出 schema（`cardSchema.checkpoint`），类型不符会
- * 在落库后才被输出校验拦下。
- *
- * @param {object} checkpoint - 原始检查点
- * @returns {object} 校验通过的检查点
- */
-function normalizeCheckpoint(checkpoint) {
-  if (checkpoint === null || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) {
-    throw new Error('卡片工具: checkpoint 必须是对象')
-  }
-  for (const field of ['summary', 'nextAction', 'blocker', 'outputVersion']) {
-    const value = checkpoint[field]
-    if (value !== undefined && typeof value !== 'string') {
-      throw new Error(`卡片工具: checkpoint.${field} 必须是字符串`)
-    }
-  }
-  return checkpoint
 }
 
 /**
@@ -272,10 +220,6 @@ export function createCreateCardTool({ store, resolveProject }) {
           ...slotsSchema(),
           description: '槽位绑定：把执行或评审会话挂到卡片上。',
         },
-        checkpoint: {
-          ...checkpointSchema(),
-          description: '当前任务事实：已确认的结论与下一步动作。',
-        },
       },
       required: ['title'],
     },
@@ -296,14 +240,13 @@ export function createCreateCardTool({ store, resolveProject }) {
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ title: string, spec?: string, links?: object[], slots?: object, checkpoint?: object }} */ (args)
+      const input = /** @type {{ title: string, spec?: string, links?: object[], slots?: object }} */ (args)
       if (typeof input.title !== 'string' || input.title.trim() === '') {
         throw new Error('create_card: title 不能为空')
       }
       const spec = optionalString(input.spec, 'spec')
       const links = input.links === undefined ? undefined : normalizeLinks(input.links)
       const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
-      const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
       // 卡片归属项目由宿主按调用方会话判定，模型不传项目参数：模型未必知道自己是
       // 在哪个项目的语境里调用工具，判据交给会话这一侧的事实更可靠。
       const project = await resolveProject?.(exec.agent?.id)
@@ -312,8 +255,6 @@ export function createCreateCardTool({ store, resolveProject }) {
         ...spec === undefined ? {} : { spec },
         ...links === undefined ? {} : { links },
         ...slots === undefined ? {} : { slots },
-        ...checkpoint === undefined ? {} : { checkpoint },
-        updatedBy: exec.agent?.id,
         ...project === undefined ? {} : { projectId: project.id },
         ...exec.agent?.id === undefined ? {} : { createdBy: exec.agent.id },
       })
@@ -352,10 +293,6 @@ export function createUpdateCardTool({ store, resolveProject }) {
         },
         links: { type: 'array', items: linkSchema(), description: '新的链接条目（整体替换）。' },
         slots: { ...slotsSchema(), description: '新的槽位绑定（整体替换）。' },
-        checkpoint: {
-          ...checkpointSchema(),
-          description: '新的任务事实。维护者与确认时间由宿主写入。',
-        },
         sortOrder: { type: 'number', description: '手动排序序号（小的在前）。' },
       },
       required: ['id'],
@@ -377,7 +314,7 @@ export function createUpdateCardTool({ store, resolveProject }) {
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ id: string, expectedRevision?: number, title?: string, spec?: string, status?: string, links?: object[], slots?: object, checkpoint?: object, sortOrder?: number }} */ (args)
+      const input = /** @type {{ id: string, expectedRevision?: number, title?: string, spec?: string, status?: string, links?: object[], slots?: object, sortOrder?: number }} */ (args)
       if (typeof input.id !== 'string' || input.id.trim() === '') {
         throw new Error('update_card: id 不能为空')
       }
@@ -392,7 +329,6 @@ export function createUpdateCardTool({ store, resolveProject }) {
       const spec = optionalString(input.spec, 'spec')
       const links = input.links === undefined ? undefined : normalizeLinks(input.links)
       const slots = input.slots === undefined ? undefined : normalizeSlots(input.slots)
-      const checkpoint = input.checkpoint === undefined ? undefined : normalizeCheckpoint(input.checkpoint)
       const sortOrder = optionalNumber(input.sortOrder, 'sortOrder')
       // 卡片按项目归属：改别人项目的卡要拒绝。无归属的存量卡不拦——没有归属可
       // 冲突，拦下来只会让存量卡永远改不动。
@@ -414,9 +350,7 @@ export function createUpdateCardTool({ store, resolveProject }) {
         ...input.status === undefined ? {} : { status: input.status },
         ...links === undefined ? {} : { links },
         ...slots === undefined ? {} : { slots },
-        ...checkpoint === undefined ? {} : { checkpoint },
         ...sortOrder === undefined ? {} : { sortOrder },
-        updatedBy: exec.agent?.id,
       })
       return { card }
     },
@@ -443,13 +377,13 @@ export function createListCardsTool({ store, resolveProject }) {
   return {
     name: 'list_cards',
     description:
-      '按最近更新倒序列出任务看板卡片（默认只列本项目的 active 卡，20 张一页）；传 cardId 读取单卡完整规格、链接与检查点。',
+      '按最近更新倒序列出任务看板卡片（默认只列本项目的 active 卡，20 张一页）；传 cardId 读取单卡完整规格与链接。',
     parameters: {
       type: 'object',
       properties: {
         cardId: {
           type: 'string',
-          description: '可选，只读指定卡片的完整当前事实（spec / links / checkpoint 全文）；单卡查询忽略 status 与分页参数',
+          description: '可选，只读指定卡片的完整当前事实（spec / links 全文）；单卡查询忽略 status 与分页参数',
         },
         status: {
           type: 'string',

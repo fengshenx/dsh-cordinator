@@ -95,11 +95,10 @@ test('选择卡片：单卡查询忽略分页', () => {
   assert.deepEqual(result.page.map((item) => item.id), ['b'])
 })
 
-test('列表视图：规格、链接、检查点无论有无都显式成行', () => {
+test('列表视图：规格与链接无论有无都显式成行', () => {
   const rendered = renderCardList([card()], query())
   assert.match(rendered, /spec: 无/)
   assert.match(rendered, /links: 无/)
-  assert.match(rendered, /checkpoint: 无/)
 })
 
 test('列表视图：链接只给标签，地址留给单卡查询', () => {
@@ -111,19 +110,13 @@ test('列表视图：链接只给标签，地址留给单卡查询', () => {
   assert.match(detail, /- PR #4: https:\/\/example\.com\/4/)
 })
 
-test('列表视图：规格与检查点全文只在单卡查询出现', () => {
-  const cards = [card({
-    spec: '验收：能派工并回报',
-    checkpoint: { summary: '做了一半', nextAction: '继续', updatedBy: 's1', updatedAt: 1 },
-  })]
+test('列表视图：规格全文只在单卡查询出现', () => {
+  const cards = [card({ spec: '验收：能派工并回报' })]
   const listed = renderCardList(cards, query())
   assert.match(listed, /spec: 有/)
-  assert.match(listed, /checkpoint: 有/)
   assert.doesNotMatch(listed, /验收：能派工并回报/)
-  assert.doesNotMatch(listed, /做了一半/)
   const detail = renderCardList(cards, query({ cardId: 'card-1' }))
   assert.match(detail, /验收：能派工并回报/)
-  assert.match(detail, /做了一半/)
 })
 
 test('列表视图：空页与翻过头是两句话', () => {

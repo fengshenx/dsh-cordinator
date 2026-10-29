@@ -272,23 +272,6 @@ test('改卡工具拒绝非数字的排序序号', async () => {
   }
 })
 
-test('建卡与改卡工具拒绝类型不符的检查点字段', async () => {
-  const { home, tools } = await createTools()
-  try {
-    await assert.rejects(
-      () => tools.create_card.execute({ title: '任务', checkpoint: { summary: 42 } }, exec),
-      /checkpoint.summary 必须是字符串/,
-    )
-    const created = await tools.create_card.execute({ title: '任务' }, exec)
-    await assert.rejects(
-      () => tools.update_card.execute({ id: created.card.id, checkpoint: { blocker: 1 } }, exec),
-      /checkpoint.blocker 必须是字符串/,
-    )
-  } finally {
-    await rm(home, { recursive: true, force: true })
-  }
-})
-
 test('建卡工具拒绝类型不符的链接字段', async () => {
   const { home, tools } = await createTools()
   try {

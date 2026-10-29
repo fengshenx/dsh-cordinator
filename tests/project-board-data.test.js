@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   fetchBoardCards,
+  isCoordinatorProject,
   newCardIds,
   resolveProject,
 } from '../src/client/project-board-data.js'
@@ -18,6 +19,16 @@ test('解析项目：会话 id 为空时不发远程调用', async () => {
   const resolve = async () => { called += 1; return undefined }
   assert.equal(await resolveProject(resolve, ''), undefined)
   assert.equal(called, 0)
+})
+
+test('看板只认项目协调者：worker 与同目录普通会话都不算', () => {
+  const project = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  assert.equal(isCoordinatorProject(project, 'coordinator-1'), true)
+  assert.equal(isCoordinatorProject(project, 'worker-1'), false)
+  assert.equal(isCoordinatorProject(project, 'plain-1'), false)
+  assert.equal(isCoordinatorProject({ id: 'p1' }, 'coordinator-1'), false)
+  assert.equal(isCoordinatorProject({ id: 'p1', coordinatorSessionId: '' }, ''), false)
+  assert.equal(isCoordinatorProject(undefined, 'coordinator-1'), false)
 })
 
 test('取项目卡片：通道返回数组才认，非数组当空列表', async () => {

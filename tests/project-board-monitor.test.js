@@ -9,7 +9,10 @@ import { createBoardWatch } from '../src/client/project-board-monitor.js'
  * @param {object[]} [options.cards] - 项目当前卡片
  * @returns {{ callRemote: Function, setCards: (cards: object[]) => void }} 假调用与卡片 setter
  */
-function createRemote({ project = { id: 'p1', name: '项目一' }, cards = [] } = {}) {
+function createRemote({
+  project = { id: 'p1', name: '项目一', coordinatorSessionId: 'session-1' },
+  cards = [],
+} = {}) {
   let current = cards
   return {
     callRemote: async (method) => {
@@ -73,11 +76,39 @@ test('会话不属于任何项目时不监视', async () => {
   assert.equal(revealed, 0)
 })
 
+test('屏幕会话不是项目协调者时不监视：新卡不弹看板也不取卡', async () => {
+  const remote = createRemote({
+    project: { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' },
+    cards: [{ id: 'c1' }],
+  })
+  let revealed = 0
+  let fetched = 0
+  const watch = createBoardWatch({
+    callRemote: async (method, args) => {
+      if (method === 'boardCards') fetched += 1
+      return remote.callRemote(method, args)
+    },
+    onNewCard: () => { revealed += 1 },
+  })
+  watch.followSession('worker-1')
+  await watch.poll()
+  remote.setCards([{ id: 'c1' }, { id: 'c2' }])
+  await watch.poll()
+  assert.equal(revealed, 0)
+  assert.equal(fetched, 0)
+})
+
 test('换会话后重建基线：新会话的项目里已有的卡不弹看板', async () => {
+  const projects = {
+    'session-1': { id: 'p1', name: '项目一', coordinatorSessionId: 'session-1' },
+    'session-2': { id: 'p2', name: '项目二', coordinatorSessionId: 'session-2' },
+  }
   const remote = createRemote({ cards: [{ id: 'c1' }] })
   let revealed = 0
   const watch = createBoardWatch({
-    callRemote: remote.callRemote,
+    callRemote: async (method, args) => (method === 'resolveProject'
+      ? projects[args[0]]
+      : remote.callRemote(method, args)),
     onNewCard: () => { revealed += 1 },
   })
   watch.followSession('session-1')

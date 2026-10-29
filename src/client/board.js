@@ -26,7 +26,12 @@ import {
   sortActiveCards,
   sortDoneCards,
 } from './board-projection.js'
-import { BOARD_REFRESH_MS, fetchBoardCards, resolveProject } from './project-board-data.js'
+import {
+  BOARD_REFRESH_MS,
+  fetchBoardCards,
+  isCoordinatorProject,
+  resolveProject,
+} from './project-board-data.js'
 import { SlotRetention, retainTargetOf } from './slot-retain.js'
 import { BoardCard } from './board-card.js'
 import { CardDetail } from './card-detail.js'
@@ -327,7 +332,9 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 定时刷新是必要的——卡片可能由别的会话（worker）建，那边的事件流不在本面板
   // 的窗口里，等不到它的变化。
   useEffect(() => {
-    if (project === undefined) return undefined
+    // 看板只对项目协调者开放：项目目录里的普通会话与 worker 也能解析到项目
+    // （卡片归属要用），但这里不给它们取卡。
+    if (project === undefined || !isCoordinatorProject(project, sessionId)) return undefined
     let cancelled = false
     const refresh = () => {
       fetchBoardCards(callRemote, project.id)
@@ -354,7 +361,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
       clearInterval(timer)
       window.removeEventListener('focus', onFocus)
     }
-  }, [project, callRemote])
+  }, [project, callRemote, sessionId])
 
   const cardList = cards
   const states = useSlotStates(cardList, getSessions, useSessionStatus, sessionId)
@@ -411,6 +418,29 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
             createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
             createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
           ),
+    )
+  }
+
+  // 属于项目但不是该项目的协调者（worker、项目目录里手动开的普通会话）：这个
+  // 会话有项目语境，却不拥有看板的呈现面。说清去哪看，不展示项目卡片。
+  if (!isCoordinatorProject(project, sessionId)) {
+    return createElement(
+      'div',
+      { className: 'dsh-coordinator-board-list' },
+      createElement(
+        'div',
+        { className: 'dsh-coordinator-board-empty' },
+        createElement(
+          'div',
+          { className: 'dsh-coordinator-board-empty-title' },
+          '看板只在项目协调者会话中打开',
+        ),
+        createElement(
+          'div',
+          { className: 'dsh-coordinator-board-empty-hint' },
+          `这是「${project.name ?? '本项目'}」里的执行会话；去该项目的协调者会话查看交付看板。`,
+        ),
+      ),
     )
   }
 

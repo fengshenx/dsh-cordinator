@@ -86,7 +86,7 @@ session 类型里没有 `projectId`；`projectRoot` 只用于 skill 发现与 ag
 
 ### 7. team 任务板不覆盖 slot→session 绑定
 
-即便 team 可用，其任务板提供任务、依赖 DAG、owner、revision CAS，**没有**「一个卡片同时挂 dev 与 review 两个会话」的槽位绑定，也没有 links、checkpoint、编号不复用。
+即便 team 可用，其任务板提供任务、依赖 DAG、owner、revision CAS，**没有**「一个卡片同时挂 dev 与 review 两个会话」的槽位绑定，也没有 links 与编号不复用。
 
 **影响**：人类可见的交付看板必须自建存储域，不能硬塞进 team 任务板。两者职责需分开：team 板是机器侧编排状态，自建 Card 是人类侧交付状态。
 
@@ -321,6 +321,8 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 ---
 
 ## 四、工具级（已验证可用，无缺口）
+
+表里的工具名反映实测当时的版本：项目注册表工具（`add_project` 等）与 `init_project` 已在后续版本删除，项目改由左栏区块操作、初始化改为纯 skill；这些行保留为宿主能力的实测证据。
 
 | 能力 | 实测结果 | 证据 |
 |---|---|---|

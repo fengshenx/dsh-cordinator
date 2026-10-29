@@ -14,7 +14,13 @@
  * @module dsh-coordinator/client/project-board-monitor
  */
 
-import { BOARD_REFRESH_MS, fetchBoardCards, newCardIds, resolveProject } from './project-board-data.js'
+import {
+  BOARD_REFRESH_MS,
+  fetchBoardCards,
+  isCoordinatorProject,
+  newCardIds,
+  resolveProject,
+} from './project-board-data.js'
 
 /** 本插件的看板 tab 类型 kind。 */
 export const BOARD_TAB_KIND = 'dsh-coordinator-board'
@@ -34,6 +40,8 @@ export function createBoardWatch({ callRemote, onNewCard }) {
   let sessionId = undefined
   /** @type {object | undefined} 当前屏幕会话所属的项目 */
   let project = undefined
+  /** @type {boolean} 已解析出项目，但屏幕会话不是它的协调者 */
+  let ineligible = false
   /** @type {object[]} 上一轮看到的卡片，作为「有没有新卡」的基线 */
   let baseline = []
   /** @type {boolean} 是否已经拿到过这个项目的第一轮卡片 */
@@ -49,6 +57,7 @@ export function createBoardWatch({ callRemote, onNewCard }) {
     followSession(next) {
       sessionId = next
       project = undefined
+      ineligible = false
       baseline = []
       primed = false
     },
@@ -63,9 +72,17 @@ export function createBoardWatch({ callRemote, onNewCard }) {
      */
     async poll() {
       if (typeof sessionId !== 'string' || sessionId === '') return
+      // 看板只给项目协调者：worker 或项目目录里的普通会话在屏幕上时，新卡不该
+      // 把看板弹到它们的右栏。
+      if (ineligible) return
       if (project === undefined) {
-        project = await resolveProject(callRemote, sessionId)
-        if (project === undefined) return
+        const resolved = await resolveProject(callRemote, sessionId)
+        if (resolved === undefined) return
+        if (!isCoordinatorProject(resolved, sessionId)) {
+          ineligible = true
+          return
+        }
+        project = resolved
       }
       const cards = await fetchBoardCards(callRemote, project.id)
       const added = newCardIds(baseline, cards)

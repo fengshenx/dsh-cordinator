@@ -32,6 +32,21 @@ export async function resolveProject(callRemote, sessionId) {
 }
 
 /**
+ * 这个会话是不是该项目的协调者。
+ *
+ * 项目归属按 cwd 判定，同一个项目目录里的普通会话与 worker 也会解析到项目；
+ * 看板只给协调者看——它们在项目里干活，但不拥有这个看板的呈现面。
+ *
+ * @param {object | undefined} project - 项目摘要（含 `coordinatorSessionId`）
+ * @param {string} sessionId - 当前面板所属会话
+ * @returns {boolean} 是否为该项目的协调者会话
+ */
+export function isCoordinatorProject(project, sessionId) {
+  const coordinator = project?.coordinatorSessionId
+  return typeof coordinator === 'string' && coordinator !== '' && coordinator === sessionId
+}
+
+/**
  * 取项目的看板卡片。
  *
  * @param {(method: string, args: unknown[]) => Promise<unknown>} callRemote - 远程调用
