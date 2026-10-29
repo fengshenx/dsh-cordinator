@@ -34,7 +34,8 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import {
-  COPIED_PROFILE_FILES, assertSeparateHome, deriveProfilePackage, planNodeModules, resolveDevPaths,
+  COPIED_PROFILE_FILES, assertSeparateHome, assertWebBundle, deriveProfilePackage, planNodeModules,
+  resolveDevPaths,
 } from './dev-plan.mjs'
 
 const worktree = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -76,6 +77,17 @@ if (!existsSync(sourcePackagePath)) {
   process.exit(1)
 }
 
+const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, 'utf8'))
+
+// 这条也在写之前：源 profile 没有 web app bundle 时派生出来的实例跑 dsh web 是
+// 静默空转，早点拒绝别让人对着一个不打印任何东西的进程。
+try {
+  assertWebBundle({ profileDir: paths.sourceProfileDir, bundles: sourcePackage.dsh?.profile?.bundles })
+} catch (error) {
+  console.error(`错误: ${error.message}`)
+  process.exit(1)
+}
+
 mkdirSync(paths.profileDir, { recursive: true })
 
 // 源 profile 的 cordis 配置照抄一次：之后开发实例里的改动不再被覆盖（那里是调试
@@ -94,7 +106,6 @@ for (const name of COPIED_PROFILE_FILES) {
   copyFileSync(from, target)
 }
 
-const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, 'utf8'))
 writeFileSync(
   join(paths.profileDir, 'package.json'),
   `${JSON.stringify(deriveProfilePackage(sourcePackage, worktree), null, 2)}\n`,

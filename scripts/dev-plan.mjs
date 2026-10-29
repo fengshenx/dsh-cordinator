@@ -24,6 +24,9 @@ export const COORDINATOR_PACKAGE = 'dsh-coordinator'
 /** 开发实例用的 profile 名。插件的客户端 manifest 声明 `platform: web`。 */
 export const PROFILE_NAME = 'web'
 
+/** 提供 web UI 的 app bundle：`dsh web` 就是 `dsh --profile web`，界面由它挂上来。 */
+export const WEB_APP_BUNDLE = '@deepseek-ai/dsh-web-app'
+
 /** 从源 profile 复制过来的配置：用户在源里改过就跟着走。 */
 export const COPIED_PROFILE_FILES = ['cordis.yml', 'cordis.patch.yml']
 
@@ -60,8 +63,10 @@ export function resolveDevPaths({ worktree, homeDir, env = {} }) {
 function identityOf(path) {
   try {
     return realpathSync(path)
-  } catch {
-    // 首次运行数据根还不存在，realpath 必然失败；这时按字面量比较即可
+  } catch (error) {
+    // 首次运行数据根还不存在，realpath 必然 ENOENT，这时按字面量比较即可。
+    // EACCES 之类的真实错误不能当成「路径不同」放过去，否则守卫会在该拦的时候沉默。
+    if (error.code !== 'ENOENT') throw error
     return resolve(path)
   }
 }
@@ -89,6 +94,29 @@ export function assertSeparateHome({ home, sourceHome }) {
       + '换一个 DSH_HOME，或去掉 DSH_HOME 让数据根落到工作树内的 .dev/home。',
     )
   }
+}
+
+/**
+ * 挡住「源 profile 没有 web UI」这个误用。
+ *
+ * `DSH_PROFILE` 接受任意名字，但只有落在宿主 `PROFILE_TEMPLATES` 里的名字才带
+ * app bundle。实测一个只含 `@deepseek-ai/dsh-base` 的 profile 跑 `dsh web`：
+ * 不监听端口、不打印 URL、也不报错——进程静默地什么都不做，而 `npm run dev`
+ * 看起来是成功的。判据直接看源 profile 的 bundles 里有没有 web app bundle，
+ * 不抄宿主的模板表（那份表会随版本变）。
+ *
+ * @param {object} options - 选项
+ * @param {string} options.profileDir - 源 profile 目录，只用于报错定位
+ * @param {string[] | undefined} options.bundles - 源 profile 的 `dsh.profile.bundles`
+ * @returns {void} 有 web app bundle 时无返回
+ */
+export function assertWebBundle({ profileDir, bundles }) {
+  if (Array.isArray(bundles) && bundles.includes(WEB_APP_BUNDLE)) return
+  throw new Error(
+    `源 profile 的 bundles 里没有 ${WEB_APP_BUNDLE}（${profileDir}），dsh web 起不来：`
+    + '实测不监听端口、不打印 URL、也不报错。'
+    + `用 DSH_PROFILE 指向一个 web profile，或把 ${WEB_APP_BUNDLE} 加进该 profile 的 dsh.profile.bundles。`,
+  )
 }
 
 /**

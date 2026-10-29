@@ -24,7 +24,7 @@
 
 **数据根不能等于源 HOME，脚本拒绝**。`DSH_HOME=~/.dsh` 是个很自然的「想复用日常数据」写法，但那时 `profileDir` 与 `sourceProfileDir` 是同一个目录：派生逻辑会把源 `package.json` 的插件依赖换成工作树链接，再把 `node_modules` 里每个真实依赖目录删掉、换成指向自己的死链——跑一次就把日常 dsh 装好的 profile 毁了，只能重装。守卫 `assertSeparateHome` 在任何写操作之前比较两边的真实路径（符号链接或 `..` 绕一圈指到同一处也拦），路径不存在时退回字面量比较。
 
-**profile 名固定 `web`，不引入 `dev`**。插件 manifest 声明 `platform: web`；更要紧的是 `dev` 不在宿主 `PROFILE_TEMPLATES` 里，`dsh plugin --profile dev add` 会按只含 `@deepseek-ai/dsh-base` 的默认模板建 profile——没有 web-app bundle，插件客户端半边不加载。源 profile 名可用 `DSH_PROFILE` 覆盖（比如从 `web` 换到 `headless`），供已有别的日常 profile 的人用。
+**profile 名固定 `web`，不引入 `dev`**。插件 manifest 声明 `platform: web`；更要紧的是 `dev` 不在宿主 `PROFILE_TEMPLATES` 里，`dsh plugin --profile dev add` 会按只含 `@deepseek-ai/dsh-base` 的默认模板建 profile——没有 web-app bundle，插件客户端半边不加载。源 profile 名可用 `DSH_PROFILE` 覆盖（比如日常用 `headless` 的人），但校验的不是名字而是**源 profile 的 bundles 里有没有 `@deepseek-ai/dsh-web-app`**：名字白名单要抄宿主的模板表、会随版本漂移，而缺 web app bundle 的 profile 跑 `dsh web` 实测是不监听端口、不打印 URL、也不报错——静默空转，看起来像成功。这类误配在写操作之前拒绝。
 
 **`npm run check` 的语法检查扩到 `scripts/` 与 `build/`**。原来只查 `index.js` 与 `src/**/*.js`，新增的 `.mjs` 脚本就落在门禁外面。
 
@@ -42,10 +42,11 @@
 - 假 `gh`（stdout 输出非 JSON、退出码 0）跑 prune：加兜底前 `SyntaxError` 崩栈，加兜底后判为「查不到 PR 状态」；真 `gh` 对同一分支判为「分支没有 PR 记录」——两条路径分得开。
 - `--remote nosuchremote` 配 `--apply --delete-remote`：本地删掉并打印 `[远端未删]`（说明远端分支还在），`--remote` 确实被用于 push。
 - `DEV_PORT=''` 时 `--port` 收到的是 `0`；`prune ../../etc` 报任务名不合法、退出码 1。
+- **缺 web app bundle 的 profile 跑 `dsh web` 是静默空转**：造一个只含 `@deepseek-ai/dsh-base` 的隔离 HOME（node_modules 全链到真实 profile），`dsh web --port 5899 --no-open` 等 20 秒后日志只有一句代理警告，`lsof -ti :5899` 无监听。加 `assertWebBundle` 后同一个 HOME 跑 `npm run dev` 退出码 1 并说明原因；真实 `~/.dsh` 照旧一路走到起实例。
 
 ## 边界
 
-- **源 profile 是前置条件**：`~/.dsh/profiles/web` 必须已存在且装过一次本插件（或用 `DSH_HOME_SOURCE` 指向别的 HOME），否则脚本报错退出并给出命令。
+- **源 profile 是前置条件**：`~/.dsh/profiles/web` 必须已存在、装过一次本插件、且 bundles 里有 `@deepseek-ai/dsh-web-app`（或用 `DSH_HOME_SOURCE` / `DSH_PROFILE` 指向别的已备好的 profile），否则脚本报错退出并给出命令。
 - **依赖共享意味着写共享**：在 worktree 里跑 `npm install` 会落到主 checkout。本仓依赖极少，约定是依赖变更回主 checkout 做。
 - **并行实例共享源 `node_modules` 的只读假设**：多个 worktree 的 dev 实例同时跑时，读的是同一份依赖；只要没人往源 profile 装包就安全。
 - **Windows 未实测**：符号链接用 `junction`（对目录有效），文件型条目未覆盖到。

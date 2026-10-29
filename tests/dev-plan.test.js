@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  COORDINATOR_PACKAGE, assertSeparateHome, deriveProfilePackage, planNodeModules, resolveDevPaths,
+  COORDINATOR_PACKAGE, WEB_APP_BUNDLE, assertSeparateHome, assertWebBundle, deriveProfilePackage,
+  planNodeModules, resolveDevPaths,
 } from '../scripts/dev-plan.mjs'
 
 const WORKTREE = '/work/repo/.worktrees/feature-a'
@@ -146,7 +147,7 @@ test('绕路的写法（.. 与斜杠）仍判定为同一个目录', () => {
   )
 })
 
-test('符号链接指向源 HOME 时也拒绝', () => {
+test('符号链接指向源 HOME 时也拒绝', { skip: process.platform === 'win32' ? '需要创建符号链接权限' : false }, () => {
   const root = mkdtempSync(join(tmpdir(), 'dev-plan-'))
   try {
     mkdirSync(join(root, 'real'))
@@ -163,4 +164,22 @@ test('符号链接指向源 HOME 时也拒绝', () => {
 test('两边都不存在时按字面量比较，不会误判', () => {
   assert.doesNotThrow(() => assertSeparateHome({ home: '/nowhere/a', sourceHome: '/nowhere/b' }))
   assert.throws(() => assertSeparateHome({ home: '/nowhere/a', sourceHome: '/nowhere/a' }), /同一个目录/)
+})
+
+test('源 profile 带 web app bundle 时放行', () => {
+  assert.doesNotThrow(() => assertWebBundle({
+    profileDir: '/home/user/.dsh/profiles/web',
+    bundles: ['@deepseek-ai/dsh-base', WEB_APP_BUNDLE, COORDINATOR_PACKAGE],
+  }))
+})
+
+test('源 profile 缺 web app bundle 时拒绝，并说清 dsh web 会静默空转', () => {
+  assert.throws(
+    () => assertWebBundle({ profileDir: '/home/user/.dsh/profiles/dev', bundles: ['@deepseek-ai/dsh-base'] }),
+    /没有 @deepseek-ai\/dsh-web-app.*dsh web 起不来/s,
+  )
+})
+
+test('源 profile 根本没写 bundles 时也拒绝', () => {
+  assert.throws(() => assertWebBundle({ profileDir: '/x', bundles: undefined }), /dsh-web-app/)
 })
