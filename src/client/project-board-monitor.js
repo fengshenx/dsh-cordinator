@@ -14,7 +14,21 @@
  * @module dsh-coordinator/client/project-board-monitor
  */
 
-import { BOARD_REFRESH_MS, fetchBoardCards, newCardIds, resolveProject } from './project-board-data.js'
+import {
+  BOARD_REFRESH_MS,
+  fetchBoardCards,
+  isBoardViewable,
+  newCardIds,
+  resolveProject,
+} from './project-board-data.js'
+
+/**
+ * 重新解析项目、复核协调者身份的间隔（轮数）。
+ *
+ * 卡片每 2 秒拉一次；协调者被换新或归档是低频事件，15 轮（约 30 秒）复核一次
+ * 即可，避免每轮都多一次远程调用。
+ */
+const RECHECK_TICKS = 15
 
 /** 本插件的看板 tab 类型 kind。 */
 export const BOARD_TAB_KIND = 'dsh-coordinator-board'
@@ -34,10 +48,14 @@ export function createBoardWatch({ callRemote, onNewCard }) {
   let sessionId = undefined
   /** @type {object | undefined} 当前屏幕会话所属的项目 */
   let project = undefined
+  /** @type {boolean} 已解析出项目，但屏幕会话不是它的协调者 */
+  let ineligible = false
   /** @type {object[]} 上一轮看到的卡片，作为「有没有新卡」的基线 */
   let baseline = []
   /** @type {boolean} 是否已经拿到过这个项目的第一轮卡片 */
   let primed = false
+  /** @type {number} 已解析项目后的轮询计数，用于定期复核身份 */
+  let ticks = 0
 
   return {
     /**
@@ -49,8 +67,10 @@ export function createBoardWatch({ callRemote, onNewCard }) {
     followSession(next) {
       sessionId = next
       project = undefined
+      ineligible = false
       baseline = []
       primed = false
+      ticks = 0
     },
 
     /**
@@ -63,9 +83,27 @@ export function createBoardWatch({ callRemote, onNewCard }) {
      */
     async poll() {
       if (typeof sessionId !== 'string' || sessionId === '') return
+      // 看板只给项目协调者：worker 或项目目录里的普通会话在屏幕上时，新卡不该
+      // 把看板弹到它们的右栏。
+      if (ineligible) return
       if (project === undefined) {
-        project = await resolveProject(callRemote, sessionId)
-        if (project === undefined) return
+        const resolved = await resolveProject(callRemote, sessionId)
+        if (resolved === undefined) return
+        if (!isBoardViewable(resolved, sessionId)) {
+          ineligible = true
+          return
+        }
+        project = resolved
+      } else if ((ticks += 1) % RECHECK_TICKS === 0) {
+        // 协调者可能在监视期间被换新或归档：定期复核身份与存活状态，别把新卡
+        // 继续弹给一个已经不是协调者的会话。
+        const resolved = await resolveProject(callRemote, sessionId)
+        if (resolved === undefined) return
+        if (!isBoardViewable(resolved, sessionId)) {
+          ineligible = true
+          return
+        }
+        project = resolved
       }
       const cards = await fetchBoardCards(callRemote, project.id)
       const added = newCardIds(baseline, cards)

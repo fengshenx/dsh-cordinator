@@ -3,7 +3,6 @@ import { test } from 'node:test'
 import {
   COORDINATOR_ONLY_TOOLS,
   COORDINATOR_UNUSABLE_TOOLS,
-  WORKER_HIDDEN_TOOLS,
   WORKER_ONLY_TOOLS,
   applyToolGate,
   deniedToolsFor,
@@ -49,13 +48,13 @@ test('协调者拿不到收作业的工具，也拿不到对 worker 无效的三
   assert.deepEqual(denied, [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS])
 })
 
-test('worker 看不到派工与项目注册表，但能交作业', () => {
+test('worker 看不到派工与全库查询，但能交作业', () => {
   const denied = deniedToolsFor({
     agent: makeAgent('worker-1'),
     isCoordinatorSession: () => false,
     isWorkerSession: (id) => id === 'worker-1',
   })
-  assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS, ...WORKER_HIDDEN_TOOLS])
+  assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS])
   assert.equal(denied.includes('worker_done'), false)
 })
 
@@ -91,8 +90,8 @@ test('applyToolGate 只对受限角色调 restrict，并在作用域上留下限
     isCoordinatorSession: () => false,
     isWorkerSession: () => true,
   })
-  assert.deepEqual(worker.restrictions, [{ deny: [...COORDINATOR_ONLY_TOOLS, ...WORKER_HIDDEN_TOOLS] }])
-  assert.deepEqual(workerDenied, [...COORDINATOR_ONLY_TOOLS, ...WORKER_HIDDEN_TOOLS])
+  assert.deepEqual(worker.restrictions, [{ deny: [...COORDINATOR_ONLY_TOOLS] }])
+  assert.deepEqual(workerDenied, [...COORDINATOR_ONLY_TOOLS])
 })
 
 test('宿主没装 subagent 控制工具时跳过那三件，不拿未注册的工具名去 restrict', () => {
@@ -119,8 +118,8 @@ test('只依赖 engines 下限的 tools 方法面', () => {
   }))
 })
 
-test('四组名单两两不重叠，改名时不会悄悄互相覆盖', () => {
-  const groups = [COORDINATOR_ONLY_TOOLS, WORKER_HIDDEN_TOOLS, WORKER_ONLY_TOOLS, COORDINATOR_UNUSABLE_TOOLS]
+test('三组名单两两不重叠，改名时不会悄悄互相覆盖', () => {
+  const groups = [COORDINATOR_ONLY_TOOLS, WORKER_ONLY_TOOLS, COORDINATOR_UNUSABLE_TOOLS]
   for (let index = 0; index < groups.length; index += 1) {
     for (let other = index + 1; other < groups.length; other += 1) {
       const overlap = groups[index].filter((name) => groups[other].includes(name))

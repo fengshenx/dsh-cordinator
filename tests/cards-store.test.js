@@ -74,22 +74,6 @@ test('归档是终态，归档后不可再改', async () => {
   }
 })
 
-test('检查点的维护者与确认时间由宿主补写', async () => {
-  const { store, home } = await createStore()
-  try {
-    const card = await store.create({
-      title: '任务',
-      checkpoint: { summary: '已确认结论', nextAction: '下一步' },
-      updatedBy: 'session-1',
-    })
-    assert.equal(card.checkpoint.updatedBy, 'session-1')
-    assert.equal(typeof card.checkpoint.updatedAt, 'number')
-    assert.equal(card.checkpoint.summary, '已确认结论')
-  } finally {
-    await rm(home, { recursive: true, force: true })
-  }
-})
-
 test('列表按编号升序，可按状态过滤', async () => {
   const { store, home } = await createStore()
   try {

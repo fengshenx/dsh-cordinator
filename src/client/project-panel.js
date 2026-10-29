@@ -220,7 +220,7 @@ export function ProjectPanel(props) {
     setNaming(null)
     const uiWorkspace = getUiWorkspace?.()
     if (uiWorkspace === undefined) {
-      setNotice('目录选择器不可用：请在终端里用 add_project 建项目。')
+      setNotice('目录选择器不可用：当前宿主无法选择目录，请换用 web profile 后再试。')
       return
     }
     setBusy(true)

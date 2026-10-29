@@ -26,12 +26,26 @@ import {
   sortActiveCards,
   sortDoneCards,
 } from './board-projection.js'
-import { BOARD_REFRESH_MS, fetchBoardCards, resolveProject } from './project-board-data.js'
+import {
+  BOARD_REFRESH_MS,
+  boardViewState,
+  fetchBoardCards,
+  resolveProject,
+  sameProjectSummary,
+} from './project-board-data.js'
 import { SlotRetention, retainTargetOf } from './slot-retain.js'
 import { BoardCard } from './board-card.js'
 import { CardDetail } from './card-detail.js'
 import { ensureBoardStyles } from './board-styles.js'
 import { productIcon } from './icons.js'
+
+/**
+ * 项目归属与协调者身份的复核间隔。
+ *
+ * 卡片每 2 秒拉一次，但「这个会话还是不是该项目的协调者」不必那么频繁：协调者
+ * 被换新或归档是低频事件，30 秒足以让旧面板切到提示。
+ */
+const PROJECT_RECHECK_MS = 30_000
 
 /**
  * 看板面板主体。
@@ -285,7 +299,10 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 不能先闪一句「不属于任何项目」——那是还没问完就下的结论。
   const [resolved, setResolved] = useState(false)
   const [cards, setCards] = useState(() => [])
-  const [error, setError] = useState(null)
+  // 两个错误源分开存：项目复核失败与卡片刷新失败各自有出口，否则一方成功
+  // 会把另一方的错误清掉，错误页闪进闪出且提示与真实原因不符。
+  const [projectError, setProjectError] = useState(null)
+  const [cardsError, setCardsError] = useState(null)
   const [loaded, setLoaded] = useState(false)
   const [detail, setDetail] = useState(null)
   const [doneOpen, setDoneOpen] = useState(false)
@@ -301,33 +318,49 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   }, [])
 
   // 看板是项目维度的：先按面板所属的会话解析出项目。会话换了（面板随之重挂载）
-  // 就重新解析。
+  // 就重新解析；同一会话下定期复核——协调者可能在面板打开期间被换新或归档，
+  // 身份与存活状态不能只在挂载时问一次。
   useEffect(() => {
     let cancelled = false
-    setError(null)
+    setProjectError(null)
     setResolved(false)
     // 换了会话就是换了项目，上一个项目的卡片不能留在面板里。
     setCards([])
     setLoaded(false)
-    resolveProject(callRemote, sessionId)
-      .then((resolvedProject) => {
-        if (cancelled) return
-        setProject(resolvedProject)
-        setResolved(true)
-        setError(null)
-      })
-      .catch((cause) => {
-        if (cancelled) return
-        setError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
-      })
-    return () => { cancelled = true }
+    const load = () => {
+      resolveProject(callRemote, sessionId)
+        .then((resolvedProject) => {
+          if (cancelled) return
+          // 摘要没变时保持旧引用：否则卡片取数的 effect 会跟着每 30 秒重启一次。
+          setProject((previous) => (sameProjectSummary(previous, resolvedProject) ? previous : resolvedProject))
+          setResolved(true)
+          setProjectError(null)
+        })
+        .catch((cause) => {
+          if (cancelled) return
+          // 复核失败只在还没有摘要时才算错误；已有摘要就保留旧值——面板每 30 秒
+          // 复核一次，一次 RPC 抖动不该把已显示的看板打回错误页。
+          setProjectError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
+        })
+    }
+    load()
+    const timer = setInterval(load, PROJECT_RECHECK_MS)
+    const onFocus = () => { load() }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [sessionId, callRemote])
 
   // 卡片取数：挂载时拉一次，之后定时刷新，窗口重新聚焦时立刻刷一次。
   // 定时刷新是必要的——卡片可能由别的会话（worker）建，那边的事件流不在本面板
   // 的窗口里，等不到它的变化。
   useEffect(() => {
-    if (project === undefined) return undefined
+    // 看板只对项目协调者开放：项目目录里的普通会话与 worker 也能解析到项目
+    // （卡片归属要用），但这里不给它们取卡。协调者会话已失效时同样不取。
+    if (boardViewState(project, sessionId) !== 'coordinator') return undefined
     let cancelled = false
     const refresh = () => {
       fetchBoardCards(callRemote, project.id)
@@ -337,12 +370,12 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
           setLoaded(true)
           // 成功就清掉上一次的错误：项目通道比面板晚就绪、或一次 RPC 抖动，
           // 都不该把面板判死在错误页上——2 秒轮询本来就是干这个的。
-          setError(null)
+          setCardsError(null)
         })
         .catch((cause) => {
           if (cancelled) return
           // 轮询失败保留已加载的卡片，只是把错误挂出来，不清空列表。
-          setError(`读取卡片失败：${cause instanceof Error ? cause.message : String(cause)}`)
+          setCardsError(`读取卡片失败：${cause instanceof Error ? cause.message : String(cause)}`)
         })
     }
     refresh()
@@ -354,7 +387,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
       clearInterval(timer)
       window.removeEventListener('focus', onFocus)
     }
-  }, [project, callRemote])
+  }, [project, callRemote, sessionId])
 
   const cardList = cards
   const states = useSlotStates(cardList, getSessions, useSessionStatus, sessionId)
@@ -375,17 +408,21 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
 
   const openDetail = useCallback((card, anchor) => { setDetail({ card, anchor }) }, [])
 
-  if (error !== null) {
+  // 取卡条件与下面的展示分支读同一个判定，避免两处守卫各写一套。
+  const view = boardViewState(project, sessionId)
+
+  // 只有还没解析出项目时，项目错误才占满面板；已有摘要就让复核失败静默重试。
+  if (projectError !== null && project === undefined) {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-empty' },
-      createElement('div', { className: 'dsh-coordinator-board-empty-title' }, error),
+      createElement('div', { className: 'dsh-coordinator-board-empty-title' }, projectError),
     )
   }
 
   // 会话不属于任何项目：没有项目看板可看。这不是错误状态，是「这里没有看板」。
   // 解析还没回来时先给骨架——早闪一句「不属于任何项目」是还没问完就下的结论。
-  if (project === undefined) {
+  if (view === 'no-project') {
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
@@ -411,6 +448,42 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
             createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
             createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
           ),
+    )
+  }
+
+  // 属于项目但不是可看的协调者：拆两种出口——执行会话指路去协调者；协调者
+  // 本身已失效（归档或被替换但绑定没改）时指路去左栏换新协调者，不把人指向
+  // 一个打不开的会话。
+  if (view === 'coordinator-dead' || view === 'not-viewable') {
+    const coordinatorDead = view === 'coordinator-dead'
+    return createElement(
+      'div',
+      { className: 'dsh-coordinator-board-list' },
+      createElement(
+        'div',
+        { className: 'dsh-coordinator-board-empty' },
+        createElement(
+          'div',
+          { className: 'dsh-coordinator-board-empty-title' },
+          coordinatorDead ? '该项目的协调者会话已失效' : '看板只在项目协调者会话中打开',
+        ),
+        createElement(
+          'div',
+          { className: 'dsh-coordinator-board-empty-hint' },
+          coordinatorDead
+            ? '请在左栏项目区块对该项目换新协调者，再打开看板。'
+            : `这是「${project.name ?? '本项目'}」里的执行会话；去该项目的协调者会话查看交付看板。`,
+        ),
+      ),
+    )
+  }
+
+  // 首次取卡就失败才占满面板；已经有卡片时刷新失败只留着列表等下一轮。
+  if (cardsError !== null && cards.length === 0) {
+    return createElement(
+      'div',
+      { className: 'dsh-coordinator-board-empty' },
+      createElement('div', { className: 'dsh-coordinator-board-empty-title' }, cardsError),
     )
   }
 

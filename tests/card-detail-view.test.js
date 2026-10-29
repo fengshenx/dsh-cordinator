@@ -21,19 +21,9 @@ test('详情分段：说明为空时不出说明段', () => {
   assert.equal(detailSections(undefined).spec, null)
 })
 
-test('详情分段：检查点只出现有内容的段', () => {
-  const sections = detailSections({
-    checkpoint: { summary: '做了一半', nextAction: '', blocker: '等外部依赖' },
-  })
-  assert.deepEqual(sections.checkpoint, [
-    { title: '当前进展', text: '做了一半' },
-    { title: '阻塞', text: '等外部依赖' },
-  ])
-})
-
-test('详情分段：没有检查点时没有检查点段', () => {
-  assert.deepEqual(detailSections({}).checkpoint, [])
-  assert.deepEqual(detailSections({ checkpoint: {} }).checkpoint, [])
+test('详情分段只保留说明与链接', () => {
+  const sections = detailSections({ spec: '验收标准', links: [], checkpoint: { summary: '旧字段' } })
+  assert.deepEqual(Object.keys(sections).sort(), ['links', 'spec'])
 })
 
 test('详情分段：链接不是数组时当作空列表', () => {

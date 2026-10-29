@@ -191,6 +191,29 @@ test('列表标注协调者会话是否还在', async () => {
   assert.equal(projects[1].coordinatorAlive, false)
 })
 
+test('归档的协调者会话按失效处理', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = makeService({
+    store,
+    // 归档只往工作区注册表里加 id，会话记录还在；存活判定不能只看会话是否存在
+    ctx: {
+      get: (name) => (name === 'workspaceRegistry'
+        ? { archivedSessionIds: ['session-1'] }
+        : undefined),
+    },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const created = await service.create({ directory: workspace, name: 'alpha' })
+  assert.equal(created.coordinatorSessionId, 'session-1')
+  const projects = await service.list()
+  assert.equal(projects[0].coordinatorAlive, false)
+  const resolved = await service.resolveProjectOfSession('session-1')
+  assert.equal(resolved.coordinatorAlive, false)
+})
+
 test('协调者索引在增删改后保持同步', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
@@ -599,12 +622,28 @@ test('解析会话所属项目：协调者会话按注册表指针，worker 按 
   const coordinator = await service.resolveProjectOfSession(project.coordinatorSessionId)
   assert.equal(coordinator.id, project.id)
   assert.equal(coordinator.name, 'alpha')
+  assert.equal(coordinator.coordinatorAlive, true)
   // worker 会话：cwd 与项目目录相同
   const worker = await service.resolveProjectOfSession('session-worker')
   assert.equal(worker.id, project.id)
   // 目录不同的会话不归属任何项目
   assert.equal(await service.resolveProjectOfSession('session-elsewhere'), undefined)
   assert.equal(await service.resolveProjectOfSession('session-unknown'), undefined)
+})
+
+test('解析会话所属项目：协调者会话已失效时如实报告', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = makeService({
+    store,
+    ctx: createContext(),
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => false,
+  })
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const resolved = await service.resolveProjectOfSession(project.coordinatorSessionId)
+  assert.equal(resolved.id, project.id)
+  assert.equal(resolved.coordinatorAlive, false)
 })
 
 test('解析会话所属项目：符号链接写法与项目目录相同也算同一个项目', async () => {

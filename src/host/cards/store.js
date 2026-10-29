@@ -1,8 +1,8 @@
 /**
  * 任务看板卡片的落盘存储。
  *
- * 卡片是任务管理单元（会话是执行单元）：标题、规格、状态、链接、槽位绑定与检查点
- * 都落盘；信号灯（等你/需注意/推进/停滞）不落盘，由看板按名下会话状态纯投影。
+ * 卡片是任务管理单元（会话是执行单元）：标题、规格、状态、链接与槽位绑定都落盘；
+ * 信号灯（等你/需注意/推进/停滞）不落盘，由看板按名下会话状态纯投影。
  *
  * 三条领域规则，任何改动都必须保持：
  *
@@ -146,13 +146,11 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
      * @param {string} [input.spec] - 任务规格
      * @param {object[]} [input.links] - 链接条目
      * @param {object} [input.slots] - 槽位绑定
-     * @param {object} [input.checkpoint] - 检查点（维护者与时间由宿主补写）
-     * @param {string} [input.updatedBy] - 维护者会话 id
      * @param {string} [input.projectId] - 所属项目 id；宿主按调用方会话判定
      * @param {string} [input.createdBy] - 建卡会话 id
      * @returns {Promise<object>} 新建的卡片
      */
-    async create({ title, spec, links, slots, checkpoint, updatedBy, projectId, createdBy }) {
+    async create({ title, spec, links, slots, projectId, createdBy }) {
       return serialize(async () => {
         const store = await readStore(file, recoverFromCorruption, io)
         const now = clock()
@@ -165,9 +163,6 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
           status: 'active',
           ...links === undefined ? {} : { links },
           ...slots === undefined ? {} : { slots },
-          ...checkpoint === undefined
-            ? {}
-            : { checkpoint: withCheckpointMeta(checkpoint, updatedBy, now) },
           ...projectId === undefined ? {} : { projectId },
           ...createdBy === undefined ? {} : { createdBy },
           createdAt: now,
@@ -191,9 +186,7 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
      * @param {string} [input.status] - 新状态
      * @param {object[]} [input.links] - 新链接条目
      * @param {object} [input.slots] - 新槽位绑定
-     * @param {object} [input.checkpoint] - 新检查点
      * @param {number} [input.sortOrder] - 手动排序序号
-     * @param {string} [input.updatedBy] - 维护者会话 id
      * @returns {Promise<object>} 更新后的卡片
      */
     async update({
@@ -204,9 +197,7 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
       status,
       links,
       slots,
-      checkpoint,
       sortOrder,
-      updatedBy,
     }) {
       return serialize(async () => {
         const store = await readStore(file, recoverFromCorruption, io)
@@ -231,9 +222,6 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
         if (links !== undefined) next.links = links
         if (slots !== undefined) next.slots = slots
         if (sortOrder !== undefined) next.sortOrder = sortOrder
-        if (checkpoint !== undefined) {
-          next.checkpoint = withCheckpointMeta(checkpoint, updatedBy, now)
-        }
         if (status !== undefined && status !== card.status) {
           next.status = status
           if (status === 'done') next.doneAt = now
@@ -242,6 +230,9 @@ export function createCardStore({ home, logger = () => {}, io = defaultIo, clock
         // 内容没有实质变化时不 bump revision、不落盘：零字段调用不是内容更新，
         // 无谓的版本递增会作废其他会话持有的 expectedRevision，人为制造冲突。
         if (isSameContent(card, next)) return card
+        // checkpoint 已废弃：旧记录里的字段在下一次实质更新时顺带清掉，不为它
+        // 单独 bump revision。
+        delete next.checkpoint
         next.revision = current + 1
         next.updatedAt = now
         store.cards[store.cards.indexOf(card)] = next
@@ -427,20 +418,3 @@ function isSameContent(current, next) {
   return JSON.stringify(currentRest) === JSON.stringify(nextRest)
 }
 
-/**
- * 补齐检查点的维护者与确认时间。调用方只能提供事实部分。
- * @param {object} checkpoint - 检查点事实
- * @param {string | undefined} updatedBy - 维护者会话 id
- * @param {number} updatedAt - 确认时间
- * @returns {object} 完整检查点
- */
-function withCheckpointMeta(checkpoint, updatedBy, updatedAt) {
-  return {
-    summary: checkpoint.summary ?? '',
-    nextAction: checkpoint.nextAction ?? '',
-    ...checkpoint.blocker === undefined ? {} : { blocker: checkpoint.blocker },
-    ...checkpoint.outputVersion === undefined ? {} : { outputVersion: checkpoint.outputVersion },
-    updatedBy: updatedBy ?? '',
-    updatedAt,
-  }
-}

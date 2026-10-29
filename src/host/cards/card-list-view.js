@@ -9,8 +9,8 @@
  *
  * - 列表按最近更新倒序，默认只列 active，一页 20 张；
  * - 列表只给可观测事实（标题、编号、状态、id、版本、更新时间、链接标签、槽位），
- *   规格与检查点全文只在单卡查询出现——它们是协调者自述，读回不产生新信息；
- * - 规格、链接、检查点三项无论有无都显式成行：省略会让模型把「未渲染」读成
+ *   规格全文只在单卡查询出现——它是协调者自述，读回不产生新信息；
+ * - 规格与链接两项无论有无都显式成行：省略会让模型把「未渲染」读成
  *   「没有」，而「这张卡该补规格」「这张卡有产物链接」都会改变下一步动作；
  * - 输出有字符预算，逐卡累加，超出按卡截断并给出续页位置。
  *
@@ -189,14 +189,13 @@ function renderCardBrief(card) {
   const lines = [cardHeading(card)]
   lines.push(`  spec: ${hasSpec(card) ? '有' : '无'}`)
   lines.push(`  links: ${summarizeLinks(card)}`)
-  lines.push(`  checkpoint: ${card.checkpoint != null ? '有' : '无'}`)
   const slots = renderSlots(card)
   if (slots !== undefined) lines.push(slots)
   return lines
 }
 
 /**
- * 单卡模式：规格、链接与检查点全文。
+ * 单卡模式：规格与链接全文。
  *
  * @param {object} card - 卡片
  * @returns {string[]} 详情行
@@ -214,7 +213,6 @@ function renderCardDetail(card) {
       lines.push(`  - ${link?.label ?? ''}${url}${purpose}`)
     }
   }
-  if (card.checkpoint != null) lines.push(`  checkpoint: ${JSON.stringify(card.checkpoint)}`)
   const slots = renderSlots(card)
   if (slots !== undefined) lines.push(slots)
   return lines
