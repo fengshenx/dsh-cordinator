@@ -31,8 +31,9 @@ function createFakeCanonicalizer(mapping) {
 test('worker 会话 cwd 等于项目目录时归属该项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
-    sessions: [{ id: 's1', cwd: '/repo', origin: 'subagent' }],
+    sessions: [{ id: 's1', cwd: '/repo' }],
     canonicalize: createFakeCanonicalizer({}),
+    isWorkerSession: () => true,
   })
   assert.deepEqual(grouped.get('p1'), ['s1'])
 })
@@ -46,6 +47,7 @@ test('非 worker 会话不归属项目', async () => {
       { id: 'manual', cwd: '/repo' },
     ],
     canonicalize: createFakeCanonicalizer({}),
+    isWorkerSession: () => false,
   })
   assert.equal(grouped.has('p1'), false)
 })
@@ -55,13 +57,14 @@ test('同一物理目录的两种写法归到同一个项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/tmp/demo' }],
     sessions: [
-      { id: 'worker-a', cwd: '/tmp/demo', origin: 'subagent' },
-      { id: 'worker-b', cwd: '/private/tmp/demo', origin: 'subagent' },
+      { id: 'worker-a', cwd: '/tmp/demo' },
+      { id: 'worker-b', cwd: '/private/tmp/demo' },
     ],
     canonicalize: createFakeCanonicalizer({
       '/tmp/demo': '/private/tmp/demo',
       '/private/tmp/demo': '/private/tmp/demo',
     }),
+    isWorkerSession: () => true,
   })
   assert.deepEqual(grouped.get('p1'), ['worker-a', 'worker-b'])
 })
@@ -69,8 +72,9 @@ test('同一物理目录的两种写法归到同一个项目', async () => {
 test('子目录里的会话不归属项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
-    sessions: [{ id: 's1', cwd: '/repo/sub', origin: 'subagent' }],
+    sessions: [{ id: 's1', cwd: '/repo/sub' }],
     canonicalize: createFakeCanonicalizer({}),
+    isWorkerSession: () => true,
   })
   assert.equal(grouped.has('p1'), false)
 })
@@ -78,8 +82,9 @@ test('子目录里的会话不归属项目', async () => {
 test('没有 cwd 的会话不归属任何项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
-    sessions: [{ id: 's1', origin: 'subagent' }],
+    sessions: [{ id: 's1' }],
     canonicalize: createFakeCanonicalizer({}),
+    isWorkerSession: () => true,
   })
   assert.equal(grouped.has('p1'), false)
 })
@@ -90,8 +95,9 @@ test('两个项目指向同一目录时先注册的那个持有会话', async ()
       { id: 'p1', directory: '/repo' },
       { id: 'p2', directory: '/repo' },
     ],
-    sessions: [{ id: 's1', cwd: '/repo', origin: 'subagent' }],
+    sessions: [{ id: 's1', cwd: '/repo' }],
     canonicalize: createFakeCanonicalizer({}),
+    isWorkerSession: () => true,
   })
   assert.deepEqual(grouped.get('p1'), ['s1'])
   assert.equal(grouped.has('p2'), false)
@@ -130,6 +136,7 @@ test('服务按项目聚合会话', async () => {
     ctx: { get: (key) => (key === 'sessionQuery' ? query : undefined) },
     createCoordinatorSession: async () => 'session-coordinator',
     sessionExists: async () => true,
+    isWorkerSession: (id) => id === 'session-worker',
   })
   const project = await service.create({ directory: workspace, name: 'alpha' })
 
@@ -147,6 +154,7 @@ test('服务在没有 sessionQuery 时返回空映射', async () => {
     ctx: { get: () => undefined },
     createCoordinatorSession: async () => 'session-coordinator',
     sessionExists: async () => true,
+    isWorkerSession: () => true,
   })
   await service.create({ directory: workspace, name: 'alpha' })
   assert.deepEqual(await service.sessionsByProject(), [])
@@ -165,14 +173,15 @@ test('真实符号链接目录按 realpath 归一后归属同一项目', async (
       get: (key) => (key === 'sessionQuery'
         ? {
             listSessions: async () => [
-              { header: { id: 'via-real', cwd: canonical, origin: 'subagent' } },
-              { header: { id: 'via-link', cwd: link, origin: 'subagent' } },
+              { header: { id: 'via-real', cwd: canonical } },
+              { header: { id: 'via-link', cwd: link } },
             ],
           }
         : undefined),
     },
     createCoordinatorSession: async () => 'session-coordinator',
     sessionExists: async () => true,
+    isWorkerSession: () => true,
   })
   const project = await service.create({ directory: link, name: 'alpha' })
 
@@ -190,13 +199,53 @@ test('项目目录下新建的子目录不改变归属', async () => {
     store,
     ctx: {
       get: (key) => (key === 'sessionQuery'
-        ? { listSessions: async () => [{ header: { id: 's1', cwd: join(workspace, 'nested'), origin: 'subagent' } }] }
+        ? { listSessions: async () => [{ header: { id: 's1', cwd: join(workspace, 'nested') } }] }
         : undefined),
     },
     createCoordinatorSession: async () => 'session-coordinator',
     sessionExists: async () => true,
+    isWorkerSession: () => true,
   })
   await service.create({ directory: workspace, name: 'alpha' })
 
   assert.deepEqual(await service.sessionsByProject(), [])
+})
+
+test('给了 worker 判定时按判定收会话，不看会话头的 origin', async () => {
+  // worker 现在是普通根会话，会话头没有 origin 标记，只能按登记判定。
+  const grouped = await groupSessionsByProject({
+    projects: [{ id: 'p1', directory: '/repo' }],
+    sessions: [
+      { id: 'worker-root', cwd: '/repo' },
+      { id: 'subagent-legacy', cwd: '/repo', origin: 'subagent' },
+    ],
+    canonicalize: createFakeCanonicalizer({}),
+    isWorkerSession: (id) => id === 'worker-root',
+  })
+  assert.deepEqual(grouped.get('p1'), ['worker-root'])
+})
+
+test('服务把 worker 判定透传给分组', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = createProjectService({
+    store,
+    ctx: {
+      get: (key) => (key === 'sessionQuery'
+        ? {
+            listSessions: async () => [
+              { header: { id: 'session-coordinator', cwd: workspace } },
+              { header: { id: 'worker-root', cwd: workspace } },
+            ],
+          }
+        : undefined),
+    },
+    createCoordinatorSession: async () => 'session-coordinator',
+    sessionExists: async () => true,
+    isWorkerSession: (id) => id === 'worker-root',
+  })
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+
+  const grouped = await service.sessionsByProject()
+  assert.deepEqual(grouped, [{ projectId: project.id, sessionIds: ['worker-root'] }])
 })

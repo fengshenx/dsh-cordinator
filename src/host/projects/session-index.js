@@ -4,10 +4,10 @@
  * 归组的判据是**目录 + worker 身份**，不是会话与项目的显式指针——worker 会话没有
  * 任何项目字段，只有 `SessionHeader.cwd` 能说明它跑在哪。
  *
- * **项目下只列 worker 会话**。会话头里的 `origin: 'subagent'` 标记子代理会话，
- * 协调者派出的 worker 就是这一类。同一目录里还可能有别的会话：协调者自己（入口在
- * 项目行上）、用户在项目目录里手动开的（那是用户自己的会话，不属于项目编排）。
- * 把它们混进项目会让「项目下有哪些 worker」这件事失真。
+ * **项目下只列 worker 会话**。worker 是普通根会话，会话头里没有身份标记，谁是
+ * worker 只能由调用方传入的登记判定（`isWorkerSession`）说了算。同一目录里还可能
+ * 有别的会话：协调者自己（入口在项目行上）、用户在项目目录里手动开的（那是用户
+ * 自己的会话，不属于项目编排）。把它们混进项目会让「项目下有哪些 worker」失真。
  *
  * **目录必须按 realpath 归一后再比**。同一物理目录在会话头里有多种写法：macOS 的
  * `/tmp` 是指向 `/private/tmp` 的符号链接，项目记录里存的是用户给的原始路径，会话
@@ -53,11 +53,13 @@ export function createCanonicalizer(realpath) {
  *
  * @param {object} options - 选项
  * @param {object[]} options.projects - 项目记录，每条至少有 `id` 与 `directory`
- * @param {object[]} options.sessions - 会话摘要，每条至少有 `id`、`cwd` 与 `origin`
+ * @param {object[]} options.sessions - 会话摘要，每条至少有 `id` 与 `cwd`
  * @param {(path: string) => Promise<string>} options.canonicalize - 路径归一器
+ * @param {(sessionId: string) => boolean} options.isWorkerSession - worker 会话判定。
+ *   会话头看不出身份（根会话没有 `origin` 标记），只能按登记表判，所以这里是必需的。
  * @returns {Promise<Map<string, string[]>>} 项目 id 到 worker 会话 id 列表；没有 worker 的项目不在映射里
  */
-export async function groupSessionsByProject({ projects, sessions, canonicalize }) {
+export async function groupSessionsByProject({ projects, sessions, canonicalize, isWorkerSession }) {
   /** @type {Map<string, string>} 归一后的项目目录到项目 id */
   const projectIdByDirectory = new Map()
   for (const project of projects) {
@@ -72,9 +74,10 @@ export async function groupSessionsByProject({ projects, sessions, canonicalize 
   /** @type {Map<string, string[]>} 项目 id 到会话 id 列表 */
   const grouped = new Map()
   for (const session of sessions) {
-    // 只有 worker（子代理会话）属于项目：协调者会话的入口在项目行上，用户在项目
-    // 目录里手动开的会话也不该混进项目的编排视图。
-    if (session.origin !== 'subagent') continue
+    // 只有本 bundle 派出的 worker 属于项目：协调者会话的入口在项目行上，用户在项目
+    // 目录里手动开的会话也不该混进项目的编排视图。身份只能按登记表判——worker 是
+    // 普通根会话（由 `agents.create` 建），会话头没有 `origin` 标记。
+    if (!isWorkerSession(session.id)) continue
     if (typeof session.cwd !== 'string' || session.cwd === '') continue
     const canonical = await canonicalize(session.cwd)
     const projectId = projectIdByDirectory.get(canonical)

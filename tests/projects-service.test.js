@@ -23,6 +23,19 @@ async function makeWorkspace() {
 }
 
 /**
+ * 建项目服务。
+ *
+ * 这个文件的用例都不关心「谁是 worker」，一律按「谁都不是」处理；会话树的分组
+ * 判据由 `project-session-index.test.js` 专门覆盖。
+ *
+ * @param {object} options - 传给 `createProjectService` 的选项
+ * @returns {object} 项目服务
+ */
+function makeService(options) {
+  return createProjectService({ isWorkerSession: () => false, ...options })
+}
+
+/**
  * 造一个假的 Cordis 上下文。
  * @returns {object} 上下文
  */
@@ -57,7 +70,7 @@ test('建项目会建协调者会话并绑定', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const factory = createSessionFactory()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: factory,
@@ -74,7 +87,7 @@ test('建项目会建协调者会话并绑定', async () => {
 test('项目名缺省取目录末段', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -87,7 +100,7 @@ test('项目名缺省取目录末段', async () => {
 test('建会话失败时不落盘', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory({ fail: true }),
@@ -101,7 +114,7 @@ test('建会话失败时不落盘', async () => {
 test('目录不存在时拒绝建项目', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -117,7 +130,7 @@ test('目录不存在时拒绝建项目', async () => {
 test('目录不是绝对路径时拒绝建项目', async () => {
   const { home } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -130,7 +143,7 @@ test('目录不是绝对路径时拒绝建项目', async () => {
 test('目录指向文件时拒绝建项目', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -146,7 +159,7 @@ test('目录指向文件时拒绝建项目', async () => {
 test('项目名不能为空或过长', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -163,7 +176,7 @@ test('项目名不能为空或过长', async () => {
 test('列表标注协调者会话是否还在', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -181,7 +194,7 @@ test('列表标注协调者会话是否还在', async () => {
 test('协调者索引在增删改后保持同步', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -202,7 +215,7 @@ test('协调者索引在增删改后保持同步', async () => {
 test('重启后从注册表重建协调者索引', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const first = createProjectService({
+  const first = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -210,7 +223,7 @@ test('重启后从注册表重建协调者索引', async () => {
   })
   await first.create({ directory: workspace, name: 'alpha' })
 
-  const second = createProjectService({
+  const second = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -223,7 +236,7 @@ test('重启后从注册表重建协调者索引', async () => {
 test('换新协调者会改绑，旧会话不再指向项目', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -240,7 +253,7 @@ test('换新协调者会改绑，旧会话不再指向项目', async () => {
 test('注销项目保留协调者会话', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -301,7 +314,7 @@ test('attachCoordinator 把协调者会话挂到项目目录的工作区', async
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -328,7 +341,7 @@ test('attachCoordinator 复用已存在的工作区，不重复注册，也不�
     attachSession: async () => {},
   }
   const registry = createWorkspaceRegistry({ workspaces: [existing] })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -347,7 +360,7 @@ test('attachCoordinator 对已挂载的会话是幂等的', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -363,7 +376,7 @@ test('attachCoordinator 对已挂载的会话是幂等的', async () => {
 test('attachCoordinator 在宿主没有工作区服务时不报错', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -389,7 +402,7 @@ test('attachCoordinator 挂载失败时返回原因而不抛出', async () => {
       throw new Error('会话目录与工作区不一致')
     },
   })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -406,7 +419,7 @@ test('项目列表标注协调者会话是否已挂到工作区', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -475,7 +488,7 @@ test('插件注册的工作区记进项目记录', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -498,7 +511,7 @@ test('复用用户自己加的工作区不记进项目记录', async () => {
     attachSession: async () => {},
   }
   const registry = createWorkspaceRegistry({ workspaces: [userWorkspace] })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -515,7 +528,7 @@ test('项目列表带出对应的工作区 id', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -531,7 +544,7 @@ test('从宿主移除项目工作区会清掉记录', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -553,7 +566,7 @@ test('从宿主移除项目工作区会清掉记录', async () => {
 test('建项目不发起任何模型调用', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -574,7 +587,7 @@ test('解析会话所属项目：协调者会话按注册表指针，worker 按 
       'session-elsewhere': { header: { cwd: '/somewhere/else' } },
     })[id],
   }
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -600,7 +613,7 @@ test('解析会话所属项目：符号链接写法与项目目录相同也算�
   const link = join(home, 'link-to-workspace')
   await symlink(workspace, link)
   const sessions = { get: () => ({ header: { cwd: link } }) }
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -615,7 +628,7 @@ test('删项目后原会话不再归属任何项目', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const sessions = { get: () => ({ header: { cwd: workspace } }) }
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -651,7 +664,7 @@ test('索引重建完成前判定归属：等重建，不静悄悄地丢归属',
     getByCoordinator: (sessionId) => base.getByCoordinator(sessionId),
   }
   const sessions = { get: () => ({ header: { cwd: workspace } }) }
-  const service = createProjectService({
+  const service = makeService({
     store,
     ctx: { get: (name) => (name === 'sessions' ? sessions : undefined) },
     createCoordinatorSession: createSessionFactory(),
@@ -668,7 +681,7 @@ test('索引重建完成前判定归属：等重建，不静悄悄地丢归属',
 
 test('isCoordinatorSession 同步认出建项目时定下的协调者', async () => {
   const { home, workspace } = await makeWorkspace()
-  const service = createProjectService({
+  const service = makeService({
     store: createProjectStore({ home }),
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),
@@ -693,7 +706,7 @@ test('isCoordinatorSession 在索引未重建时保守放行', async () => {
     createdAt: 1,
     updatedAt: 1,
   })
-  const service = createProjectService({
+  const service = makeService({
     store: base,
     ctx: createContext(),
     createCoordinatorSession: createSessionFactory(),

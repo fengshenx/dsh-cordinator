@@ -35,6 +35,7 @@ import { createPortal } from 'react-dom'
 import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import {
+  collectExcludedSessionIds,
   defaultProjectName,
   isArchiveActiveRefusal,
   isProjectOpenable,
@@ -203,21 +204,14 @@ export function ProjectPanel(props) {
     }
   }, [getWorkspaces, onWorkspacesReady])
 
-  // 项目的协调者会话不在官方工作区树里重复出现：它由项目区块呈现。worker 会话
-  // 不必排除——宿主官方树已经把 subagent 会话滤掉（`tree.ts` 的 `sessionVisible`
-  // 第一行），那些行根本不渲染。用户在项目目录里手动开的会话不属于项目，留在官方
-  // 树里。
+  // 项目的协调者与 worker 会话都不在官方工作区树里重复出现：它们由项目区块呈现。
+  // worker 是普通根会话（不是 subagent），官方树不会自己滤掉，只能按会话 id 排除。
+  // 用户在项目目录里手动开的会话不属于项目，留在官方树里。
   useEffect(() => {
     const exclusion = createWorkspaceExclusion()
-    const excluded = new Set()
-    for (const project of projects) {
-      if (typeof project.coordinatorSessionId === 'string' && project.coordinatorSessionId !== '') {
-        excluded.add(project.coordinatorSessionId)
-      }
-    }
-    exclusion.update(excluded)
+    exclusion.update(collectExcludedSessionIds(projects, sessionsByProject))
     return () => exclusion.dispose()
-  }, [projects])
+  }, [projects, sessionsByProject])
 
   const startAdd = useCallback(async () => {
     if (busy) return

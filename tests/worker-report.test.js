@@ -15,7 +15,7 @@ import {
 test('worker 回报的 source 记着身份名与子会话', () => {
   const source = workerReportSource('前端 worker', 'child-1', '任务「前端 worker」已结束。')
   assert.equal(source.kind, WORKER_REPORT_SOURCE_KIND)
-  assert.equal(source.worker.label, '前端 worker')
+  assert.equal(source.worker.name, '前端 worker')
   assert.equal(source.worker.childSessionId, 'child-1')
   assert.equal(source.summary, '任务「前端 worker」已结束。')
   assert.equal(source.form, 'notice')
@@ -62,14 +62,19 @@ test('节点状态带着回报内容与终态', () => {
 
 test('读 worker 回报的 source 时逐层判型', () => {
   assert.deepEqual(
-    readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { label: 'a', childSessionId: 'b' } }),
-    { label: 'a', childSessionId: 'b', report: '', outcome: 'completed' },
+    readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { name: 'a', childSessionId: 'b' } }),
+    { name: 'a', childSessionId: 'b', report: '', outcome: 'completed' },
   )
-  assert.equal(readWorkerReportSource({ kind: 'user', worker: { label: 'a', childSessionId: 'b' } }), null)
+  // 改名（label → name）之前落盘的消息只有 label，读旧消息时退回它。
+  assert.deepEqual(
+    readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { label: 'a', childSessionId: 'b' } }),
+    { name: 'a', childSessionId: 'b', report: '', outcome: 'completed' },
+  )
+  assert.equal(readWorkerReportSource({ kind: 'user', worker: { name: 'a', childSessionId: 'b' } }), null)
   assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND }), null)
   assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: null }), null)
-  assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { label: 1, childSessionId: 'b' } }), null)
-  assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { label: 'a' } }), null)
+  assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { name: 1, childSessionId: 'b' } }), null)
+  assert.equal(readWorkerReportSource({ kind: WORKER_REPORT_SOURCE_KIND, worker: { name: 'a' } }), null)
   assert.equal(readWorkerReportSource(null), null)
   assert.equal(readWorkerReportSource([{ kind: WORKER_REPORT_SOURCE_KIND }]), null)
   assert.equal(readWorkerReportSource('worker-report'), null)
@@ -85,7 +90,7 @@ test('从内容块里取纯文本', () => {
 
 test('通知正文不带说话人前缀', () => {
   const text = buildNotificationText(
-    { label: '前端 worker', childId: 'child-1' },
+    { name: '前端 worker', childId: 'child-1' },
     { ok: true, result: { stopReason: 'completed', output: [{ type: 'text', text: '干完了' }] } },
   )
   assert.equal(text.includes('【worker 回报】'), false)
@@ -142,7 +147,7 @@ test('节点定义把回报事实装进视图节点', () => {
     },
   }
   const state = workerReportDefinition.start({}, { event, location: { kind: 'turn' } })
-  assert.equal(state.label, 'worker a')
+  assert.equal(state.name, 'worker a')
   assert.equal(state.childSessionId, 'child-1')
   assert.equal(state.text, '任务「a」已结束。')
   assert.equal(state.seq, 12)
@@ -159,11 +164,11 @@ test('节点定义把回报事实装进视图节点', () => {
   assert.equal(node.anchorSeq, 12)
   assert.equal(node.visibility, 'visible')
   assert.equal(node.groupTree, 'input')
-  assert.equal(node.data.label, 'worker a')
+  assert.equal(node.data.name, 'worker a')
 })
 
 test('节点定义按官方口径给分组位置：回合首步开启新 exchange', () => {
-  const state = { seq: 1, time: 1, messageId: 'm1', text: 'x', label: 'a', childSessionId: 'c' }
+  const state = { seq: 1, time: 1, messageId: 'm1', text: 'x', name: 'a', childSessionId: 'c' }
   const first = workerReportDefinition.buildViewNode({
     key: 'k',
     id: 'm1',

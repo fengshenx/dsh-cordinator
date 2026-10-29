@@ -13,10 +13,12 @@ DeepSeek Harness 的协调者/执行者编排 bundle：多 Agent 编排协议 sk
 | 协议层 skill | `skills/coordinator-mode/` | `SKILL.md` + 4 个 playbook + 2 份参考：派工、接力、事件调度、卡片检查点、传话纪律、验收裁决、进度说明 |
 | 初始化 skill | `skills/init-project/` | 一次性把仓库工程约定写入目标项目 |
 | `init_project` 工具 | `src/host/tools/init-project.js` | 写入 AGENTS.md 受管区块，幂等 |
-| `spawn_worker` 工具 | `src/host/tools/spawn-worker.js` | 把任务派给后台 worker，**立即返回**子会话 id，不等结果 |
-| `message_worker` 工具 | `src/host/tools/message-worker.js` | 给已经结算的 worker 续聊：宿主冷恢复同一个子会话，`delivery` 由宿主固定，不进工具参数 |
-| worker 登记表 | `src/host/worker-registry.js` | 子会话 id → 父会话与任务的落盘映射（`workers.json`）：续聊跨进程也要找得到归属 |
-| 派工与唤醒 | `src/host/dispatch.js` | 建子会话、收终态、落盘完成通知、唤醒父会话开新 turn；续聊轮吞掉宿主自己的英文结算通知 |
+| `spawn_worker` 工具 | `src/host/tools/spawn-worker.js` | 建一个常驻 worker 会话并即刻派活，**立即返回**会话 id，不等结果 |
+| `message_worker` 工具 | `src/host/tools/message-worker.js` | 给 worker 续聊：活着就直接投，进程重启后冷恢复再投；可顺手 `rename` 改名 |
+| `worker_done` 工具 | `src/host/tools/worker-done.js` | worker 收尾时自己交作业（`summary` + `outcome`），协调者据此被唤醒 |
+| worker 会话 | `src/host/worker-sessions.js` | worker 的创建、投递、销毁：`agents.create` 建的**普通根会话**，常驻、可被人下钻对话、进程重启后能冷恢复 |
+| worker 登记表 | `src/host/worker-registry.js` | 会话 id → 父会话与名字的落盘映射（`workers.json`）：续聊跨进程也要找得到归属 |
+| 派工与唤醒 | `src/host/dispatch.js` | 建会话、收 worker 的完工回报、落盘完成通知、唤醒父会话开新 turn |
 | 通知落盘队列 | `src/host/notification-store.js` | 完成通知先写盘再唤醒；投递失败留队，父会话重开时补投 |
 | 卡片工具 | `src/host/tools/cards.js` | `create_card` / `update_card` / `list_cards`：建卡、改卡、查卡。卡片按项目归属（宿主按调用方会话判定，模型不传项目参数），`list_cards` 默认只列本项目，`scope=all` 才跨项目 |
 | 卡片存储 | `src/host/cards/store.js` | 卡片落盘与领域规则：编号不复用、revision 乐观并发、归档终态、检查点由宿主补写、项目归属字段 |
@@ -39,7 +41,7 @@ DeepSeek Harness 的协调者/执行者编排 bundle：多 Agent 编排协议 sk
 | 会话归档 | `src/client/project-panel.js`、`src/host/cards/store.js` | 悬停会话行，右端露出归档按钮（与官方会话行的 hover 动作同形：24×24、三级标签色）。归档走宿主的 `workspaces.archiveSession`，成功后摘掉卡片上指向该会话的槽位、删掉派工登记；会话正在跑时弹「停止并归档」确认，其余失败直接报错 |
 | worker 回报气泡 | `src/client/worker-report-view.js`、`src/client/worker-report-styles.js` | 回报正文默认折两行（`-webkit-line-clamp`），内容真的超两行时下方才出现「展示更多」，展开后变「收起」；气泡底色是前景色 2% 的极淡一层，边界由 1px 边框交代 |
 | 产品图标 | `src/client/icons.js` | 内联图标路径（宿主 web 端运行时没有 sprite，`<use>` 引用必然落空） |
-| 官方树排除 | `src/client/workspace-exclusion.js` | 把项目的协调者会话从官方工作区树里隐藏（渲染层，官方数据层不动）。worker 会话不必排除——宿主的官方树自己就滤掉 `origin: 'subagent'` 的行。用户在项目目录里手动开的会话不属于项目，留在官方树里 |
+| 官方树排除 | `src/client/workspace-exclusion.js` | 把项目的协调者与 worker 会话从官方工作区树里隐藏（渲染层，官方数据层不动）。worker 是普通根会话，官方树不会自己滤掉，按会话 id 排除。用户在项目目录里手动开的会话不属于项目，留在官方树里 |
 | 移除工作区确认弹窗 | `src/client/confirm-dialog.js` | 「从 dsh 移除工作区」的二次确认弹窗（复用 `modal-shell.js` 的浮层外壳：遮罩点击 / Escape / Tab 焦点循环 / 初始焦点 / 关闭后焦点返回） |
 | 协调者会话形态 | `src/client/coordinator-view.js`、`src/client/coordinator-view-logic.js` | 协调者会话注册一个第三方会话视图目标并激活它，官方外壳因此切到 active 形态——输入框停靠底部、会话区保持空白。没有消息、没有模型调用，也没有欢迎页 |
 
@@ -50,20 +52,20 @@ bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ct
 | 动作 | 工具 | 来源 |
 |---|---|---|
 | 派工给后台 worker | `spawn_worker` | 本 bundle |
-| 给已收工的 worker 续聊 | `message_worker` | 本 bundle |
-| 查执行者名录 | `list_agents` | dsh 原生（`agent_id` 即子会话 id） |
-| 给执行者传话 | `send_message` | dsh 原生 |
-| 中止执行者当前回合 | `interrupt_agent` | dsh 原生 |
+| 给 worker 续聊 / 改名 | `message_worker` | 本 bundle |
+| worker 收尾交作业 | `worker_done` | 本 bundle |
 | 读 worker 回报 | 完成通知 | 本 bundle 的唤醒器 |
 | 建卡 / 改卡 / 查卡 | `create_card` / `update_card` / `list_cards` | 本 bundle |
 | 写入仓库工程约定 | `init_project` | 本 bundle |
 | 列项目 / 注册项目 / 切项目 / 注销项目 | `list_projects` / `add_project` / `switch_project` / `remove_project` | 本 bundle |
 
-`send_message` 是 dsh 自己的子会话协议（只认活着的 agent、只认直接子会话），续聊走的是冷恢复，所以另行提供 `message_worker`：`send_message` 在目标已结算时根本发不出去。
+`spawn_worker` / `message_worker` / `worker_done` 这套接口是为「协调者派活、worker 交作业」设计的：会话由 `agents.create` 建，生命周期归本 bundle 管，不经 dsh 的 subagent 机制（subagent 结算即销毁，界面上还只读，既不能常驻也不能让人下钻对话）。
 
-**工具面按角色分配**（会话创建时裁剪，不是靠参数隐藏）：协调者拿到全部工具；普通会话没有 `spawn_worker` / `message_worker` / `list_cards`（它连项目都没进，看不到项目里有哪些卡，也不该派工）；worker 再少掉 `list_projects` / `add_project` / `switch_project` / `remove_project` / `init_project`（它派工时已经拿到目录与任务，改项目表只会制造并发写）。`create_card` / `update_card` 对所有会话开放——worker 边干活边把状态写回卡片。
+**worker 不走宿主的三件 subagent 控制工具**：`list_agents` 只列 subagent 目录里的子会话（worker 是根会话，列表里没有它）；`send_message` 要校验子会话的 `parentSession` 血统（worker 没有，走不通）；`interrupt_agent` 找不到目标时**静默返回成功**——拿它当中止手段会得到一个假回执。worker 的一切交互只经 `spawn_worker` 与 `message_worker`。
 
-dsh 另有一套同名的同伴模型工具（`tool-agent-team`，experimental，base bundle 未启用），按 teammate 名字寻址，与本流程的子会话不是同一批，不要混用。
+**工具面按角色分配**（会话创建时裁剪，不是靠参数隐藏）：协调者拿到全部工具但没有 `worker_done`（它不是在干活的那个，调它只会指向不存在的派工记录），也没有 `list_agents` / `send_message` / `interrupt_agent`（下面一段解释了它们为什么对 worker 无效——从工具面直接摘掉，模型就不会照描述去用一个拿不到效果的东西）；普通会话既没有 `spawn_worker` / `message_worker` / `list_cards`（它连项目都没进，看不到项目里有哪些卡，也不该派工），也没有 `worker_done`；worker 再少掉 `list_projects` / `add_project` / `switch_project` / `remove_project` / `init_project`（它派工时已经拿到目录与任务，改项目表只会制造并发写）。`create_card` / `update_card` 对所有会话开放——worker 边干活边把状态写回卡片。普通会话保留那三件宿主工具：它可能真的用官方 subagent，那时它们是有效的。
+
+dsh 另有一套同名的同伴模型工具（`tool-agent-team`，experimental，base bundle 未启用），按 teammate 名字寻址，与本流程的 worker 不是同一批，不要混用。
 
 ## 安装
 
@@ -92,12 +94,12 @@ dsh plugin --profile dev add dsh-coordinator
 
 1. **让模型加载协议层**：`skill` 工具会列出 `coordinator-mode`。协调者会话先读 `playbooks/program.md`，再按阶段读对应 playbook。
 2. **初始化项目**：调用 `init_project`，参数 `path` 指向项目目录。约定写入项目的 `AGENTS.md` 受管区块，dsh 读取 `AGENTS.md` 作为系统提示段落，因此写入即对模型生效。重复调用只替换受管区块，不动项目已有内容。
-3. **派工**：调用 `spawn_worker`，参数 `task` 必填、`label` 可选。工具立即返回子会话 id；worker 结束后，协调者会被自动唤醒，收到一条完成通知。通知在会话里渲染成 **worker 的发言**：左侧气泡，气泡上方是头像与 worker 名字，正文里没有「谁在说话」的前缀——和用户自己的输入（右侧气泡）区分得开。气泡里只显示 worker 最后一次回报的内容（产物摘要或失败原因），协议字段（子会话、状态、下一步）留给模型读；气泡下方是时间与复制按钮，点 worker 名字可跳到它的子会话。通知排进 inbox 的 **next-turn** 边界（下一个 turn 的一次输入），且**父会话正忙时先不投**——它留在落盘队列里，等父会话空闲后再投，因此不会挂在宿主输入框上方的「消息队列」面板上。
+3. **派工**：调用 `spawn_worker`，参数 `name` 与 `initialMessage` 都必填。`name` 是 worker 的显示名（角色-任务短名，如 `research-sources`），同时钉成它的会话标题：不钉的话宿主按首条消息自动起名，侧栏看到的是任务正文前几个字。工具立即返回会话 id；worker 是**常驻根会话**——它在左栏项目树下有自己的会话行，你能像开别的会话一样打开它、直接输入新指令，也能在 `message_worker` 里给它续聊。worker 收尾时调 `worker_done` 交作业，协调者随即被唤醒，收到一条完成通知。通知在会话里渲染成 **worker 的发言**：左侧气泡，气泡上方是头像与 worker 名字，正文里没有「谁在说话」的前缀——和用户自己的输入（右侧气泡）区分得开。气泡里只显示 worker 最后一次回报的内容（产物摘要或失败原因），协议字段（会话、状态、下一步）留给模型读；气泡下方是时间与复制按钮，点 worker 名字可跳到它的会话。通知排进 inbox 的 **next-turn** 边界（下一个 turn 的一次输入），且**父会话正忙时先不投**——它留在落盘队列里，等父会话空闲后再投，因此不会挂在宿主输入框上方的「消息队列」面板上。
 4. **记任务事实**：调用 `create_card` 建卡（`title` 必填），`update_card` 改卡（`id` 必填，改内容带 `expectedRevision` 做乐观并发），`list_cards` 查卡（默认只列 active，一页 20 张；传 `cardId` 读单卡完整规格、链接与检查点）。卡片落盘在 `$DSH_HOME/dsh-coordinator/cards.json`，编号全局递增不复用。**卡片按项目归属**：宿主按调用方会话反查项目（协调者会话走项目注册表的指针，其它会话按 cwd 与项目目录的 realpath 相同），模型不传项目参数。`list_cards` 默认只列本项目，要看全部项目传 `scope=all`；跨项目改卡会被拒绝。
-5. **续聊已收工的 worker**：worker 结算后并没有消失——再调 `message_worker`（参数 `childId` 必填，就是 `spawn_worker` 返回的子会话 id），宿主会冷恢复同一个子会话，让它接着上次的上下文干活。`delivery` 由宿主侧固定，不进工具参数。续聊轮结束时同样会唤醒协调者，收到一条格式一致的 worker 汇报气泡；宿主自己那条英文结算通知会被吞掉，同一件事不报两遍。worker 还没结算时发消息会并入当前执行（返回 `merged`），不另起一轮。
+5. **续聊 worker**：再调 `message_worker`（`sessionId` 与 `message` 必填，`sessionId` 就是 `spawn_worker` 返回的会话 id；可选的 `rename` 顺手改名，登记表与会话标题同次改到新名字）。会话还活着就直接投进去（返回 `merged`），进程重启后不在内存就先冷恢复再投（返回 `sent`）——两种形态对调用方是同一步。新的一轮同样以 `worker_done` 交作业、同样唤醒协调者，收到一条格式一致的汇报气泡。
 
-   派工要求组合里有会话持久化与查询后端（`sessionPersistence` / `sessionQuery`）：缺任一就拒绝派工，而不是悄悄降级成只能跑一轮的一次性 worker。
-6. **看交付看板**：浏览器右栏打开「看板」Tab。**看板按项目组织**，不是全局的：面板先按当前会话解析出所属项目，再按项目拉卡片——协调者建的卡与 worker 建的卡在同一处。卡片不另存一份，看板直接读宿主的卡片库（不是重放会话事件流），因此跨会话聚合成立，worker 会话被回收后卡也不会消失。建卡后右栏会自动打开（或聚焦到已有的）「看板」Tab，出现新卡才打断你，改卡不会。卡面只做信息与导航：点卡面开只读详情（说明 / 进展 / 阻塞 / 链接），点链接 chip 新标签打开，点槽位 chip 打开该槽位绑定的会话。信号灯由槽位会话状态实时投影（不落盘），七档为「等你输入 / 需注意 / 执行中 / 未读 / 空闲 / 状态未知 / 无信号」。运行态来自**保留会话的快照**：面板所在的右栏座只注入 tab 信息，不提供宿主的会话状态 hook，因此「执行中」与「上次执行失败」成立，「等你输入」「未读」两档在这条路径上无从表达。「状态未知」表示读不到该会话（例如会话已被删除），不谎称空闲。worker 这类子代理会话在客户端会话目录里没有独立条目，裸 id 认不出，恢复时会用它所属的建卡会话补一个子代理地址再保留——这也是卡片上 worker 槽位圆点能亮起来的前提。
+   **人自己下钻跟 worker 聊天不经过这条路径**：那种轮次不会登记在飞记录，worker 也就不该因为它去调 `worker_done`，协调者不会被打扰。派工要求组合里有会话持久化与查询后端（`sessionPersistence` / `sessionQuery`）：缺任一就拒绝派工，而不是悄悄降级成只能跑一轮的一次性 worker。
+6. **看交付看板**：浏览器右栏打开「看板」Tab。**看板按项目组织**，不是全局的：面板先按当前会话解析出所属项目，再按项目拉卡片——协调者建的卡与 worker 建的卡在同一处。卡片不另存一份，看板直接读宿主的卡片库（不是重放会话事件流），因此跨会话聚合成立，worker 会话被回收后卡也不会消失。建卡后右栏会自动打开（或聚焦到已有的）「看板」Tab，出现新卡才打断你，改卡不会。卡面只做信息与导航：点卡面开只读详情（说明 / 进展 / 阻塞 / 链接），点链接 chip 新标签打开，点槽位 chip 打开该槽位绑定的会话。信号灯由槽位会话状态实时投影（不落盘），七档为「等你输入 / 需注意 / 执行中 / 未读 / 空闲 / 状态未知 / 无信号」。运行态来自**保留会话的快照**：面板所在的右栏座只注入 tab 信息，不提供宿主的会话状态 hook，因此「执行中」与「上次执行失败」成立，「等你输入」「未读」两档在这条路径上无从表达。「状态未知」表示读不到该会话（例如会话已被删除），不谎称空闲。worker 会话是普通根会话，客户端会话目录里通常有独立条目；宿主给不出条目时（历史 subagent 时代的 worker，或会话刚建还没同步）恢复时会用它所属的建卡会话补一个子代理地址再保留——这也是卡片上 worker 槽位圆点能亮起来的前提。
 7. **管理项目**：项目是显式注册的实体，不是目录。`add_project` 在目标目录里建好协调者会话并与项目绑定，`list_projects` 列出全部项目，`switch_project` 给出目标项目的协调者会话 id，`remove_project` 注销项目（协调者会话保留）。浏览器左栏有「项目」区块（在「自动化任务」之下、工作区之上）：点区块右上角的「加项目」选一个目录，项目**当场建好**并出现在列表里（名字默认取目录名，要改用行上的「重命名」）——不再多一道「起名 + 点注册」的确认手续；目录名当不了项目名时（选到根目录、目录名超过 200 字）退回一个能改名字的输入框，因为那时直接提交只会换回一条没有出口的报错；同名目录会依次建成 `repo`、`repo-2`、`repo-3`。点标题「项目」收起或展开整个列表，点项目行打开该项目的协调者会话（主区域切到该会话），点行首槽位展开或收起该项目的 worker 会话（协调者与用户手动开的会话都不在其中），行的「更多」菜单里是打开协调者会话、重命名、换新协调者、从 dsh 移除工作区（有插件注册的工作区时才有）、注销项目；「从 dsh 移除工作区」会先弹二次确认，讲清文件夹与会话记录都会保留。项目名后面不跟路径（悬停可见）。项目的 worker 与协调者会话不在官方工作区树里重复出现。会话行悬停时右端露出归档按钮：归档后该会话从项目树消失，卡片上指向它的槽位一并摘掉（死引用会让看板挂着一个点开没有去处的执行者），派工登记也删掉（否则 `message_worker` 会走进一条注定被宿主拒绝的路径）；会话正在跑时先问「停止并归档」，因为宿主的归档闸门会拒绝运行中的会话。行的形态照官方工作区行：行首平时是目录图标，鼠标悬停整行时换成展开箭头（展开时箭头朝下），「更多」在行右端、悬停时出现。打开协调者会话时，它的形态是**输入框停靠底部的对话视图，但转录里一条消息都没有**——dsh 对空会话默认渲染居中大标题的欢迎页，本 bundle 注册一个第三方会话视图目标并在协调者会话打开时激活它（宿主据此把外壳切到 active 形态），不产生任何模型调用，也不往转录里塞任何开场白。
 8. **配角色槽位**：在项目目录写 `SLOTS.md`，按 `## <槽位名>` 分节写角色的工作方法与人设；在卡片的 `slots` 字段把槽位名绑到会话 id，该会话每轮 turn 都会注入对应槽位正文，改动 `SLOTS.md` 在下一轮 turn 生效。槽位只贡献提示词文本，不授予工具权限。
 
@@ -106,6 +108,8 @@ dsh plugin --profile dev add dsh-coordinator
 ## 已知限制
 
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
+- **协调者没有中止 worker 的手段，也没有模型侧的名录工具**。worker 是普通根会话，宿主的 `list_agents` / `send_message` / `interrupt_agent` 都作用在 subagent 体系上，对它无效（`interrupt_agent` 还会返回一个假的成功回执）。worker 卡住或跑偏时，只能请人去那个会话里处理；要看项目里有哪些 worker，看项目树（那一层在前端，模型看不到）。这是常驻化的直接代价：换掉 subagent 换来常驻与可下钻，也就换掉了宿主的这套控制面。
+- **worker 忘调 `worker_done` 时协调者会一直等**。根会话没有终态 promise，宿主也没留「读最后一轮产出」的 API，完成信号只能由 worker 自报；在飞表没有超时，那条记录会一直被判在跑（名册的可复用候选里也一直排除它）。恢复办法是给它发一条 `message_worker` 提醒收尾。
 - **看板按项目组织，不按会话**。一个项目一个看板：面板按当前会话解析出所属项目（协调者会话走注册表指针，其它会话按 cwd 与项目目录的 realpath 相同），再按项目拉卡片——协调者建的卡与 worker 建的卡在同一处。数据源是宿主的卡片库，不再重放会话事件流（跨不了会话，也扛不住宿主回收）。不属于任何项目的会话没有看板，面板会说明这一点。
 - **卡片按项目归属，归属由宿主判定**。`create_card` 时宿主按调用方会话反查项目，把 `projectId` 写进卡片记录，模型不传项目参数——它未必知道自己在哪个项目的语境里调工具。`list_cards` 默认只列本项目，`scope=all` 才跨项目；有归属的卡只能被本项目的会话改，跨项目改卡会被拒绝。**存量卡片不迁移**（记录里没有创建会话 id，无法可靠反推归属），它们不出现在任何项目看板，只能用 `list_cards`（`scope=all`）看到。
 - **卡片编号仍是全局的**。按项目过滤后编号会有空洞，但全局唯一，`@#n` 不歧义——比按项目编号更好（见[卡片存储与编号作用域](.agents/notes/2026-10-23-card-storage-and-numbering-scope.md)）。
@@ -120,11 +124,11 @@ dsh plugin --profile dev add dsh-coordinator
 - **弹窗与菜单是复制官方源码改写的，不是复用宿主组件**。第三方 bundle 不能 import 宿主 UI 包，官方 `Modal` / `Menu` 组件用不了，因此确认弹窗照 `packages/client/ui-primitives/src/Modal.tsx` 与 `Modal.module.css` 复制一份改写（类名换 `dsh-coordinator-modal-*` 前缀），菜单照 `Menu.tsx` 的材质与数值复刻。代价是宿主改这两个组件时本仓要同步。
 - **协调者会话形态依赖宿主的会话视图服务**。宿主没提供 `uiConversation` 服务时（它不在机器可读的插件 API 目录里，属于版本耦合面），协调者会话退化成官方欢迎页（居中输入框），本 bundle 不阻断打开会话，也不自绘替代界面。
 - **项目区块靠 DOM 注入取位**。dsh 的左栏正文区只有 `sidebar.workspaces` 一个槽且已被宿主占用，slot 机制没有包装能力，第三方插不进并列区块——本仓在左栏的「面板列表 nav」之后插容器并用 portal 渲染，位置是「自动化任务之下、工作区之上」；宿主结构变化导致找不到锚点时内容退回原槽，功能不受影响。
-- **项目树是自建的，与官方工作区树并存**。官方只有按工作区分组的会话树，没有「项目」维度。本仓的项目树只挂该项目的 worker 会话——判据是会话头的 `origin: 'subagent'`（子代理会话）加上 cwd 与项目目录的 realpath 精确相等。协调者会话（入口在项目行上）与用户在项目目录里手动开的会话都不算项目会话：前者由项目入口打开，后者留在官方工作区树里。
-- **「项目会话不出现在官方工作区树」是渲染层排除，不是数据层**。官方没有按外部集合排除行的扩展点，本仓认 `data-row-key="session:<id>"` 给命中排除集的行加隐藏类。排除集只含项目的协调者会话——worker 是 `origin: 'subagent'` 的会话，宿主官方树在 `sessionVisible()` 第一行就把它们滤掉了，那些行根本不渲染，放进排除集也找不到元素。代价：官方分组行上的会话计数仍包含被隐藏的**协调者**会话（它不是 subagent，先进成员表再被渲染层隐藏）；被隐藏的行仍在 DOM 里，官方搜索仍能命中。
+- **项目树是自建的，与官方工作区树并存**。官方只有按工作区分组的会话树，没有「项目」维度。本仓的项目树只挂该项目的 worker 会话——判据是「登记表说它是本 bundle 派出的 worker」加上 cwd 与项目目录的 realpath 精确相等（worker 是普通根会话，会话头没有身份标记，只能按登记判）。协调者会话（入口在项目行上）与用户在项目目录里手动开的会话都不算项目会话：前者由项目入口打开，后者留在官方工作区树里。
+- **「项目会话不出现在官方工作区树」是渲染层排除，不是数据层**。官方没有按外部集合排除行的扩展点，本仓认 `data-row-key="session:<id>"` 给命中排除集的行加隐藏类。排除集含项目的协调者会话与全部 worker 会话（worker 是普通根会话，官方树不会自己滤掉，不排除就会同时出现在两棵树里）。代价：官方分组行上的会话计数仍包含被隐藏的会话；被隐藏的行仍在 DOM 里，官方搜索仍能命中。
 - **子目录里的 worker 不算项目下的 worker**。归属按会话 cwd 与项目目录的 realpath 精确相等判定；两个项目指向同一目录时先注册的归属。
 - **点项目会把项目目录注册成 dsh 工作区**。dsh 的官方界面只能打开归属工作区的会话（建会话时传目录而不是传工作区，会话不归属任何工作区，官方树里没有它的位置）。本仓因此在打开项目时把协调者会话挂到项目目录对应的工作区上，目录还不是工作区就注册一个（幂等）。
-- **项目目录的工作区不再从官方工作区树隐藏**。插件注册的项目工作区原先走渲染层隐藏（宿主的工作区记录是封闭 schema，没有隐藏位），但项目树现在只列 worker 会话——用户在项目目录里手动开的会话既不在项目树里，又被整棵工作区藏掉，就此无处可寻。取消隐藏后它们回到官方树：项目目录是一个普通工作区，里面是用户自己的会话；项目的协调者会话仍由渲染层排除，worker 会话由宿主自己滤掉，都不在那里重复出现。代价是官方左栏里多出项目目录这一项；项目目录里除协调者外没有别的会话时，这一项是个**空分组**——分组行在、展开后没有内容（宿主的 `archivedFilter !== 'only'` 时即使成员为空也照样建分组）。
+- **项目目录的工作区不再从官方工作区树隐藏**。插件注册的项目工作区原先走渲染层隐藏（宿主的工作区记录是封闭 schema，没有隐藏位），但项目树现在只列 worker 会话——用户在项目目录里手动开的会话既不在项目树里，又被整棵工作区藏掉，就此无处可寻。取消隐藏后它们回到官方树：项目目录是一个普通工作区，里面是用户自己的会话；项目的协调者与 worker 会话都在渲染层排除集里（worker 是普通根会话，官方树不会自己滤掉），不会重复出现。代价是官方左栏里多出项目目录这一项；项目目录里除协调者外没有别的会话时，这一项是个**空分组**——分组行在、展开后没有内容（宿主的 `archivedFilter !== 'only'` 时即使成员为空也照样建分组）。
 - **图标数据与宿主 `artwork.ts` 耦合**。宿主 web 端把图标在构建期内联进产物，运行时 DOM 里没有 sprite 节点，第三方 bundle 在运行时渲染只能自己带路径数据——本仓内联的路径取自宿主 `dsh-client-ui-primitives` 的 `artwork.ts`（regular 字重），宿主改图标时本仓要同步。
 - **worker 回报不进会话标题、turn 摘要与 markdown 转录导出**。宿主只把 `source.kind === 'user'` 的消息算作真人输入；本仓的回报用自定义 source kind（`dsh-coordinator/worker-report`），因此会话自动标题不取它、turn 摘要 prompt 不取它、markdown 转录导出会跳过它。换来的是它不会被误当成用户说的话——标题、摘要、导出这三处都只认真人输入。
 - **worker 回报的渲染依赖宿主的会话节点扩展位**。本仓注册一个独立的 Chat node kind 并用 exclusive claim 接管这类消息（见 [worker 回报气泡](.agents/notes/2026-10-27-worker-report-bubble.md)）。宿主若改了 claim 或分组语义，这条消息会退化成普通的右对齐用户气泡——内容不会丢。
@@ -141,7 +145,8 @@ dsh plugin --profile dev add dsh-coordinator
 
 | 笔记 | 内容 |
 |---|---|
-| [派工与唤醒机制](.agents/notes/2026-10-23-dispatch-and-wakeup.md) | P1：子会话派工、完成通知落盘、父会话唤醒 |
+| [派工与唤醒机制](.agents/notes/2026-10-23-dispatch-and-wakeup.md) | P1：派工、完成通知落盘、父会话唤醒（worker 已换常驻根会话，见下一条） |
+| [worker 常驻化与交作业](.agents/notes/2026-10-29-worker-as-root-session.md) | 为什么换根会话、`worker_done` 从哪来、人下钻对话不打搅协调者 |
 | [卡片存储与编号作用域](.agents/notes/2026-10-23-card-storage-and-numbering-scope.md) | P2：卡片落盘、编号不复用、乐观并发 |
 | [客户端半边的发现与构建约束](.agents/notes/2026-10-23-client-side-findings-and-build-constraints.md) | P2：浏览器侧可用的注入点与构建约束 |
 | [项目作用域与角色槽位](.agents/notes/2026-10-23-project-scope-and-role-slots.md) | P3：项目实体、协调者会话硬绑定、槽位注入 |

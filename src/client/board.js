@@ -169,9 +169,10 @@ function useSlotStates(cards, getSessions, useSessionStatus, parentSessionId) {
         try {
           return sessions.retain(sessionId, options)
         } catch (error) {
-          // 子代理会话在客户端会话目录里可能没有独立条目，裸 id 认不出来。这类
-          // 会话要靠 `{ parentSessionId, childSessionId }` 地址才找得到——父会话
-          // 是建这张卡的会话（worker 由它派出），卡片没记时退回看板所属会话。
+          // 有些会话在客户端会话目录里没有独立条目（如历史 subagent 时代的
+          // worker），裸 id 认不出来。这类会话要靠
+          // `{ parentSessionId, childSessionId }` 地址才找得到——父会话是建这张卡
+          // 的会话，卡片没记时退回看板所属会话。
           // 地址也拿不到就把原错误抛回去，由保留器记下「未知」，不静默换成空闲。
           const target = retainTargetOf(sessions, sessionId, parents.current.get(sessionId) ?? parent.current)
           if (target === undefined) throw error

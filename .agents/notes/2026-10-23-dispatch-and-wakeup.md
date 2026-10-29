@@ -11,6 +11,8 @@ dsh 原生的 subagent 工具是阻塞式：父 agent 调工具 → 子 agent �
 
 **派工走 `ctx.subagents.startActivation({ delivery: 'caller' })`**，不自己造子会话。`delivery: 'caller'` 让结果由调用方处理：工具立即返回子会话 id，`activation.result` 是终态 promise。dsh 原生 spawn 工具做不到「派完即返回」，这是唯一可用的非阻塞入口。
 
+> **2026-10-29 修订**：这条已被推翻。subagent 结算即销毁、界面上只读，worker 既不能常驻也不能由人下钻对话。派工改走 `ctx.agents.create()` 建普通根会话，完成信号改由 worker 自己调 `worker_done`。理由与新机制见 [worker 常驻化与交作业](2026-10-29-worker-as-root-session.md)；本文件其余决策（唤醒走 `followup`、通知先落盘、队列串行化、服务惰性获取）仍然有效。
+
 **唤醒走 `agent.followup()`**——dsh 唯一能开新 turn 的入口。实测推翻了此前的判断：唤醒失败的真因不是 inbox 投影未注册，而是**父会话已被销毁**（headless 一次性 CLI 在 turn 结束后 dispose 会话）。只要父会话存活，对空闲 agent 调 `followup()` 就能可靠唤醒。
 
 **完成通知先落盘再唤醒**。唤醒是「投消息 + 开新 turn」，进程在唤醒前崩溃会导致通知丢失。落盘队列是崩溃窗口的唯一防线。

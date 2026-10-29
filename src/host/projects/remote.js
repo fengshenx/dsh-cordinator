@@ -47,10 +47,11 @@ function buildMethodDescriptor() {
  * @param {object} options.service - 项目服务（`src/host/projects/service.js`）
  * @param {object} options.cards - 卡片存储（`src/host/cards/store.js`）
  * @param {object} options.workers - worker 登记表（`src/host/worker-registry.js`）
+ * @param {object} [options.workerSessions] - worker 会话管理器（`src/host/worker-sessions.js`）
  * @param {object} options.ctx - 宿主 Cordis 上下文
  * @returns {object} 已注册的远程服务实例
  */
-export function createProjectRemote({ service, cards, workers, ctx }) {
+export function createProjectRemote({ service, cards, workers, workerSessions, ctx }) {
   // 归档后的收尾要同时改两张表：漏传任何一张，问题都要等到会话真的被归档时才
   // 以 `Cannot read properties of undefined` 暴露，那时用户看到的是「归档失败」。
   if (typeof cards?.detachSession !== 'function') {
@@ -64,11 +65,13 @@ export function createProjectRemote({ service, cards, workers, ctx }) {
      * @param {object} service - 项目服务
      * @param {object} cards - 卡片存储
      * @param {object} workers - worker 登记表
+     * @param {object} [workerSessions] - worker 会话管理器
      */
-    constructor(service, cards, workers) {
+    constructor(service, cards, workers, workerSessions) {
       this.projects = service
       this.cards = cards
       this.workers = workers
+      this.workerSessions = workerSessions
       // 服务绑定：宿主据此认出「这个服务导出哪个命名空间」。绑定里的 service 必须
       // 指向服务实例本身，宿主会拿它与调用时取到的实例比对。
       this.typertRemote = {
@@ -184,12 +187,17 @@ export function createProjectRemote({ service, cards, workers, ctx }) {
      * 路径）。这个方向的不一致比反过来轻，所以顺序保持「先卡后表」。
      *
      * @param {string} sessionId - 会话 id
-     * @returns {Promise<{cards: string[], slots: number, worker: boolean}>} 摘除结果
+     * @returns {Promise<{cards: string[], slots: number, worker: boolean, disposed: boolean}>} 摘除结果
      */
     async detachSession(sessionId) {
       const detached = await this.cards.detachSession(sessionId)
       const worker = await this.workers.remove(sessionId)
-      return { ...detached, worker }
+      // worker 会话是常驻根会话，归档不会自己停掉它：不 dispose 的话它还在内存里
+      // 跑、还在写会话日志，而用户以为它已经归档了。
+      const disposed = typeof this.workerSessions?.dispose === 'function'
+        ? await this.workerSessions.dispose(sessionId)
+        : false
+      return { ...detached, worker, disposed }
     }
 
     /**
@@ -211,7 +219,7 @@ export function createProjectRemote({ service, cards, workers, ctx }) {
     value: buildMethodDescriptor(),
   })
 
-  const remote = new ProjectRemote(service, cards, workers)
+  const remote = new ProjectRemote(service, cards, workers, workerSessions)
   ctx.provide(PROJECT_REMOTE_SERVICE_KEY, remote)
   return remote
 }

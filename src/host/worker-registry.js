@@ -1,13 +1,14 @@
 /**
  * worker 登记表：协调者派过的工在这里留档。
  *
- * **为什么需要落盘**：给 worker 发消息（`message_worker`）必须知道子会话 id 与
- * 它的父会话。子会话跑完一轮就被宿主销毁（`manager.ts` 的 `finishDisposal`），
- * 进程内的映射随之失效；进程重启更是全丢。登记表落盘，续聊与查工才跨得过去。
+ * **为什么需要落盘**：给 worker 发消息（`message_worker`）必须知道会话 id 与它
+ * 的父会话。进程内的活表随进程消失，进程重启更是全丢。登记表落盘，续聊与查工才
+ * 跨得过去。
  *
- * **登记表不是派工真源**：派工真源是宿主的 subagent 服务（子会话与它的持久化
- * 日志）。这里存的是「这个子会话是本 bundle 派出去的工」这一层归属，以及续聊
- * 需要的父会话 id——宿主那边不存这层，插件这边也不重复存子会话内容。
+ * **登记表不是派工真源**：派工真源是宿主的会话库（会话日志与它自己的元数据）——
+ * 会话由本 bundle 用 `agents.create` 建、`agents.resume` 唤醒。这里存的是「这个
+ * 会话是本 bundle 派出去的工」这一层归属，以及续聊需要的父会话 id；宿主那边不存
+ * 这层，插件这边也不重复存会话内容。
  *
  * 落盘位置在 dsh home 下的自有目录，与通知队列同构（原子写 + 串行化读改写）。
  *
@@ -104,7 +105,7 @@ export function createWorkerRegistry({
      * @param {object} worker - worker 记录
      * @param {string} worker.childId - 子会话 id
      * @param {string} worker.parentSessionId - 父会话 id
-     * @param {string} worker.label - 任务标签
+     * @param {string} worker.name - worker 显示名
      * @param {string} [worker.task] - 任务正文
      * @returns {Promise<object>} 登记后的记录
      */
@@ -138,6 +139,35 @@ export function createWorkerRegistry({
     async get(childId) {
       const registry = await read()
       return registry.workers.find((item) => item.childId === childId)
+    },
+
+    /**
+     * 列出登记表里的全部 worker，按登记时间倒序（最近的在前）。
+     *
+     * @returns {Promise<object[]>} 记录列表
+     */
+    async list() {
+      const registry = await read()
+      return [...registry.workers].sort((left, right) => (right.registeredAt ?? 0) - (left.registeredAt ?? 0))
+    },
+
+    /**
+     * 改一个 worker 的显示名。
+     *
+     * 只动登记表里的名字：会话标题由调用方另行改写，两者可能不同步（会话已不在
+     * 内存时宿主拒绝标题改写），登记表这边照样要落到新名字，否则完成通知还喊旧名。
+     *
+     * @param {string} childId - 子会话 id
+     * @param {string} name - 新显示名
+     * @returns {Promise<object | undefined>} 改名后的记录；没有这条时 undefined
+     */
+    async rename(childId, name) {
+      return serialize((registry) => {
+        const existing = registry.workers.find((item) => item.childId === childId)
+        if (existing === undefined) return undefined
+        existing.name = name
+        return existing
+      })
     },
 
     /**

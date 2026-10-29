@@ -173,6 +173,27 @@ test('零字段更新不递增版本，也不刷新更新时间与落盘', async
   }
 })
 
+test('按会话反查它挂在哪些卡上，带卡号、状态与槽位名', async () => {
+  const { store, home } = await createStore()
+  try {
+    const first = await store.create({ title: '实现登录', slots: { dev: { sessionId: 's1' } } })
+    const second = await store.create({ title: '审查登录', slots: { review: { sessionId: 's1' }, dev: { sessionId: 's2' } } })
+    await store.update({ id: second.id, status: 'done' })
+
+    // 一个会话可以同时被多张卡绑到不同槽位：投递门禁要看到全部，不能只挑最新那张。
+    assert.deepEqual(await store.bindingsOf('s1'), [
+      { cardId: first.id, number: first.number, title: '实现登录', status: 'active', slot: 'dev' },
+      { cardId: second.id, number: second.number, title: '审查登录', status: 'done', slot: 'review' },
+    ])
+    assert.deepEqual(await store.bindingsOf('s2'), [
+      { cardId: second.id, number: second.number, title: '审查登录', status: 'done', slot: 'dev' },
+    ])
+    assert.deepEqual(await store.bindingsOf('没挂卡的会话'), [])
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('状态没变不算内容更新，不递增版本', async () => {
   const { store, home } = await createStore()
   try {
