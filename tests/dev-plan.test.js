@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  COORDINATOR_PACKAGE, deriveProfilePackage, planNodeModules, resolveDevPaths,
+  COORDINATOR_PACKAGE, assertSeparateHome, deriveProfilePackage, planNodeModules, resolveDevPaths,
 } from '../scripts/dev-plan.mjs'
 
 const WORKTREE = '/work/repo/.worktrees/feature-a'
@@ -106,4 +108,59 @@ test('目标里多出来的条目要清掉，但插件本体不动', () => {
   })
   assert.deepEqual(plan.removals, ['stale-plugin'])
   assert.equal(plan.links.length, 2)
+})
+
+test('DSH_PROFILE 覆盖源 profile 名，两边的目录都跟着换', () => {
+  const paths = resolveDevPaths({
+    worktree: WORKTREE,
+    homeDir: '/home/user',
+    env: { DSH_PROFILE: 'sdk', DSH_HOME: '/tmp/dev-home' },
+  })
+  assert.equal(paths.profile, 'sdk')
+  assert.equal(paths.sourceProfileDir, join(SOURCE_HOME, 'profiles', 'sdk'))
+  assert.equal(paths.profileDir, '/tmp/dev-home/profiles/sdk')
+})
+
+test('DSH_PROFILE 传空串时落回 web', () => {
+  assert.equal(resolveDevPaths({ worktree: WORKTREE, homeDir: '/home/user', env: { DSH_PROFILE: '' } }).profile, 'web')
+})
+
+test('数据根与源 HOME 相同时拒绝，两处 profile 目录也不例外', () => {
+  assert.throws(
+    () => assertSeparateHome({ home: '/home/user/.dsh', sourceHome: '/home/user/.dsh' }),
+    /数据根与源 HOME 是同一个目录/,
+  )
+})
+
+test('数据根与源 HOME 不同时放行', () => {
+  assert.doesNotThrow(() => assertSeparateHome({
+    home: join(WORKTREE, '.dev', 'home'),
+    sourceHome: SOURCE_HOME,
+  }))
+})
+
+test('绕路的写法（.. 与斜杠）仍判定为同一个目录', () => {
+  assert.throws(
+    () => assertSeparateHome({ home: '/home/user/.dsh/', sourceHome: '/home/user/sub/../.dsh' }),
+    /数据根与源 HOME 是同一个目录/,
+  )
+})
+
+test('符号链接指向源 HOME 时也拒绝', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dev-plan-'))
+  try {
+    mkdirSync(join(root, 'real'))
+    symlinkSync(join(root, 'real'), join(root, 'alias'))
+    assert.throws(
+      () => assertSeparateHome({ home: join(root, 'alias'), sourceHome: join(root, 'real') }),
+      /数据根与源 HOME 是同一个目录/,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('两边都不存在时按字面量比较，不会误判', () => {
+  assert.doesNotThrow(() => assertSeparateHome({ home: '/nowhere/a', sourceHome: '/nowhere/b' }))
+  assert.throws(() => assertSeparateHome({ home: '/nowhere/a', sourceHome: '/nowhere/a' }), /同一个目录/)
 })

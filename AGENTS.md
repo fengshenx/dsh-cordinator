@@ -76,6 +76,7 @@ npm run worktree:prune            # 清已合并的 worktree（默认只打印�
 - 仓外插件不能新增 session event 类型（capability-gaps 第 8 条），卡片与项目状态只能走独立存储域 + session projection。
 - client 产物不能用 `node:` 内置模块（第 23 条）。
 - `ctx.sessions.list()` 只返回 live session，从会话推导的列表会随重启漂移（第 21 条）。
+- profile 名要落在 `PROFILE_TEMPLATES`（`web` / `acp` / `headless` / `sdk` / `sdk-minimal`）里：自定义名会被 `dsh plugin` 按只含 `@deepseek-ai/dsh-base` 的默认模板建出来，缺 web-app bundle，插件客户端半边不加载。文档与脚本一律用 `web`。
 
 ## 提交与 PR
 

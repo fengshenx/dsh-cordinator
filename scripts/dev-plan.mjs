@@ -15,7 +15,8 @@
  * @module dsh-coordinator/scripts/dev-plan
  */
 
-import { join } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 /** 插件包名：profile 里换成工作树链接的那个。 */
 export const COORDINATOR_PACKAGE = 'dsh-coordinator'
@@ -32,19 +33,61 @@ export const COPIED_PROFILE_FILES = ['cordis.yml', 'cordis.patch.yml']
  * @param {object} options - 选项
  * @param {string} options.worktree - 当前工作树的绝对路径
  * @param {string} options.homeDir - 用户主目录，源 `~/.dsh` 的父目录
- * @param {object} [options.env] - 环境变量，支持 `DSH_HOME` 与 `DSH_HOME_SOURCE`
+ * @param {object} [options.env] - 环境变量，支持 `DSH_HOME`、`DSH_HOME_SOURCE`、`DSH_PROFILE`
  * @returns {object} 目录与文件路径
  */
 export function resolveDevPaths({ worktree, homeDir, env = {} }) {
   const sourceHome = env.DSH_HOME_SOURCE ?? join(homeDir, '.dsh')
   const home = env.DSH_HOME ?? join(worktree, '.dev', 'home')
-  const sourceProfileDir = join(sourceHome, 'profiles', PROFILE_NAME)
+  const profile = env.DSH_PROFILE === undefined || env.DSH_PROFILE === '' ? PROFILE_NAME : env.DSH_PROFILE
+  const sourceProfileDir = join(sourceHome, 'profiles', profile)
   return {
     sourceHome,
+    profile,
     sourceProfileDir,
     sourceNodeModules: join(sourceProfileDir, 'node_modules'),
     home,
-    profileDir: join(home, 'profiles', PROFILE_NAME),
+    profileDir: join(home, 'profiles', profile),
+  }
+}
+
+/**
+ * 取路径的真实身份，路径不存在时退回字面量。
+ *
+ * @param {string} path - 路径
+ * @returns {string} 规范化后的绝对路径
+ */
+function identityOf(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    // 首次运行数据根还不存在，realpath 必然失败；这时按字面量比较即可
+    return resolve(path)
+  }
+}
+
+/**
+ * 挡住「数据根就是源 HOME」这个误用。
+ *
+ * 两边相同时派生逻辑会把源 profile 本身改写：`package.json` 里的插件依赖被换成
+ * 工作树链接，`node_modules` 里每个真实依赖目录被删掉、换成指向自己的死链——
+ * 跑一次 `npm run dev` 就把日常 dsh 装好的 profile 毁了，只能重装。而
+ * `DSH_HOME=~/.dsh` 恰好是个很自然的「想复用日常数据」的写法。
+ *
+ * 比较用真实路径：符号链接或 `..` 绕一圈指到同一处也算相同。
+ *
+ * @param {object} options - 选项
+ * @param {string} options.home - 开发实例的数据根
+ * @param {string} options.sourceHome - 源 HOME
+ * @returns {void} 不相同时无返回
+ */
+export function assertSeparateHome({ home, sourceHome }) {
+  if (identityOf(home) === identityOf(sourceHome)) {
+    throw new Error(
+      `数据根与源 HOME 是同一个目录（${home}），继续会覆写你的日常 profile：`
+      + 'package.json 里的插件依赖会被换成工作树链接，node_modules 里的真实依赖会被换成自指死链。'
+      + '换一个 DSH_HOME，或去掉 DSH_HOME 让数据根落到工作树内的 .dev/home。',
+    )
   }
 }
 

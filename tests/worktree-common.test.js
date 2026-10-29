@@ -60,3 +60,11 @@ test('PR 还开着、已关闭未合并、没有 PR、查不到状态都不删',
   assert.equal(classifyWorktree({ ...base, pullRequest: null }).removable, false)
   assert.equal(classifyWorktree({ ...base, pullRequest: undefined }).removable, false)
 })
+
+test('既有未提交改动又是当前所在的，理由先说未提交改动', () => {
+  const verdict = classifyWorktree({
+    isCurrent: true, dirty: true, mergedIntoMain: true, pullRequest: { state: 'MERGED', number: 11, url: '' },
+  })
+  assert.equal(verdict.removable, false)
+  assert.equal(verdict.reason, '有未提交的改动')
+})

@@ -72,8 +72,9 @@ export function worktreeDirFor(root, name) {
  * @returns {{ removable: boolean, reason: string }} 判定
  */
 export function classifyWorktree({ isCurrent, dirty, mergedIntoMain, pullRequest }) {
-  if (isCurrent) return { removable: false, reason: '当前所在的 worktree，先 cd 到主 checkout' }
+  // 未提交的改动排在前面：它比「cd 出去再来」更难自救，先说这条更有用
   if (dirty) return { removable: false, reason: '有未提交的改动' }
+  if (isCurrent) return { removable: false, reason: '当前所在的 worktree，先 cd 到主 checkout' }
   if (mergedIntoMain) return { removable: true, reason: '分支已进 main' }
   if (pullRequest === undefined) return { removable: false, reason: '查不到 PR 状态（gh 不可用或未登录）' }
   if (pullRequest === null) return { removable: false, reason: '分支没有 PR 记录' }

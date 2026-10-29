@@ -4,21 +4,22 @@
  * 默认只打印结论（dry-run），`--apply` 才真的删。判据见 `classifyWorktree`：
  * 有未提交改动、当前所在的 worktree、分支没进 main 且 PR 未合并——任一命中就拒绝。
  *
- * 删除范围：`git worktree remove --force`（连带清掉 `.dev/` 数据与 node_modules
+ * 删除范围：`git worktree remove --force`（连带清掉 `.dev/home` 数据与 node_modules
  * 链接；链接指向主 checkout，删的只是链接本身）；已合并的分支一并删本地引用。
- * 远端分支默认保留，`--delete-remote` 才删。
+ * 远端分支默认保留，`--delete-remote` 才删（远端名由 `--remote` 指定，默认 origin）。
  *
  * 用法：
  *   node scripts/worktree-prune.mjs                     # 扫描全部，只打印
  *   node scripts/worktree-prune.mjs --apply             # 删可删的
  *   node scripts/worktree-prune.mjs my-task --apply     # 只处理 my-task
  *   node scripts/worktree-prune.mjs --apply --delete-remote
+ *   node scripts/worktree-prune.mjs --apply --delete-remote --remote upstream
  */
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { classifyWorktree, worktreeDirFor } from './worktree-common.mjs'
+import { classifyWorktree, assertTaskName, worktreeDirFor } from './worktree-common.mjs'
 
 /**
  * 跑一条命令，返回结果而不抛错。
@@ -46,15 +47,38 @@ function pullRequestOf(branch, cwd) {
     'pr', 'list', '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,state,url',
   ], cwd)
   if (result.status !== 0) return undefined
-  const parsed = JSON.parse(result.stdout || '[]')
-  if (parsed.length === 0) return null
+  let parsed
+  try {
+    parsed = JSON.parse(result.stdout || '[]')
+  } catch {
+    // 输出不是 JSON（gh 版本差异、被包装脚本改写、登录态坏了）＝查不到，
+    // 按 classifyWorktree 的语义拒绝删除，而不是在这里崩栈
+    return undefined
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null
   return { state: parsed[0].state, number: parsed[0].number, url: parsed[0].url }
 }
 
 const argv = process.argv.slice(2)
 const apply = argv.includes('--apply')
 const deleteRemote = argv.includes('--delete-remote')
-const only = argv.find((arg) => !arg.startsWith('--'))
+const remoteIndex = argv.indexOf('--remote')
+const remote = remoteIndex === -1 ? 'origin' : argv[remoteIndex + 1]
+// --remote 后面那个词是远端名，不能当成任务名（没有 --remote 时 -1 + 1 = 0 会误吞第一个位置参数）
+const only = argv.find((arg, index) => !arg.startsWith('--') && (remoteIndex === -1 || index !== remoteIndex + 1))
+
+if (remoteIndex !== -1 && (remote === undefined || remote.startsWith('--'))) {
+  console.error('错误: --remote 需要远端名')
+  process.exit(1)
+}
+if (only !== undefined) {
+  try {
+    assertTaskName(only)
+  } catch (error) {
+    console.error(`错误: ${error.message}`)
+    process.exit(1)
+  }
+}
 
 // 主 checkout 根：本脚本可能从某个将被删掉的 worktree 里调用，cwd 会随目录消失失效
 const commonDir = call('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], process.cwd())
@@ -112,6 +136,7 @@ console.log('')
 const removable = rows.filter((row) => row.verdict.removable)
 if (!apply) {
   console.log(removable.length === 0 ? '没有可清理的 worktree' : `${removable.length} 个可清理；加 --apply 执行`)
+  if (removable.length > 0) console.log('注意：删 worktree 会连带清掉它里面的 .dev/home（开发实例的会话、项目、卡片数据）')
   process.exit(0)
 }
 if (removable.length === 0) {
@@ -126,11 +151,20 @@ for (const row of removable) {
     console.error(`[失败] ${row.name}: ${removed.stderr.trim()}`)
     continue
   }
+  let remoteNote = ''
   // worktree remove 偶尔留下空壳目录（`--force` 之外的残留）
   if (existsSync(row.dir)) rmSync(row.dir, { recursive: true, force: true })
   if (row.branch !== '') {
     call('git', ['branch', '-D', row.branch], root)
-    if (deleteRemote) call('git', ['push', 'origin', '--delete', row.branch], root)
+    if (deleteRemote) {
+      const pushed = call('git', ['push', remote, '--delete', row.branch], root)
+      if (pushed.status === 0) {
+        remoteNote = `，含远端 ${remote}`
+      } else {
+        // 只取首行：git 的失败输出常常是四五行建议，挤在一句里没法读
+        console.error(`[远端未删] ${row.branch}: ${pushed.stderr.trim().split('\n')[0]}（本地已删，远端分支还在）`)
+      }
+    }
   }
-  console.log(`[已删] ${row.name}（${row.branch}${deleteRemote ? '，含远端' : ''}）`)
+  console.log(`[已删] ${row.name}（${row.branch}${remoteNote}）`)
 }

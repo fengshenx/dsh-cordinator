@@ -22,18 +22,26 @@
 
 **`worktree-spawn` 对齐仓库既有约定**：目录 `.worktrees/<任务名>`、分支 `feature/<任务名>`、base 取最新 `origin/main`（取不到降级本地 main）、幂等守卫（目录或分支已存在就拒绝）、失败回滚（`worktree remove --force` + 删本次建的分支）。依赖不重装，符号链接主 checkout 的 `node_modules`——本仓依赖只有 esbuild 与 minidenticons，代价是改 `package.json` 要在主 checkout 安装。
 
+**数据根不能等于源 HOME，脚本拒绝**。`DSH_HOME=~/.dsh` 是个很自然的「想复用日常数据」写法，但那时 `profileDir` 与 `sourceProfileDir` 是同一个目录：派生逻辑会把源 `package.json` 的插件依赖换成工作树链接，再把 `node_modules` 里每个真实依赖目录删掉、换成指向自己的死链——跑一次就把日常 dsh 装好的 profile 毁了，只能重装。守卫 `assertSeparateHome` 在任何写操作之前比较两边的真实路径（符号链接或 `..` 绕一圈指到同一处也拦），路径不存在时退回字面量比较。
+
+**profile 名固定 `web`，不引入 `dev`**。插件 manifest 声明 `platform: web`；更要紧的是 `dev` 不在宿主 `PROFILE_TEMPLATES` 里，`dsh plugin --profile dev add` 会按只含 `@deepseek-ai/dsh-base` 的默认模板建 profile——没有 web-app bundle，插件客户端半边不加载。源 profile 名可用 `DSH_PROFILE` 覆盖（比如从 `web` 换到 `headless`），供已有别的日常 profile 的人用。
+
 **`npm run check` 的语法检查扩到 `scripts/` 与 `build/`**。原来只查 `index.js` 与 `src/**/*.js`，新增的 `.mjs` 脚本就落在门禁外面。
 
 **AGENTS.md 存在，是为了让这些宿主约束在下一个会话里可见**。「宿主 API 按 `engines.dsh` 下限挑」这条规则是靠一次 `TypeError`（`definitions()` 在 0.2.1-rc.2 上不存在，落在 `agent/created` 上）换来的；它必须写在新会话一定会读的地方，而不是埋在 `/tmp` 或某次对话里。结构参照 Telov 的 AGENTS.md：核心铁律 → 按任务查阅 → 目录 → 常用命令 → 测试 → 风格 → 宿主契约 → 提交与 PR，每条自包含或一行断言加链接。
 
 ## 验证
 
-- `npm run check`：422 例全绿（新增 `tests/dev-plan.test.js` 9 例、`tests/worktree-common.test.js` 8 例）。`npm run build:client` 通过。
-- 双向验证：把 `planNodeModules` 的插件链接改成指向源 profile → 「node_modules 逐条链到源，只有插件本体指工作树」红；还原后全绿。
+- `npm run check`：430 例全绿（`tests/dev-plan.test.js` 16 例、`tests/worktree-common.test.js` 12 例）。`npm run build:client` 通过。
+- 双向验证：把 `planNodeModules` 的插件链接改成指向源 profile → 「node_modules 逐条链到源，只有插件本体指工作树」红；把 `assertSeparateHome` 的条件改成恒假 → 四条边界（同路径、`..` 绕路、符号链接、不存在路径）全红；还原后全绿。
 - 真机（`dsh 0.2.1-rc.2`，隔离实例）：`npm run dev` 一条命令起实例，页面项目区与输入框都在；数据根只有 `profiles/ sessions/ storages/`；`profiles/web/node_modules/dsh-coordinator` 指向工作树，其余条目指向源 profile。
 - 重复运行幂等：第二次 `npm run dev` 复用现有 profile，`DEV_PORT=5877` 生效。
 - **代码即生效**：临时把 `project-section.js` 的标题改成「项目·工作树」，`npm run dev` 后页面读到新文案，确认加载的是工作树当前代码而非某个装好的旧版本；改回后 `git diff` 无残留。
-- `worktree:prune` dry-run 在当前仓库实测：已合并的四条判为可删（走 PR 状态），仍在开 PR 的 p6 与当前所在的 dev-script 判为拒绝。
+- `worktree:prune` dry-run 在当前仓库实测：已合并的判为可删（走 PR 状态），当前所在的 dev-script 判为拒绝。
+- **`DSH_HOME === DSH_HOME_SOURCE` 的真机取证**：隔离 HOME 里放一个真实依赖目录跑 `dev.mjs`，加守卫前该目录被删成自指死链、源 `package.json` 的插件依赖被换成工作树链接；加守卫后退出码 1，目录与 `package.json` 原样。
+- 假 `gh`（stdout 输出非 JSON、退出码 0）跑 prune：加兜底前 `SyntaxError` 崩栈，加兜底后判为「查不到 PR 状态」；真 `gh` 对同一分支判为「分支没有 PR 记录」——两条路径分得开。
+- `--remote nosuchremote` 配 `--apply --delete-remote`：本地删掉并打印 `[远端未删]`（说明远端分支还在），`--remote` 确实被用于 push。
+- `DEV_PORT=''` 时 `--port` 收到的是 `0`；`prune ../../etc` 报任务名不合法、退出码 1。
 
 ## 边界
 
@@ -45,8 +53,12 @@
 
 ## 收尾：`worktree:prune`
 
-默认 dry-run 打印每个 worktree 的结论，`--apply` 才删（`git worktree remove --force` + `git branch -D`，远端分支要 `--delete-remote`）。守卫顺序是「先排掉会丢东西的理由」：未提交改动 → 当前所在的 worktree → 分支没进 main 且 PR 未合并。
+默认 dry-run 打印每个 worktree 的结论，`--apply` 才删（`git worktree remove --force` + `git branch -D`，远端分支要 `--delete-remote`，远端名由 `--remote` 指定、默认 origin）。守卫顺序是「先排掉会丢东西的理由」：未提交改动 → 当前所在的 worktree → 分支没进 main 且 PR 未合并。未提交改动排在「当前所在」之前，是因为两种情况都拒绝，而前者的理由更有用——cd 出去也解决不了。
 
-**两条「已合并」判据都留着**，因为合并方式不设限：`git merge-base --is-ancestor <branch> main` 在 merge commit 下成立；squash 合并下不成立（提交不在 main 祖先链上），但 PR 状态仍是 MERGED。任一成立即可删。PR 状态查不到（gh 不可用/未登录）按拒绝处理，不猜。
+dry-run 的结论下面会提示删 worktree 会连带清掉 `.dev/home`：用户常在删「已合并」项时没意识到开发实例的会话、项目、卡片数据也一起没了。
+
+远端删除失败不当作本地删除失败：本地已经删干净，只报 `[远端未删]` 并说明远端分支还在，`[已删]` 那行不写「含远端」。
+
+**两条「已合并」判据都留着**，因为合并方式不设限：`git merge-base --is-ancestor <branch> main` 在 merge commit 下成立；squash 合并下不成立（提交不在 main 祖先链上），但 PR 状态仍是 MERGED。任一成立即可删。PR 状态查不到（gh 不可用/未登录/输出不是 JSON）按拒绝处理，不猜——`JSON.parse` 出错也归到「查不到」，让用户去查登录态，而不是让脚本崩在半路。
 
 删目录时 `.dev/home` 的数据与 `node_modules` 符号链接一起清掉——链接指向主 checkout，删的只是链接本身，不会动主 checkout 的依赖。

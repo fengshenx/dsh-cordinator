@@ -16,8 +16,10 @@
  * - 端口默认交给系统分配（`--port 0`），设 `DEV_PORT` 可固定。
  *
  * 环境变量：
- * - `DSH_HOME`        自定义开发实例的数据根（默认 `<工作树>/.dev/home`）
+ * - `DSH_HOME`        自定义开发实例的数据根（默认 `<工作树>/.dev/home`）；**不能等于
+ *                     `DSH_HOME_SOURCE`**，否则会覆写日常 profile，脚本直接拒绝
  * - `DSH_HOME_SOURCE` 源 HOME，默认 `~/.dsh`
+ * - `DSH_PROFILE`     源 profile 名，默认 `web`（插件 manifest 的 platform 也是 web）
  * - `DEV_PORT`        监听端口，默认 `0`（系统分配）
  * - `DEV_NO_OPEN=1`   不自动打开浏览器
  * - `DEV_DSH`         dsh 可执行文件名，默认 `dsh`
@@ -32,7 +34,7 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import {
-  COPIED_PROFILE_FILES, deriveProfilePackage, planNodeModules, resolveDevPaths,
+  COPIED_PROFILE_FILES, assertSeparateHome, deriveProfilePackage, planNodeModules, resolveDevPaths,
 } from './dev-plan.mjs'
 
 const worktree = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -56,11 +58,20 @@ function run(command, args, options) {
   }
 }
 
+// 任何写操作之前先挡「数据根 = 源 HOME」——那条路径会把源 profile 改写成自指
+// 死链，日常 dsh 随后起不来。
+try {
+  assertSeparateHome({ home: paths.home, sourceHome: paths.sourceHome })
+} catch (error) {
+  console.error(`错误: ${error.message}`)
+  process.exit(1)
+}
+
 const sourcePackagePath = join(paths.sourceProfileDir, 'package.json')
 if (!existsSync(sourcePackagePath)) {
   console.error(`找不到源 profile: ${sourcePackagePath}`)
   console.error('先在源 HOME 里装一次本插件，让日常 profile 具备完整依赖：')
-  console.error('  dsh plugin --profile web add <本仓库路径>')
+  console.error(`  dsh plugin --profile ${paths.profile} add <本仓库路径>`)
   console.error('或用 DSH_HOME_SOURCE 指向另一个已备好的 HOME。')
   process.exit(1)
 }
@@ -68,10 +79,19 @@ if (!existsSync(sourcePackagePath)) {
 mkdirSync(paths.profileDir, { recursive: true })
 
 // 源 profile 的 cordis 配置照抄一次：之后开发实例里的改动不再被覆盖（那里是调试
-// 界面开关、主题这类会随时改的东西）。
+// 界面开关、主题这类会随时改的东西）。cordis.patch.yml 是可选的覆盖层——用户没
+// 定制过就没有这个文件，跳过即可；cordis.yml 是 dsh 生成的骨架，缺了说明源 profile
+// 本身不完整，报一句能看懂的。
 for (const name of COPIED_PROFILE_FILES) {
   const target = join(paths.profileDir, name)
-  if (!existsSync(target)) copyFileSync(join(paths.sourceProfileDir, name), target)
+  if (existsSync(target)) continue
+  const from = join(paths.sourceProfileDir, name)
+  if (!existsSync(from)) {
+    if (name === 'cordis.patch.yml') continue
+    console.error(`源 profile 缺少 ${name}: ${from}（源 HOME 里的 dsh 可能没起过）`)
+    process.exit(1)
+  }
+  copyFileSync(from, target)
 }
 
 const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, 'utf8'))
@@ -112,7 +132,8 @@ console.log('')
 
 run('npm', ['run', 'build:client'], { cwd: worktree })
 
-const port = process.env.DEV_PORT ?? '0'
+// 空字符串要落到默认值：`DEV_PORT=` 这种写法传下去会让 dsh 收到空的 --port
+const port = process.env.DEV_PORT || '0'
 const args = ['web', '--port', port]
 if (process.env.DEV_NO_OPEN === '1') args.push('--no-open')
-run(process.env.DEV_DSH ?? 'dsh', args, { cwd: worktree, env: { ...process.env, DSH_HOME: paths.home } })
+run(process.env.DEV_DSH || 'dsh', args, { cwd: worktree, env: { ...process.env, DSH_HOME: paths.home } })

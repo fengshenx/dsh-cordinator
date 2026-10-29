@@ -72,7 +72,7 @@ dsh 另有一套同名的同伴模型工具（`tool-agent-team`，experimental�
 开发期用 profile link 安装（改代码即生效）：
 
 ```sh
-dsh plugin --profile dev add ../dsh-coordinator
+dsh plugin --profile web add ../dsh-coordinator
 ```
 
 快速试跑（不装进 profile）：
@@ -85,8 +85,10 @@ pnpm dsh web --patch ../dsh-coordinator/cordis.patch.yml
 分发到 npm 后：
 
 ```sh
-dsh plugin --profile dev add dsh-coordinator
+dsh plugin --profile web add dsh-coordinator
 ```
+
+profile 名用 `web`：插件 manifest 声明 `platform: web`，而 `dev` 这类自定义名字不在 dsh 的 `PROFILE_TEMPLATES` 里，`dsh plugin` 会按默认模板只装 `@deepseek-ai/dsh-base`——没有 web-app bundle，插件客户端半边根本不加载。
 
 `engines.dsh` 声明了支持的 dsh 版本范围；不满足时安装与启动会被拒绝——dsh 处于 developer preview，版本范围需随 dsh 跟进。
 
@@ -105,19 +107,19 @@ npm run dev                       # 起开发实例
 - 端口默认交给系统分配，启动日志里打印带 token 的 URL；要固定就 `DEV_PORT=3210 npm run dev`。
 - 改客户端代码（`src/client/`）要重跑 `npm run dev` 或 `npm run build:client` 再刷新；宿主侧（`src/host/`）由 Node 直接加载，重启实例即可。
 - 依赖共享主 checkout 的 `node_modules`（本仓库只有 esbuild 与 minidenticons），改 `package.json` 请在主 checkout 安装。
-- 覆盖项：`DSH_HOME`（数据根）、`DSH_HOME_SOURCE`（源 HOME，默认 `~/.dsh`）、`DEV_PORT`、`DEV_NO_OPEN=1`（不自动开浏览器）。
+- 覆盖项：`DSH_HOME`（数据根，**不能等于 `DSH_HOME_SOURCE`**——那条路径会把日常 profile 改写成自指死链，脚本直接拒绝）、`DSH_HOME_SOURCE`（源 HOME，默认 `~/.dsh`）、`DSH_PROFILE`（源 profile 名，默认 `web`）、`DEV_PORT`、`DEV_NO_OPEN=1`（不自动开浏览器）。
 
 收尾时清掉已合并的 worktree：
 
 ```sh
 npm run worktree:prune                 # 只打印结论（dry-run）
 npm run worktree:prune -- --apply      # 真删：worktree 目录 + 本地分支
-npm run worktree:prune -- --apply --delete-remote   # 连远端分支一起删
+npm run worktree:prune -- --apply --delete-remote   # 连远端分支一起删（--remote 指定远端，默认 origin）
 ```
 
 守卫：有未提交改动的、当前所在的、分支没进 `main` 且 PR 未合并的，一律拒绝。分支是否已合并看两条判据——`merge-base --is-ancestor main`（merge 合并成立）与 PR 状态（squash 合并只有这条成立）。删 worktree 时 `.dev/home` 的数据与 `node_modules` 链接随之清掉，链接指向主 checkout，删的只是链接本身。
 
-也可以不用脚本、手工把插件装进某个 profile：`dsh plugin --profile dev add ../dsh-coordinator`（改代码即生效，但会与装进同一 profile 的其他工作树互相覆盖）。
+也可以不用脚本、手工把插件装进某个 profile：`dsh plugin --profile web add ../dsh-coordinator`（改代码即生效，但会与装进同一 profile 的其他工作树互相覆盖）。
 
 ## 使用
 
