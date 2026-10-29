@@ -96,7 +96,7 @@ npm run worktree:prune            # 清已合并的 worktree（默认只打印�
 **这套通道依赖本机私有凭据**：`scripts/github-app-token.mjs` 读 `~/.telov/`，仓库本身不带这个能力。换机器、别人 clone、或将来接 CI 都要自备 App 与 installation——没有凭据时脚本按 Fail Loud 报缺文件并以 1 退出，不会静默降级成作者身份。
 
 - 凭据在机器本地、不入库：`~/.telov/github-app.env`（`GITHUB_APP_ID` / `GITHUB_APP_INSTALLATION_ID`）、`~/.telov/github-app.pem`（`chmod 600`）。该 App 的 installation 覆盖 `fengshenx` 名下全部仓库，同一份凭据 Telov 与本仓通用。
-- 换 token：`node scripts/github-app-token.mjs`（RS256 JWT → installation token，1 小时有效，不落盘）。
+- 换 token：`node scripts/github-app-token.mjs`（RS256 JWT → installation token，1 小时有效，不落盘）。它是**纯入口**，逻辑在 `github-app-credentials.mjs`（凭据读取与 token 交换）与 `github-app-jwt.mjs`（签名）。**别给入口加「是不是被直接执行」的守卫**：`import.meta.url` 会解析软链而 `pathToFileURL(argv[1])` 不会，路径经过软链时守卫判错、脚本退 0 且 stdout 为空，`$(…)` 一侧不短路，`gh` 随后回落到本人凭证——正是要防的身份降级。
 - **取 token 与调用必须写在同一行**：`TOKEN=$(node scripts/github-app-token.mjs) && GH_TOKEN="$TOKEN" gh pr comment <n> --body-file /tmp/review.md`。分两次 shell 调用时 `$TOKEN` 已丢失，`gh` 回落到本人凭证——评论照样发出，身份却静默变成作者账号；`&&` 短路是第二道防线，取不到 token 就不执行 `gh`。
 - 正文含中文、换行、代码块时先写临时文件再 `--body-file`，避开 shell 引号转义；临时文件用完删掉。
 - **别用 `gh api user` 验身份**：installation token 访问该端点一律 403（`Resource not accessible by integration`），那是预期形态不是故障——身份由 App slug 决定（`GET /app` 的 `slug` 是 `telov-review-bot`），用它签出的 token 发评必然显示为 `[bot]`。要确认可用性就查 `gh api /installation/repositories` 里有没有目标仓库。

@@ -30,13 +30,14 @@
 
 ## 验证
 
-- `npm run check`：445 例全绿。
+- `npm run check`：439 例全绿（合并 `origin/main` 后 437，加两条凭据读取用例）。
 - **回归用例**「建协调者会话那一刻，注册表里已经有它」：在 `createCoordinatorSession` 替身里用钩子站到 `agent/created` 的同一时刻问 `isCoordinatorSession()`，先 `loadIndex()` 复现真实进程（索引已加载、为空）的前提——不先加载的话 `isCoordinatorSession()` 一律放行，用例测不出时序。钩子结果收集成数组而非标量：标量只留最后一次，工厂被多调一次也察觉不到。
-- 双向验证四组，都是精确删除后看对应用例单独变红、其余全绿：
+- 双向验证五组，都是精确删除后看对应用例单独变红、其余全绿：
   - helper 改回「先建会话后登记」→ 两条登记时序用例红；
   - 删 `create()` catch 里的占位清理 → 「项目落盘失败时也撤掉占位」红；
   - 删 `replaceCoordinator()` catch 里的占位清理 → 「换协调者时改绑失败也撤掉占位」红；
-  - 删 `created !== sessionId` 分支 → 「建会话的实现没按契约用传入 id 时当场失败」红。
+  - 删 `created !== sessionId` 分支 → 「建会话的实现没按契约用传入 id 时当场失败」红；
+  - 只删该分支里的占位清理 → 同一条用例仍红（它同时断言了预生成 id 的占位已撤）。
 - 失败路径：「建会话失败时不落盘」补两条断言——`directoryOfCoordinator` 与 `isCoordinatorSession` 对预生成的 id 都返回空，占位确实撤掉了。
 - 契约层：`createCoordinatorSessionWithCtx` 的两条用例改成断言 `sessionController.create` 收到的 `sessionId` 与我们传入的一致（`{ workspaceId, sessionId }` 与 `{ cwd, sessionId }` 两种入参形态）。
 

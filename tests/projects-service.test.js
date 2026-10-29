@@ -172,7 +172,11 @@ test('建会话的实现没按契约用传入 id 时当场失败', async () => {
   const store = createProjectStore({ home })
   // 占位登记在预生成的 id 上，替身却建了别的会话：工具面已经按普通会话裁过一轮，
   // 继续下去只会留一个用不了的协调者
-  const createCoordinatorSession = async () => 'session-someone-else'
+  let wanted
+  const createCoordinatorSession = async (directory, sessionId) => {
+    wanted = sessionId
+    return 'session-someone-else'
+  }
   const service = makeService({
     store,
     ctx: createContext(),
@@ -186,6 +190,9 @@ test('建会话的实现没按契约用传入 id 时当场失败', async () => {
     /建会话的实现必须使用传入的 id/,
   )
   assert.deepEqual(await store.list(), [])
+  // 预生成 id 的占位也要撤掉，不能留一个「协调者身份指向不存在的会话」的条目
+  assert.equal(service.isCoordinatorSession(wanted), false)
+  assert.equal(service.directoryOfCoordinator(wanted), undefined)
 })
 
 test('换协调者时改绑失败也撤掉占位，旧协调者身份不变', async () => {

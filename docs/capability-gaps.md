@@ -324,7 +324,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **dsh 实测**（`0.2.1-rc.2`）：
 
-- `tools.restrict()` 要求 scoped context，`ctx.tools` 上没有「首轮请求前再判一次」的钩子；agent 相关生命周期事件只有 `agent/created` 与 `agent/disposed`（`packages/core/agent/src/dispatch.ts`），没有 step 级事件可挂。
+- `tools.restrict()` 要求 scoped context，`ctx.tools` 上没有「首轮请求前再判一次」的钩子；agent 相关生命周期事件只有 `agent/created` 与 `agent/disposed`（声明在 `packages/core/agent/src/runtime-types.ts:290`、`:299`），没有 step 级事件可挂。
 - `agent/created` 在 `agents.create()` / `sessionController.create()` **内部**就发出来了（`packages/core/agent/src/index.ts` 的 `CreateAgentOptions.setup` 更早：`setup` → `agent/created` → 首轮 prompt 组装）。
 - `restrict()` 是**追加**一层限制并返回 disposer（`packages/core/tools/src/index.ts:162-189`）；能撤回，但没有「按新身份重算」的入口，撤回后要自己重新裁一遍，且必须拿到那个 agent。
 - `sessionController.create(request)` 与 `agents.create({ sessionId })` **都接受调用方传入的 sessionId**；`sessionController` 侧逐层透传（`create` → `createSession({ sessionId })` → `claim(named)` → `createAgent(sessionId)` → `ctx.agents.create({ sessionId })`），`dsh-agent` 另有硬断言保证 `agent.id === session.id`。
