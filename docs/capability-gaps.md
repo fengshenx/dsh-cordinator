@@ -318,6 +318,19 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **影响**：本轮卡片详情浮层只读，完成、置顶、重命名、删除都没做，卡面也不放操作按钮。补齐是本仓自己的活：在 `projects` 之外加一组卡片远程方法，宿主侧转调卡片存储的既有领域规则。属独立议题，不是宿主拦路。
 
+### 37. 工具面只能按身份**同步**判定，而判定发生在建会话内部——身份必须先于会话存在
+
+**目标形态**：协调者会话一出生就拿到编排工具（`spawn_worker` / `message_worker` / `list_cards` / `worker_done`），不必等下一轮或重启。
+
+**dsh 实测**（`0.2.1-rc.2`）：
+
+- `tools.restrict()` 要求 scoped context，`ctx.tools` 上没有「首轮请求前再判一次」的钩子；agent 相关生命周期事件只有 `agent/created` 与 `agent/disposed`（声明在 `packages/core/agent/src/runtime-types.ts:290`、`:299`），没有 step 级事件可挂。
+- `agent/created` 在 `agents.create()` / `sessionController.create()` **内部**就发出来了（`packages/core/agent/src/index.ts` 的 `CreateAgentOptions.setup` 更早：`setup` → `agent/created` → 首轮 prompt 组装）。
+- `restrict()` 是**追加**一层限制并返回 disposer（`packages/core/tools/src/index.ts:162-189`）；能撤回，但没有「按新身份重算」的入口，撤回后要自己重新裁一遍，且必须拿到那个 agent。
+- `sessionController.create(request)` 与 `agents.create({ sessionId })` **都接受调用方传入的 sessionId**；`sessionController` 侧逐层透传（`create` → `createSession({ sessionId })` → `claim(named)` → `createAgent(sessionId)` → `ctx.agents.create({ sessionId })`），`dsh-agent` 另有硬断言保证 `agent.id === session.id`。
+
+**影响**：同进程内「先建会话、再登记身份」的顺序一定裁错档，且裁错的限制不会自己松开（要等该会话下次冷恢复重算）。绕法只有两条：让身份先于会话存在（预生成 `sessionId` 先登记，本仓采用），或保存 `restrict()` 的 disposer + `ctx.agents.get()` 事后重裁（多三个不确定点，还得赌重裁早于首轮请求组装）。前者是唯一不需要事后纠正的做法。
+
 ---
 
 ## 四、工具级（已验证可用，无缺口）

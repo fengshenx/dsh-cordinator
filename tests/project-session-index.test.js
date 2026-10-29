@@ -28,6 +28,24 @@ function createFakeCanonicalizer(mapping) {
   return async (path) => mapping[path] ?? path
 }
 
+/**
+ * 造一个按调用方 id 建会话的替身。
+ *
+ * 与真实实现同一个契约：协调者身份在建会话之前就登记了，所以必须原样用传入的
+ * id。id 记在 `ids` 里，供 `sessionQuery` 的会话列表引用。
+ *
+ * @returns {((directory: string, sessionId: string) => Promise<string>) & { ids: string[] }} 替身
+ */
+function createSessionFactory() {
+  const ids = []
+  const factory = async (directory, sessionId) => {
+    ids.push(sessionId)
+    return sessionId
+  }
+  factory.ids = ids
+  return factory
+}
+
 test('worker 会话 cwd 等于项目目录时归属该项目', async () => {
   const grouped = await groupSessionsByProject({
     projects: [{ id: 'p1', directory: '/repo' }],
@@ -124,9 +142,10 @@ test('归一器在路径解析失败时回落原路径', async () => {
 test('服务按项目聚合会话', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const query = {
     listSessions: async () => [
-      { header: { id: 'session-coordinator', cwd: workspace } },
+      { header: { id: factory.ids[0], cwd: workspace } },
       { header: { id: 'session-worker', cwd: workspace, origin: 'subagent' } },
       { header: { id: 'session-elsewhere', cwd: join(workspace, '..'), origin: 'subagent' } },
     ],
@@ -134,13 +153,16 @@ test('服务按项目聚合会话', async () => {
   const service = createProjectService({
     store,
     ctx: { get: (key) => (key === 'sessionQuery' ? query : undefined) },
-    createCoordinatorSession: async () => 'session-coordinator',
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
     isWorkerSession: (id) => id === 'session-worker',
   })
   const project = await service.create({ directory: workspace, name: 'alpha' })
 
   const grouped = await service.sessionsByProject()
+  // 保住判别力：会话没建成就拿不到 id，listSessions 里的协调者条目会变成 undefined
+  // 而被过滤掉，用例照样绿
+  assert.equal(factory.ids.length, 1)
   assert.equal(grouped.length, 1)
   assert.equal(grouped[0].projectId, project.id)
   assert.deepEqual(grouped[0].sessionIds, ['session-worker'])
@@ -152,7 +174,7 @@ test('服务在没有 sessionQuery 时返回空映射', async () => {
   const service = createProjectService({
     store,
     ctx: { get: () => undefined },
-    createCoordinatorSession: async () => 'session-coordinator',
+    createCoordinatorSession: createSessionFactory(),
     sessionExists: async () => true,
     isWorkerSession: () => true,
   })
@@ -179,7 +201,7 @@ test('真实符号链接目录按 realpath 归一后归属同一项目', async (
           }
         : undefined),
     },
-    createCoordinatorSession: async () => 'session-coordinator',
+    createCoordinatorSession: createSessionFactory(),
     sessionExists: async () => true,
     isWorkerSession: () => true,
   })
@@ -202,7 +224,7 @@ test('项目目录下新建的子目录不改变归属', async () => {
         ? { listSessions: async () => [{ header: { id: 's1', cwd: join(workspace, 'nested') } }] }
         : undefined),
     },
-    createCoordinatorSession: async () => 'session-coordinator',
+    createCoordinatorSession: createSessionFactory(),
     sessionExists: async () => true,
     isWorkerSession: () => true,
   })
@@ -228,24 +250,26 @@ test('给了 worker 判定时按判定收会话，不看会话头的 origin', as
 test('服务把 worker 判定透传给分组', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = createProjectService({
     store,
     ctx: {
       get: (key) => (key === 'sessionQuery'
         ? {
             listSessions: async () => [
-              { header: { id: 'session-coordinator', cwd: workspace } },
+              { header: { id: factory.ids[0], cwd: workspace } },
               { header: { id: 'worker-root', cwd: workspace } },
             ],
           }
         : undefined),
     },
-    createCoordinatorSession: async () => 'session-coordinator',
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
     isWorkerSession: (id) => id === 'worker-root',
   })
   const project = await service.create({ directory: workspace, name: 'alpha' })
 
   const grouped = await service.sessionsByProject()
+  assert.equal(factory.ids.length, 1)
   assert.deepEqual(grouped, [{ projectId: project.id, sessionIds: ['worker-root'] }])
 })

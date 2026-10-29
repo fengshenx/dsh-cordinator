@@ -73,7 +73,8 @@ export function assertUsableName(name) {
  * @param {object} options - 选项
  * @param {object} options.store - 项目注册表存储
  * @param {object} options.ctx - Cordis 上下文
- * @param {(directory: string) => Promise<string>} [options.createCoordinatorSession] - 建协调者会话
+ * @param {(directory: string, sessionId: string) => Promise<string>} [options.createCoordinatorSession] - 建协调者会话。
+ *   必须使用传入的 `sessionId`：协调者身份在建会话之前就登记了，换成别的 id 会让工具面裁成普通会话
  * @param {(sessionId: string) => Promise<boolean | undefined>} [options.sessionExists] - 判断会话是否仍存在
  * @param {(sessionId: string) => boolean} options.isWorkerSession - worker 会话判定。
  *   会话头看不出身份（worker 是普通根会话），列项目的会话树只能按登记表判。
@@ -92,15 +93,19 @@ export function createProjectService({
     throw new Error('dsh-coordinator: createProjectService 缺少 isWorkerSession，无法判定哪些会话属于项目')
   }
   const openCoordinatorSession = createCoordinatorSession
-    ?? ((directory) => createCoordinatorSessionWithCtx(ctx, directory))
+    ?? ((directory, sessionId) => createCoordinatorSessionWithCtx(ctx, directory, sessionId))
   const coordinatorExists = sessionExists
     ?? ((sessionId) => sessionExistsWithCtx(ctx, sessionId))
 
   /**
-   * 协调者会话 id → 项目的内存镜像（值是 `{ projectId, directory }`）。
+   * 协调者会话 id → 项目的内存镜像（值是 `{ directory }`，项目记录落盘后再补
+   * `projectId`）。
    *
    * 项目注册表是异步落盘的，而提示词组装与派工都需要**同步**拿到「这个会话属于
    * 哪个项目」。卡片库用的是同一手法：落盘是真源，内存镜像是读路径。
+   *
+   * 建项目期间会有只有 `directory` 的占位条目——身份登记早于会话创建（见
+   * `openRegisteredCoordinatorSession`），读 `projectId` 的地方必须容忍它缺席。
    */
   const coordinatorIndex = new Map()
 
@@ -153,6 +158,44 @@ export function createProjectService({
         + `${error instanceof Error ? error.message : String(error)}`,
       )
     }
+  }
+
+  /**
+   * 建一个协调者会话，并且在它被建出来之前就把身份登记进索引。
+   *
+   * 工具面在 `agent/created` 里按 `isCoordinatorSession()` 当场裁，而那个事件在
+   * 建会话内部就发出来了。先建会话、后登记的话，协调者出生的那一刻注册表里还没
+   * 有它，于是被裁成普通会话——`spawn_worker` / `message_worker` / `list_cards` /
+   * `worker_done` 全没。裁错的限制不会自己松开，要等这个会话下次冷恢复重算。
+   *
+   * 所以 id 由这里预生成、先登记，再让宿主用它建会话。两条建会话路径都接受传入
+   * 的 id（`sessionController.create({ sessionId })` 与 `agents.create({ sessionId })`）。
+   *
+   * 登记时只写 `directory`：`projectId` 要等项目记录落盘才有，调用方补。
+   *
+   * @param {string} directory - 项目目录绝对路径
+   * @returns {Promise<string>} 建成的会话 id
+   * @throws {Error} 建会话失败，或建成后的 id 与预定的不同
+   */
+  async function openRegisteredCoordinatorSession(directory) {
+    const sessionId = `session-${randomUUID()}`
+    coordinatorIndex.set(sessionId, { directory })
+    let created
+    try {
+      created = await openCoordinatorSession(directory, sessionId)
+    } catch (error) {
+      coordinatorIndex.delete(sessionId)
+      throw error
+    }
+    if (created !== sessionId) {
+      // 建会话的实现没按契约用传入的 id：占位登记在错的键上，工具面也已经裁错了
+      // 一轮。这个契约由我们自己的 createCoordinatorSessionWithCtx 保证，破了说明
+      // 宿主换了行为，必须当场停下而不是留一个工具面残缺的协调者。
+      coordinatorIndex.delete(sessionId)
+      await abandonCoordinatorSession(created)
+      throw new Error(`协调者会话建成了 ${created}，预定的是 ${sessionId}：建会话的实现必须使用传入的 id`)
+    }
+    return sessionId
   }
 
   /**
@@ -305,7 +348,9 @@ export function createProjectService({
       // 任何项目」，卡片就会静悄悄地丢归属——等索引就绪再判。
       await indexReady
       const coordinator = coordinatorIndex.get(sessionId)
-      if (coordinator !== undefined) {
+      // 建项目期间索引里先只有 directory 占位（登记早于会话创建，见
+      // openRegisteredCoordinatorSession），那时 projectId 还没有值。
+      if (coordinator?.projectId !== undefined) {
         const project = await store.get(coordinator.projectId)
         if (project !== undefined) return summarizeProject(project)
       }
@@ -337,7 +382,7 @@ export function createProjectService({
       // 必须在建会话之前问——建会话本身也会注册工作区，那时再问就只剩「已存在」。
       const ensured = await ensureWorkspace(ctx, normalizedDirectory, canonicalize)
       // 先建会话再建记录：会话建不出来时项目不落盘，失败路径没有半条记录。
-      const coordinatorSessionId = await openCoordinatorSession(normalizedDirectory)
+      const coordinatorSessionId = await openRegisteredCoordinatorSession(normalizedDirectory)
       const draft = store.draft({
         name: displayName,
         directory: normalizedDirectory,
@@ -356,6 +401,7 @@ export function createProjectService({
           canonicalDirectoryIndex.set(canonical, inserted.id)
         }
       } catch (error) {
+        coordinatorIndex.delete(coordinatorSessionId)
         await abandonCoordinatorSession(coordinatorSessionId)
         throw error
       }
@@ -549,7 +595,7 @@ export function createProjectService({
       if (ensured?.created === true) {
         await store.update(id, { workspaceId: ensured.workspace.id })
       }
-      const coordinatorSessionId = await openCoordinatorSession(project.directory)
+      const coordinatorSessionId = await openRegisteredCoordinatorSession(project.directory)
       let updated
       try {
         updated = await store.update(id, { coordinatorSessionId })
@@ -561,6 +607,7 @@ export function createProjectService({
           directory: project.directory,
         })
       } catch (error) {
+        coordinatorIndex.delete(coordinatorSessionId)
         await abandonCoordinatorSession(coordinatorSessionId)
         throw error
       }
@@ -682,25 +729,29 @@ export function isSessionAttachedToWorkspace(ctx, sessionId) {
  * 走 `sessionController` 时优先按工作区建（见 `ensureWorkspace`）：
  * 只有归属工作区的会话才能被 UI 打开成主区域。
  *
+ * `sessionId` 由调用方给定，两条路径都原样用它建会话——协调者身份在建会话之前
+ * 就登记好了，换成别的 id 会让工具面裁成普通会话（见
+ * `openRegisteredCoordinatorSession`）。
+ *
  * @param {object} ctx - Cordis 上下文
  * @param {string} directory - 项目目录绝对路径
- * @returns {Promise<string>} 会话 id
+ * @param {string} sessionId - 会话 id，由调用方预生成
+ * @returns {Promise<string>} 建成的会话 id
  */
-export async function createCoordinatorSessionWithCtx(ctx, directory) {
+export async function createCoordinatorSessionWithCtx(ctx, directory, sessionId) {
   const controller = ctx.get('sessionController')
   if (controller !== undefined && typeof controller.create === 'function') {
     const ensured = await ensureWorkspace(ctx, directory, canonicalize)
     const workspaceId = ensured?.workspace.id
     const created = await controller.create(workspaceId === undefined
-      ? { cwd: directory }
-      : { workspaceId })
+      ? { cwd: directory, sessionId }
+      : { workspaceId, sessionId })
     return created.sessionId
   }
   const agents = ctx.get('agents')
   if (agents === undefined || typeof agents.create !== 'function') {
     throw new Error('当前组合既没有 sessionController 也没有 agents 服务，无法建立协调者会话')
   }
-  const sessionId = `session-${randomUUID()}`
   const defaults = ctx.get('agentDefaultModel')
   const handle = await agents.create({
     sessionId,

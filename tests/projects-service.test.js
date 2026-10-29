@@ -46,23 +46,27 @@ function createContext() {
 }
 
 /**
- * 造一个记录调用次数的协调者会话工厂。
+ * 造一个假的协调者会话工厂。
+ *
+ * 与真实实现同一个契约：用调用方传入的 `sessionId` 建会话并原样返回。
+ *
  * @param {object} [options] - 选项
  * @param {boolean} [options.fail] - 建会话是否失败
- * @returns {{ factory: (directory: string) => Promise<string>, calls: string[], disposed: string[] }} 工厂与记录
+ * @param {(sessionId: string) => void} [options.onCreate] - 建会话时的钩子，用来观察那一刻的注册表状态
+ * @returns {((directory: string, sessionId: string) => Promise<string>) & { calls: string[], ids: string[] }} 工厂与记录
  */
-function createSessionFactory({ fail = false } = {}) {
+function createSessionFactory({ fail = false, onCreate } = {}) {
   const calls = []
-  const disposed = []
-  let counter = 0
-  const factory = async (directory) => {
+  const ids = []
+  const factory = async (directory, sessionId) => {
     calls.push(directory)
+    ids.push(sessionId)
+    onCreate?.(sessionId)
     if (fail) throw new Error('建会话失败')
-    counter += 1
-    return `session-${counter}`
+    return sessionId
   }
   factory.calls = calls
-  factory.disposed = disposed
+  factory.ids = ids
   return factory
 }
 
@@ -80,8 +84,34 @@ test('建项目会建协调者会话并绑定', async () => {
   const project = await service.create({ directory: workspace, name: 'alpha' })
   assert.equal(project.name, 'alpha')
   assert.equal(project.directory, workspace)
-  assert.equal(project.coordinatorSessionId, 'session-1')
+  assert.equal(project.coordinatorSessionId, factory.ids[0])
   assert.deepEqual(factory.calls, [workspace])
+})
+
+test('建协调者会话那一刻，注册表里已经有它（工具面按协调者裁）', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  // 工具面在 agent/created 里当场问 isCoordinatorSession()，那个事件在建会话内部
+  // 就发出来了——这里用钩子站在同一时刻问一次。收集成数组：标量只留最后一次，
+  // 工厂被多调一次也察觉不到。
+  const seenAtCreation = []
+  const factory = createSessionFactory({
+    onCreate: (sessionId) => {
+      seenAtCreation.push(service.isCoordinatorSession(sessionId))
+    },
+  })
+  const service = makeService({
+    store,
+    ctx: createContext(),
+    createCoordinatorSession: factory,
+    sessionExists: async () => true,
+  })
+  // 真实进程启动时会先把注册表读回内存（此时还没有任何项目）。索引没加载时
+  // isCoordinatorSession() 一律放行，那个宽松状态盖住了这里要测的时序。
+  await service.loadIndex()
+
+  await service.create({ directory: workspace, name: 'alpha' })
+  assert.deepEqual(seenAtCreation, [true])
 })
 
 test('项目名缺省取目录末段', async () => {
@@ -100,15 +130,112 @@ test('项目名缺省取目录末段', async () => {
 test('建会话失败时不落盘', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory({ fail: true })
   const service = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory({ fail: true }),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
+  // 索引未加载时 isCoordinatorSession() 一律放行，那个宽松会盖住这里要测的残留
+  await service.loadIndex()
 
   await assert.rejects(() => service.create({ directory: workspace }), /建会话失败/)
   assert.deepEqual(await store.list(), [])
+  // 预登记的占位要撤掉，否则一个没建成的会话会被一直当成协调者
+  assert.equal(service.directoryOfCoordinator(factory.ids[0]), undefined)
+  assert.equal(service.isCoordinatorSession(factory.ids[0]), false)
+})
+
+test('项目落盘失败时也撤掉占位，不留一个没有项目归属的协调者', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const factory = createSessionFactory()
+  // 会话已经建成、记录写不进去：这条路径不经过 helper 自己的 catch
+  const failingStore = { ...store, insert: async () => { throw new Error('落盘失败') } }
+  const service = makeService({
+    store: failingStore,
+    ctx: createContext(),
+    createCoordinatorSession: factory,
+    sessionExists: async () => true,
+  })
+  await service.loadIndex()
+
+  await assert.rejects(() => service.create({ directory: workspace, name: 'alpha' }), /落盘失败/)
+  assert.deepEqual(await store.list(), [])
+  assert.equal(service.directoryOfCoordinator(factory.ids[0]), undefined)
+  assert.equal(service.isCoordinatorSession(factory.ids[0]), false)
+})
+
+test('建会话的实现没按契约用传入 id 时当场失败', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  // 占位登记在预生成的 id 上，替身却建了别的会话：工具面已经按普通会话裁过一轮，
+  // 继续下去只会留一个用不了的协调者
+  let wanted
+  const createCoordinatorSession = async (directory, sessionId) => {
+    wanted = sessionId
+    return 'session-someone-else'
+  }
+  const service = makeService({
+    store,
+    ctx: createContext(),
+    createCoordinatorSession,
+    sessionExists: async () => true,
+  })
+  await service.loadIndex()
+
+  await assert.rejects(
+    () => service.create({ directory: workspace, name: 'alpha' }),
+    /建会话的实现必须使用传入的 id/,
+  )
+  assert.deepEqual(await store.list(), [])
+  // 预生成 id 的占位也要撤掉，不能留一个「协调者身份指向不存在的会话」的条目
+  assert.equal(service.isCoordinatorSession(wanted), false)
+  assert.equal(service.directoryOfCoordinator(wanted), undefined)
+})
+
+test('换协调者时改绑失败也撤掉占位，旧协调者身份不变', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const factory = createSessionFactory()
+  // update 只在改绑时被调用（ctx 没有工作区服务，建项目阶段不会碰它）
+  const failingStore = { ...store, update: async () => { throw new Error('改绑失败') } }
+  const service = makeService({
+    store: failingStore,
+    ctx: createContext(),
+    createCoordinatorSession: factory,
+    sessionExists: async () => true,
+  })
+  await service.loadIndex()
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+
+  await assert.rejects(() => service.replaceCoordinator(project.id), /改绑失败/)
+  assert.equal(service.directoryOfCoordinator(factory.ids[0]), workspace)
+  assert.equal(service.directoryOfCoordinator(factory.ids[1]), undefined)
+  assert.equal((await store.get(project.id)).coordinatorSessionId, factory.ids[0])
+})
+
+test('换新协调者时，新会话在建立那一刻也已经登记', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const seen = []
+  const factory = createSessionFactory({
+    onCreate: (sessionId) => {
+      seen.push(service.directoryOfCoordinator(sessionId))
+    },
+  })
+  const service = makeService({
+    store,
+    ctx: createContext(),
+    createCoordinatorSession: factory,
+    sessionExists: async () => true,
+  })
+  await service.loadIndex()
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await service.replaceCoordinator(project.id)
+
+  assert.deepEqual(seen, [workspace, workspace])
 })
 
 test('目录不存在时拒绝建项目', async () => {
@@ -176,11 +303,13 @@ test('项目名不能为空或过长', async () => {
 test('列表标注协调者会话是否还在', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
-    sessionExists: async (sessionId) => sessionId === 'session-1',
+    createCoordinatorSession: factory,
+    // 只有第一个项目的协调者会话还在
+    sessionExists: async (sessionId) => sessionId === factory.ids[0],
   })
 
   await service.create({ directory: workspace, name: 'alpha' })
@@ -194,54 +323,58 @@ test('列表标注协调者会话是否还在', async () => {
 test('归档的协调者会话按失效处理', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = makeService({
     store,
-    // 归档只往工作区注册表里加 id，会话记录还在；存活判定不能只看会话是否存在
+    // 归档只往工作区注册表里加 id，会话记录还在；存活判定不能只看会话是否存在。
+    // 会话 id 由 service 预生成，所以引用替身的记录而不是写死一个。
     ctx: {
       get: (name) => (name === 'workspaceRegistry'
-        ? { archivedSessionIds: ['session-1'] }
+        ? { archivedSessionIds: factory.ids }
         : undefined),
     },
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
   const created = await service.create({ directory: workspace, name: 'alpha' })
-  assert.equal(created.coordinatorSessionId, 'session-1')
+  assert.equal(created.coordinatorSessionId, factory.ids[0])
   const projects = await service.list()
   assert.equal(projects[0].coordinatorAlive, false)
-  const resolved = await service.resolveProjectOfSession('session-1')
+  const resolved = await service.resolveProjectOfSession(factory.ids[0])
   assert.equal(resolved.coordinatorAlive, false)
 })
 
 test('协调者索引在增删改后保持同步', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
-  assert.equal(service.directoryOfCoordinator('session-1'), workspace)
+  assert.equal(service.directoryOfCoordinator(factory.ids[0]), workspace)
 
   await service.replaceCoordinator(project.id)
-  assert.equal(service.directoryOfCoordinator('session-1'), undefined)
-  assert.equal(service.directoryOfCoordinator('session-2'), workspace)
+  assert.equal(service.directoryOfCoordinator(factory.ids[0]), undefined)
+  assert.equal(service.directoryOfCoordinator(factory.ids[1]), workspace)
 
   await service.remove(project.id)
-  assert.equal(service.directoryOfCoordinator('session-2'), undefined)
+  assert.equal(service.directoryOfCoordinator(factory.ids[1]), undefined)
 })
 
 test('重启后从注册表重建协调者索引', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const first = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
   await first.create({ directory: workspace, name: 'alpha' })
@@ -253,39 +386,41 @@ test('重启后从注册表重建协调者索引', async () => {
     sessionExists: async () => true,
   })
   await second.loadIndex()
-  assert.equal(second.directoryOfCoordinator('session-1'), workspace)
+  assert.equal(second.directoryOfCoordinator(factory.ids[0]), workspace)
 })
 
 test('换新协调者会改绑，旧会话不再指向项目', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
   const updated = await service.replaceCoordinator(project.id)
-  assert.equal(updated.coordinatorSessionId, 'session-2')
-  assert.equal(await service.getByCoordinator('session-1'), undefined)
-  assert.equal((await service.getByCoordinator('session-2')).id, project.id)
+  assert.equal(updated.coordinatorSessionId, factory.ids[1])
+  assert.equal(await service.getByCoordinator(factory.ids[0]), undefined)
+  assert.equal((await service.getByCoordinator(factory.ids[1])).id, project.id)
 })
 
 test('注销项目保留协调者会话', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
   const removed = await service.remove(project.id)
-  assert.equal(removed.coordinatorSessionId, 'session-1')
+  assert.equal(removed.coordinatorSessionId, factory.ids[0])
   assert.deepEqual(await service.list(), [])
 })
 
@@ -337,10 +472,11 @@ test('attachCoordinator 把协调者会话挂到项目目录的工作区', async
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
   const registry = createWorkspaceRegistry()
+  const factory = createSessionFactory()
   const service = makeService({
     store,
     ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
@@ -350,7 +486,7 @@ test('attachCoordinator 把协调者会话挂到项目目录的工作区', async
   assert.equal(result.workspaceId, 'ws-1')
   assert.equal(registry.created.length, 1)
   assert.equal(registry.created[0].title, join(workspace).split(/[\\/]/).pop())
-  assert.deepEqual(registry.attached, [{ workspaceId: 'ws-1', sessionId: 'session-1' }])
+  assert.deepEqual(registry.attached, [{ workspaceId: 'ws-1', sessionId: factory.ids[0] }])
 })
 
 test('attachCoordinator 复用已存在的工作区，不重复注册，也不把它算成项目的工作区', async () => {
@@ -466,7 +602,7 @@ test('isSessionAttachedToWorkspace 判定会话归属', async () => {
   assert.equal(isSessionAttachedToWorkspace(createContext(), 'session-a'), false)
 })
 
-test('建协调者会话时传 workspaceId 而不是 cwd', async () => {
+test('建协调者会话时传 workspaceId 而不是 cwd，并把 sessionId 一起传下去', async () => {
   const registry = createWorkspaceRegistry()
   const calls = []
   const ctx = {
@@ -476,16 +612,16 @@ test('建协调者会话时传 workspaceId 而不是 cwd', async () => {
         return {
           create: async (options) => {
             calls.push(options)
-            return { sessionId: 'session-1' }
+            return { sessionId: options.sessionId }
           },
         }
       }
       return undefined
     },
   }
-  const sessionId = await createCoordinatorSessionWithCtx(ctx, '/tmp/demo')
-  assert.equal(sessionId, 'session-1')
-  assert.deepEqual(calls, [{ workspaceId: 'ws-1' }])
+  const sessionId = await createCoordinatorSessionWithCtx(ctx, '/tmp/demo', 'session-given')
+  assert.equal(sessionId, 'session-given')
+  assert.deepEqual(calls, [{ workspaceId: 'ws-1', sessionId: 'session-given' }])
 })
 
 test('宿主没有工作区服务时建协调者会话退回 cwd', async () => {
@@ -496,15 +632,15 @@ test('宿主没有工作区服务时建协调者会话退回 cwd', async () => {
         return {
           create: async (options) => {
             calls.push(options)
-            return { sessionId: 'session-1' }
+            return { sessionId: options.sessionId }
           },
         }
       }
       return undefined
     },
   }
-  await createCoordinatorSessionWithCtx(ctx, '/tmp/demo')
-  assert.deepEqual(calls, [{ cwd: '/tmp/demo' }])
+  await createCoordinatorSessionWithCtx(ctx, '/tmp/demo', 'session-given')
+  assert.deepEqual(calls, [{ cwd: '/tmp/demo', sessionId: 'session-given' }])
 })
 
 test('插件注册的工作区记进项目记录', async () => {
@@ -589,15 +725,16 @@ test('从宿主移除项目工作区会清掉记录', async () => {
 test('建项目不发起任何模型调用', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const factory = createSessionFactory()
   const service = makeService({
     store,
     ctx: createContext(),
-    createCoordinatorSession: createSessionFactory(),
+    createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
-  assert.equal(project.coordinatorSessionId, 'session-1')
+  assert.equal(project.coordinatorSessionId, factory.ids[0])
   assert.equal((await store.list()).length, 1)
 })
 
