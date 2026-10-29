@@ -67,12 +67,19 @@ export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
  * 会话每次创建（含冷恢复）都会发 `agent/created`，这里跟着重算一次：作用域是
  * 新建的，上一次的限制不会留下。
  *
- * `COORDINATOR_UNUSABLE_TOOLS` 来自宿主的 subagent 组合，那个组合可以被部署禁用；
- * 而 `restrict()` 遇到没注册过的名字会直接报错，所以只 deny 当前确实存在的。
- * 探测用 `get(name)` 而不传 scope（即全局视图）——这三件正是全局工具，不必也不该
- * 猜 agent 的 scope key（那是不透明的内部键）。`definitions()` 是 0.2.2-alpha.2
- * 才加的方法，`engines.dsh` 下限 0.2.1-rc.2 上没有它，别在裁剪路径上引入。
- * 本 bundle 自己注册的工具不走这一步——那些缺失是装配错误，应该大声报出来。
+ * `COORDINATOR_UNUSABLE_TOOLS` 来自宿主的 subagent 组合，那个组合可以被部署
+ * 禁用、也可以改由 preset 子树注册；`restrict()` 遇到没注册过的名字会直接报错，
+ * 所以整批失败时逐件重试，缺的那件跳过。
+ *
+ * 不能用 `get(name)` 做存在性探测：省略 scope 等于**全局视图**，而 web-app 把
+ * 这三件在宿主平面 `disabled: true`、改由 preset 子树注册（`cordis.patch.yml`
+ * 的 tool-subagent* 行）——全局视图里没有它们，探测会把三件全部误判成「不存在」，
+ * 限制就悄悄失效了。`definitions()` 是 0.2.2-alpha.2 才加的方法，`engines.dsh`
+ * 下限 0.2.1-rc.2 上没有它，别在裁剪路径上引入。
+ *
+ * 顺带记一笔：摘掉这三件后，preset 提供的 `subagent` / `subagent_fork` 仍在，
+ * 协调者于是「能派不能跟」。这两个是通用能力（只读探索也用得上），暂时留着；
+ * 协议层的立场是协调者不拿它们当 worker 用。
  *
  * @param {object} options - 选项
  * @param {object} options.agent - 刚创建的 agent
@@ -83,9 +90,44 @@ export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
 export function applyToolGate({ agent, isCoordinatorSession, isWorkerSession }) {
   const denied = deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
   if (denied.length === 0) return denied
-  const present = denied.filter((name) => !COORDINATOR_UNUSABLE_TOOLS.includes(name)
-    || agent.ctx.tools.get(name) !== undefined)
-  if (present.length === 0) return present
-  agent.ctx.tools.restrict({ deny: present })
-  return present
+  try {
+    agent.ctx.tools.restrict({ deny: denied })
+    return denied
+  } catch (error) {
+    if (!isUnknownToolError(error)) throw error
+    return denyAvailable(agent, denied)
+  }
+}
+
+/**
+ * 判断 `restrict()` 的失败是不是「名单里有当前组合没有的工具」。
+ *
+ * 认的是宿主自己那句固定前缀；文案变了就按未知异常抛出（Fail Loud），
+ * 不要在这里兜一个可能掩盖真实装配错误的宽匹配。
+ *
+ * @param {unknown} error - restrict 抛出的错误
+ * @returns {boolean} 是否为未知工具名
+ */
+function isUnknownToolError(error) {
+  return error instanceof Error && error.message.includes('names unknown global tool')
+}
+
+/**
+ * 逐件应用限制，跳过当前组合里缺的那几件。
+ *
+ * @param {object} agent - 刚创建的 agent
+ * @param {readonly string[]} names - 要禁掉的工具名
+ * @returns {string[]} 实际禁掉的工具名
+ */
+function denyAvailable(agent, names) {
+  const applied = []
+  for (const name of names) {
+    try {
+      agent.ctx.tools.restrict({ deny: [name] })
+      applied.push(name)
+    } catch (error) {
+      if (!isUnknownToolError(error)) throw error
+    }
+  }
+  return applied
 }
