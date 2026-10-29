@@ -88,13 +88,20 @@ function createFixture({ missingAgents = false, missingModel = false, missingPre
         return { resolve: async () => ({ id: 'standard' }) }
       }
       if (key === 'agentPresets' && !missingPresets) {
+        // 方法面照 rc.2：registry 只有 resolve / mount，没有 presetForSession()。
         return {
           async resolve(id) { return { id: id ?? 'standard' } },
           async mount(agentCtx, id) {
             mounts.push(agentCtx)
             mountIds.push(id)
           },
-          presetForSession: () => 'standard',
+        }
+      }
+      // 冷恢复的 preset 从会话投影读（rc.2 的 registry 也走这条路）。投影值与
+      // 默认 id 故意不同，否则用例区分不出「读了投影」和「用了默认」。
+      if (key === 'sessionProjections') {
+        return {
+          stateOf: (session, name) => (name === 'agentPreset' ? 'custom' : null),
         }
       }
       return undefined
@@ -276,7 +283,8 @@ test('冷恢复也挂 agent preset：新作用域不会自己带着 preset 回�
   const agentCtx = { scope: 'resumed' }
   await setup(agentCtx, { session: { id: 'worker-1' } })
   assert.deepEqual(fixture.mounts, [agentCtx])
-  assert.deepEqual(fixture.mountIds, ['standard'])
+  // 读的是会话投影里记的 preset（'custom'），不是默认的 'standard'
+  assert.deepEqual(fixture.mountIds, ['custom'])
 })
 
 test('没有 cwd 时不给宿主塞空的 cwd 键', async () => {

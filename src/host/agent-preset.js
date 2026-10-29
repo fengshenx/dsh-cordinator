@@ -73,11 +73,34 @@ export async function agentPresetOptions(ctx, logger) {
 }
 
 /**
+ * 读会话投影里记的 preset id。
+ *
+ * `engines.dsh` 下限（0.2.1-rc.2）的 registry **没有** `presetForSession()`——
+ * 那是 sessionController 自己的方法，registry 到 0.2.2-alpha.2 才有。rc.2 上
+ * registry 自己也是从 `sessionProjections.stateOf(session, 'agentPreset')` 读，
+ * 这里照同一条路走。
+ *
+ * 投影服务缺席（组合没有它）时返回 undefined，调用方按默认 preset 处理；
+ * 服务在却缺 `stateOf()` 属于契约变化，直接抛错。
+ *
+ * @param {object} ctx - Cordis 上下文
+ * @param {object} agent - 正在恢复的 agent
+ * @returns {string | undefined} 会话投影里的 preset id
+ */
+function recordedPreset(ctx, agent) {
+  const projections = ctx.get('sessionProjections')
+  if (projections === undefined) return undefined
+  if (typeof projections.stateOf !== 'function') {
+    throw new Error('dsh-coordinator: sessionProjections 服务缺少 stateOf()，宿主契约已变；读不回会话的 preset')
+  }
+  return projections.stateOf(agent.session, 'agentPreset') ?? undefined
+}
+
+/**
  * 造冷恢复要用的 preset 片段。
  *
  * 冷恢复建的是新作用域，preset 组合不会自己回来。这里按会话投影里记的 preset
- * 挂（建会话时写进 `meta.agentPreset`，resume 时宿主也照它重建），旧会话没有
- * 记录时省略 id 用宿主的默认 preset。
+ * 挂（建会话时写进 `meta.agentPreset`），旧会话没有记录时省略 id 用宿主默认。
  *
  * @param {object} ctx - Cordis 上下文
  * @param {((message: string) => void)} [logger] - 日志输出
@@ -91,10 +114,7 @@ export function agentPresetResumeSetup(ctx, logger) {
   }
   return {
     setup: async (agentCtx, agent) => {
-      const recorded = typeof presets.presetForSession === 'function'
-        ? presets.presetForSession(agent.session)
-        : undefined
-      await presets.mount(agentCtx, recorded)
+      await presets.mount(agentCtx, recordedPreset(ctx, agent))
     },
   }
 }
