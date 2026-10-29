@@ -198,6 +198,53 @@ export function createProjectService({
     return sessionId
   }
 
+  /**
+   * 协调者会话是否已被归档。
+   *
+   * 归档只往工作区注册表的归档集合里加 id，不删会话记录；只看会话是否存在会把
+   * 归档的协调者当成还活着。
+   *
+   * @param {string} sessionId - 会话 id
+   * @returns {boolean} 已归档时 true
+   */
+  function isArchived(sessionId) {
+    const archived = ctx.get('workspaceRegistry')?.archivedSessionIds
+    return Array.isArray(archived) && archived.includes(sessionId)
+  }
+
+  /**
+   * 协调者会话是否还在。
+   *
+   * 存活 = 会话记录存在且未被归档。`undefined` 表示宿主没有会话查询后端（不知道），
+   * 调用方按「还在」处理，不把未知误报成失效。
+   *
+   * @param {string} sessionId - 会话 id
+   * @returns {Promise<boolean | undefined>} 是否还在
+   */
+  async function coordinatorAliveOf(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') return false
+    const exists = await coordinatorExists(sessionId)
+    if (exists === undefined) return undefined
+    if (!exists) return false
+    return !isArchived(sessionId)
+  }
+
+  /**
+   * 项目摘要：客户端拿它判定看板可见性，以及协调者会话是否还在。
+   *
+   * @param {object} project - 项目记录
+   * @returns {Promise<object>} 项目摘要
+   */
+  async function summarizeProject(project) {
+    return {
+      id: project.id,
+      name: project.name,
+      directory: project.directory,
+      coordinatorSessionId: project.coordinatorSessionId ?? '',
+      coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
+    }
+  }
+
   return {
     /**
      * 重建协调者索引。进程启动时调用：内存镜像是进程内的，崩溃后不会留下。
@@ -292,7 +339,8 @@ export function createProjectService({
      * 明确说「不归属任何项目」，不猜：把卡挂到猜出来的项目上，比不挂更难查。
      *
      * @param {string} sessionId - 会话 id
-     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory }`）；不归属时 undefined
+     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory,
+     *   coordinatorSessionId, coordinatorAlive }`）；不归属时 undefined
      */
     async resolveProjectOfSession(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return undefined
@@ -304,9 +352,7 @@ export function createProjectService({
       // openRegisteredCoordinatorSession），那时 projectId 还没有值。
       if (coordinator?.projectId !== undefined) {
         const project = await store.get(coordinator.projectId)
-        if (project !== undefined) {
-          return { id: project.id, name: project.name, directory: project.directory }
-        }
+        if (project !== undefined) return summarizeProject(project)
       }
       const cwd = ctx.get('sessions')?.get?.(sessionId)?.header?.cwd
       if (typeof cwd !== 'string' || cwd === '') return undefined
@@ -314,7 +360,9 @@ export function createProjectService({
       if (projectId === undefined) return undefined
       const project = await store.get(projectId)
       if (project === undefined) return undefined
-      return { id: project.id, name: project.name, directory: project.directory }
+      // 项目里的普通会话与 worker 也能解析到项目（卡片归属要用），但看板只对
+      // 协调者开放——客户端拿这条指针判断。
+      return summarizeProject(project)
     },
 
     /**
@@ -372,7 +420,7 @@ export function createProjectService({
       const projects = await store.list()
       return Promise.all(projects.map(async (project) => ({
         ...project,
-        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
         workspaceId: recordedWorkspaceId(ctx, project),
       })))
@@ -496,7 +544,7 @@ export function createProjectService({
       if (project === undefined) return undefined
       return {
         ...project,
-        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
         workspaceId: recordedWorkspaceId(ctx, project),
       }
@@ -516,7 +564,7 @@ export function createProjectService({
       if (project === undefined) return undefined
       return {
         ...project,
-        coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+        coordinatorAlive: await coordinatorAliveOf(project.coordinatorSessionId),
         coordinatorAttached: isSessionAttachedToWorkspace(ctx, project.coordinatorSessionId),
         workspaceId: recordedWorkspaceId(ctx, project),
       }

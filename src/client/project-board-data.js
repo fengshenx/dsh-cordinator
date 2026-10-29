@@ -32,6 +32,76 @@ export async function resolveProject(callRemote, sessionId) {
 }
 
 /**
+ * 这个会话是不是该项目的协调者。
+ *
+ * 项目归属按 cwd 判定，同一个项目目录里的普通会话与 worker 也会解析到项目；
+ * 看板只给协调者看——它们在项目里干活，但不拥有这个看板的呈现面。
+ *
+ * @param {object | undefined} project - 项目摘要（含 `coordinatorSessionId`）
+ * @param {string} sessionId - 当前面板所属会话
+ * @returns {boolean} 是否为该项目的协调者会话
+ */
+export function isCoordinatorProject(project, sessionId) {
+  const coordinator = project?.coordinatorSessionId
+  return typeof coordinator === 'string' && coordinator !== '' && coordinator === sessionId
+}
+
+/**
+ * 看板面板该显示什么。
+ *
+ * 把「归属、协调者身份、协调者存活」三件事收敛成一个判定，面板的取卡条件与
+ * 展示分支都读它，避免两处守卫各写一套。
+ *
+ * - `no-project`：会话不属于任何项目；
+ * - `coordinator-dead`：项目在，但绑定的协调者会话已失效（归档或被替换）；
+ * - `not-viewable`：项目里能解析到，但当前会话不是协调者（worker / 普通会话）；
+ * - `coordinator`：当前会话就是该项目的协调者，可展示卡片。
+ *
+ * `coordinatorAlive` 为 `undefined`（不知道）时按「还在」处理，不误报失效。
+ *
+ * @param {object | undefined} project - 项目摘要
+ * @param {string} sessionId - 当前面板所属会话
+ * @returns {'no-project' | 'coordinator-dead' | 'not-viewable' | 'coordinator'} 视图状态
+ */
+export function boardViewState(project, sessionId) {
+  if (project === undefined) return 'no-project'
+  if (project.coordinatorAlive === false) return 'coordinator-dead'
+  if (!isCoordinatorProject(project, sessionId)) return 'not-viewable'
+  return 'coordinator'
+}
+
+/**
+ * 这个会话当前能不能看项目看板。
+ *
+ * @param {object | undefined} project - 项目摘要
+ * @param {string} sessionId - 当前面板所属会话
+ * @returns {boolean} 是否可展示看板
+ */
+export function isBoardViewable(project, sessionId) {
+  return boardViewState(project, sessionId) === 'coordinator'
+}
+
+/**
+ * 两份项目摘要是否描述同一个可展示状态。
+ *
+ * 面板每 30 秒复核一次项目：内容没变时保持旧对象引用，否则卡片取数的
+ * effect 会跟着重启轮询。名字、协调者或存活状态变了才算变化——项目重命名后
+ * 看板空态与提示文案要跟着换。
+ *
+ * @param {object | undefined} left - 旧摘要
+ * @param {object | undefined} right - 新摘要
+ * @returns {boolean} 是否等价
+ */
+export function sameProjectSummary(left, right) {
+  if (left === right) return true
+  if (left === undefined || right === undefined) return false
+  return left.id === right.id
+    && left.name === right.name
+    && left.coordinatorSessionId === right.coordinatorSessionId
+    && left.coordinatorAlive === right.coordinatorAlive
+}
+
+/**
  * 取项目的看板卡片。
  *
  * @param {(method: string, args: unknown[]) => Promise<unknown>} callRemote - 远程调用

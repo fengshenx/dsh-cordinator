@@ -41,7 +41,7 @@ export function apply(ctx) {
       id: 'board',
       order: 10,
       title: () => '看板',
-      description: () => '协调者的任务交付看板',
+      description: () => '项目协调者会话里的任务交付看板',
     }],
   }), 'dsh-coordinator 看板 tab 类型')
 

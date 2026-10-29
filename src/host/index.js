@@ -1,11 +1,10 @@
 /**
  * dsh-coordinator 的宿主侧插件。
  *
- * 贡献九件事：bundle 内置 skill 的发现（协议层）、项目初始化工具、后台派工工具、
- * worker 会话的创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具 + worker
- * 自己用 `worker_done` 交作业）、派工完成后的自动唤醒、任务看板卡片存储与卡片工具、
- * 项目注册表与项目作用域工具、项目数据的 Typert 远程通道，以及角色槽位到系统提示词
- * 的注入。
+ * 贡献八件事：bundle 内置 skill 的发现（协议层）、后台派工工具、worker 会话的
+ * 创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具 + worker 自己用
+ * `worker_done` 交作业）、派工完成后的自动唤醒、任务看板卡片存储与卡片工具、
+ * 项目注册表、项目数据的 Typert 远程通道，以及角色槽位到系统提示词的注入。
  *
  * 客户端侧（交付看板 UI 与左栏项目区块）在 `src/client/`，跑在浏览器进程，与本
  * 模块不共处。
@@ -16,16 +15,9 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createSkillProvider } from './skills.js'
-import { createInitProjectTool } from './tools/init-project.js'
 import { createSpawnWorkerTool } from './tools/spawn-worker.js'
 import { createMessageWorkerTool } from './tools/message-worker.js'
 import { createCreateCardTool, createUpdateCardTool, createListCardsTool } from './tools/cards.js'
-import {
-  createListProjectsTool,
-  createAddProjectTool,
-  createSwitchProjectTool,
-  createRemoveProjectTool,
-} from './tools/projects.js'
 import { createNotificationStore, resolveDshHome } from './notification-store.js'
 import { createWorkerRegistry } from './worker-registry.js'
 import { createWorkerSessions } from './worker-sessions.js'
@@ -82,21 +74,9 @@ export function apply(ctx) {
     logger,
   })
 
-  // 工具面按角色分配：协调者拿到编排与全库查询，worker 再少掉项目注册表的
-  // 读写，普通会话两者都没有。裁剪在 `agent/created` 时对 agent 作用域做
-  // （见 `applyToolGate`）。
+  // 工具面按角色分配：协调者拿到编排与全库查询，worker 与普通会话都没有。
+  // 裁剪在 `agent/created` 时对 agent 作用域做（见 `applyToolGate`）。
   const isCoordinatorSession = (sessionId) => projectService.isCoordinatorSession(sessionId)
-
-  ctx.tools.register(
-    createInitProjectTool({
-      conventionsPath: join(bundleRoot, 'skills', 'init-project', 'references', 'conventions.md'),
-    }),
-  )
-
-  ctx.tools.register(createListProjectsTool({ service: projectService }))
-  ctx.tools.register(createAddProjectTool({ service: projectService }))
-  ctx.tools.register(createSwitchProjectTool({ service: projectService }))
-  ctx.tools.register(createRemoveProjectTool({ service: projectService }))
 
   const cards = createCardStore({ home: resolveDshHome(), logger })
   // 卡片按项目归属：归属由宿主按调用方会话判定，模型不传项目参数。
