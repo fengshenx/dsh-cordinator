@@ -21,11 +21,22 @@
 
 会话 id 用 `worker-${randomUUID()}`：根会话没有 `origin` 标记，前缀让排障时一眼看出这是谁建的。
 
+> **2026-10-29 修订：完成信号不再由 worker 自报，改为机制侧从会话事件结算。**
+> 原文的「宿主没给第三方留读最后一轮产出的稳定 API」不成立：`session/event` 是公开
+> 事件，`turn/end` 是真正的 session event 且带终态 `reason.kind`，`sessionQuery.readSession()`
+> 也返回完整 `SessionEvent[]`。宿主自己的 subagent 就是这么做的（`captureLocalResult()`
+> 从会话事件折叠产出与 stopReason）。改法：订阅 `session/event`，`turn/end` 到期时
+> 折叠这一轮的 `assistant/message` 文本与 `reason.kind`，再走原有的落盘与唤醒。
+> `worker_done` 工具删除，`WORKER_ONLY_TOOLS` 随之消失，协议层「每轮必须调一次」的
+> 要求一并撤掉——回报不再占工具面，也不再依赖模型自律。下两段的「依赖 worker 真的
+> 去调」这条代价随之消失，其余判断（人直聊不结算、登记集合、归档连带销毁、官方树
+> 排除）仍然有效。细节见 [能力第 38 条](../../docs/capability-gaps.md)。
+
 **完成信号改由 worker 自报（`worker_done` 工具）**。根会话没有 `activation.result` 那样的终态 promise；宿主也没给第三方留「读最后一轮产出」的稳定 API（`Session.snapshotEvents` 已标废弃，`sessionQuery.observeSession()` 只返回会话头）。让 worker 收尾时自己调 `worker_done({ summary, outcome })`，派工器据此结算并唤醒协调者——与宿主完成回调等价，而且谁调的、报了什么都在会话历史里可查。
 
 代价是**依赖 worker 真的去调**。这靠两处兜住：工具描述里写明「派工与续聊的每一轮都要调一次，否则协调者收不到回报」，`worker_done` 也只出现在 worker 的工具面上。
 
-**人自己下钻聊的轮次不打扰协调者**。只有协调者 `dispatch` / `message` 时登记进 `inflight` 的轮次才可能被 `reportDone` 结算；人直聊不经过本模块，`reportDone` 找不到在飞记录就返回 `acknowledged: false`，不会产生通知。
+**人自己下钻聊的轮次不打扰协调者**。只有协调者 `dispatch` / `message` 时登记进 `inflight` 的轮次才可能被结算；人直聊不经过本模块，没有在飞记录就不会产生通知。
 
 **工具面判定改用登记集合**。`applyToolGate` 同步执行，而登记表是异步的，所以 `worker-sessions.js` 另存一份内存 `workerIds`：spawn / resume 前加入，启动时按落盘登记表 `adopt()` 灌入。判据替换了原来的 `agent.session.header.origin === 'subagent'`。
 

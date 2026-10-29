@@ -2,9 +2,9 @@
  * dsh-coordinator 的宿主侧插件。
  *
  * 贡献八件事：bundle 内置 skill 的发现（协议层）、后台派工工具、worker 会话的
- * 创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具 + worker 自己用
- * `worker_done` 交作业）、派工完成后的自动唤醒、任务看板卡片存储与卡片工具、
- * 项目注册表、项目数据的 Typert 远程通道，以及角色槽位到系统提示词的注入。
+ * 创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具）、轮次结束时的
+ * 自动回报与唤醒、任务看板卡片存储与卡片工具、项目注册表、项目数据的 Typert
+ * 远程通道，以及角色槽位到系统提示词的注入。
  *
  * 客户端侧（交付看板 UI 与左栏项目区块）在 `src/client/`，跑在浏览器进程，与本
  * 模块不共处。
@@ -21,7 +21,6 @@ import { createCreateCardTool, createUpdateCardTool, createListCardsTool } from 
 import { createNotificationStore, resolveDshHome } from './notification-store.js'
 import { createWorkerRegistry } from './worker-registry.js'
 import { createWorkerSessions } from './worker-sessions.js'
-import { createWorkerDoneTool } from './tools/worker-done.js'
 import { createCardStore } from './cards/store.js'
 import { createProjectStore } from './projects/store.js'
 import { createProjectService } from './projects/service.js'
@@ -117,8 +116,6 @@ export function apply(ctx) {
 
   ctx.tools.register(createSpawnWorkerTool({ dispatcher }))
   ctx.tools.register(createMessageWorkerTool({ dispatcher }))
-  // worker 收尾交作业的入口：只有 worker 会话能看见（见 gate.js 的工具面分配）。
-  ctx.tools.register(createWorkerDoneTool({ dispatcher }))
 
   // 建卡与改卡对所有会话开放：worker 边干活边把状态写回卡片，普通会话也能为
   // 项目登记待办；查全库卡片只给协调者。

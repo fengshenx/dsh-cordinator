@@ -6,9 +6,11 @@
  * 上只读。本模块**不等待** worker 跑完——工具立即返回，父 turn 正常结束，worker 在
  * 后台继续。
  *
- * 完成信号由 worker 自己报（`worker_done` 工具 → `reportDone`）：根会话没有
- * `activation.result` 那样的终态 promise，宿主也没给第三方留「读最后一轮产出」的
- * 稳定 API，所以产出由 worker 收尾时交付。
+ * 完成信号由本模块从会话事件里认：订阅宿主的 `session/event`，在 `turn/end` 那一刻
+ * 折叠这一轮的 `assistant/message` 文本与终态。worker 不调用任何工具回报——这与
+ * Telov 的 `<subagent-notification>`、以及宿主 subagent 的 `captureLocalResult()`
+ * （同样从会话事件折叠产出与 stopReason）是同一个机制：产出与终态都由机制侧取，
+ * 模型漏写一句话不会让协调者卡在等待里。
  *
  * 唤醒走 dsh 自带的 agent 入口：`agent.followup()` 会「queue a follow-up turn and
  * wake the driver」，父会话空闲时由此开新 turn。这补上了 dsh 原生缺失的一环：
@@ -26,8 +28,8 @@
  *
  * 本模块不新增 session event 类型（仓外插件的硬约束），完成通知走自有落盘队列。
  *
- * 人下钻到 worker 会话直接对话时不经过本模块：那种轮次不会登记在飞记录，worker
- * 也就不该因为人自己聊了几句去打扰协调者。
+ * 人下钻到 worker 会话直接对话时不经过本模块：那种轮次不会登记在飞记录，也就
+ * 不会被结算，worker 不会因为人自己聊了几句去打扰协调者。
  *
  * @module dsh-coordinator/host/dispatch
  */
@@ -140,6 +142,8 @@ export function createDispatcher({
   }
   /** @type {Map<string, object>} 派工记录，key 为 worker 会话 id */
   const inflight = new Map()
+  /** @type {Map<string, string>} 各 worker 本轮的 assistant 文本（同一 turn 取最后一条非空），key 为会话 id */
+  const turnText = new Map()
   /** @type {Map<string, number>} 每个父会话的连续自动续行次数 */
   const resumeCounts = new Map()
   /** @type {Set<string>} 本进程注入过的通知消息 id，用于区分外部输入 */
@@ -498,7 +502,7 @@ export function createDispatcher({
       parentSessionId: parent.id,
       signal,
     })
-    // 这一轮由协调者发起：登记在飞记录，worker 调 `worker_done` 时据此结算。
+    // 这一轮由协调者发起：登记在飞记录，worker 的 `turn/end` 到来时据此结算。
     // 人自己下钻跟 worker 聊的轮次不走这里，也就不会打扰协调者。
     inflight.set(sessionId, {
       childId: sessionId,
@@ -601,13 +605,93 @@ export function createDispatcher({
   }
 
   /**
-   * worker 自己报完工（`worker_done` 工具的入口）。
+   * 把宿主的轮次结束原因写成一句能读的失败原因。
    *
-   * 根会话没有 `activation.result` 那样的终态 promise，宿主也没给第三方留「读最后
-   * 一轮产出」的稳定 API，所以产出由 worker 在收尾时自己报，与宿主回调等价。人
-   * 直接跟 worker 聊的那一轮不经过这里——不打扰协调者。
+   * 失败时摘要用终态原因而不是产物：失败轮次里的 assistant 文本往往只写到一半，
+   * 拿它当摘要会让协调者以为这一轮做了不少事。
    *
-   * @param {object} options - 回报参数
+   * @param {object} reason - `turn/end` 的 `reason`
+   * @returns {string} 失败原因
+   */
+  function describeTurnFailure(reason) {
+    switch (reason?.kind) {
+      case 'aborted': return `被取消：${reason.reason ?? '未说明原因'}`
+      case 'blocked': return '被阻断：这一轮需要审批或权限，没能开始'
+      case 'max-tokens': return '输出达到 token 上限，这一轮没有正常收尾'
+      case 'error': return `失败：${reason.error?.message ?? '未知错误'}`
+      default: return `这一轮没有正常结束（${reason?.kind ?? '未知原因'}）`
+    }
+  }
+
+  /**
+   * 结算一个 worker 的轮次：把这一轮的产物或失败原因交给协调者。
+   *
+   * @param {string} sessionId - worker 会话 id
+   * @param {object} reason - `turn/end` 的 `reason`
+   * @returns {Promise<boolean>} 是否确实结算了一条在飞的派工/续聊
+   */
+  async function settleTurn(sessionId, reason) {
+    const record = inflight.get(sessionId)
+    if (record === undefined) {
+      turnText.delete(sessionId)
+      return false
+    }
+    const text = turnText.get(sessionId) ?? ''
+    const completed = reason?.kind === 'completed'
+    const settled = await reportDone({
+      sessionId,
+      summary: completed ? text : describeTurnFailure(reason),
+      outcome: completed ? 'completed' : 'failed',
+    })
+    // 落盘失败时 `reportDone` 抛出，此时记录与文本都还在：这个 worker 下一轮结束时
+    // 会再结算一次。turn/end 只会来一次，所以不在这里丢掉这一轮的产出。
+    if (settled) turnText.delete(sessionId)
+    return settled
+  }
+
+  /**
+   * 观察会话事件，在 worker 的轮次边界上结算。
+   *
+   * 一个 turn 是 `agent.run()` 的一次调用（内部含多个 step），正好等于「协调者派的
+   * 这一轮」。人直接跟 worker 聊的轮次不进 `inflight`，因此不会被结算。
+   *
+   * @param {object} session - 追加事件的会话
+   * @param {object} event - 刚追加的会话事件
+   * @returns {Promise<unknown> | undefined} 结算 promise（只有 `turn/end` 有），
+   *   供测试等待；宿主的 `session/event` 是 fire-and-forget，会忽略返回值
+   */
+  function observeTurn(session, event) {
+    const sessionId = session?.id
+    if (typeof sessionId !== 'string') return undefined
+    if (event?.type === 'assistant/message') {
+      if (!inflight.has(sessionId)) return undefined
+      const text = blocksToText(event.data?.message?.content)
+      if (text !== '') turnText.set(sessionId, text)
+      return undefined
+    }
+    if (event?.type !== 'turn/end') return undefined
+    // 宿主会接住并记下观察者的异常，但那条日志混在宿主日志里查不出来源；自己接住，
+    // 才能把「回报没送到」记成这条链上的失败。
+    return settleTurn(sessionId, event.data?.reason).catch((error) => {
+      logger(`dsh-coordinator: 结算 worker ${sessionId} 的轮次失败：${error instanceof Error ? error.message : String(error)}`)
+      return false
+    })
+  }
+
+  // 没有事件通道就无从替 worker 结算——装配期报错，不留一个「协调者永远等不到
+  // 回报」的运行时状态。
+  if (typeof ctx?.on !== 'function') {
+    throw new Error('dsh-coordinator: createDispatcher 缺少 ctx.on，无法订阅会话事件结算 worker 回报')
+  }
+  const stopTurns = ctx.on('session/event', (session, event) => observeTurn(session, event))
+
+  /**
+   * worker 一轮结束时的结算入口。
+   *
+   * 产出取这一轮的 `assistant/message`，终态取 `turn/end` 的 `reason`——与宿主
+   * subagent 的 `captureLocalResult()` 同源，不依赖 worker 主动交付。
+   *
+   * @param {object} options - 结算参数
    * @param {string} options.sessionId - worker 会话 id
    * @param {string} options.summary - 产物摘要（或失败原因）
    * @param {'completed' | 'failed'} [options.outcome] - 终态
@@ -629,7 +713,6 @@ export function createDispatcher({
   return {
     dispatch,
     message,
-    reportDone,
 
     /**
      * 补投队列里属于某个父会话的通知。
@@ -658,6 +741,9 @@ export function createDispatcher({
      */
     dispose() {
       closed = true
+      // 卸载后不再有派工：留着订阅会继续替已死记录结算，也会让宿主持住这个模块。
+      stopTurns()
+      turnText.clear()
       if (idleTimer !== undefined) {
         clearInterval(idleTimer)
         idleTimer = undefined
