@@ -19,14 +19,25 @@ import {
  * @param {string[]} [registered] - 该作用域里已注册的全局工具名，默认包含三件宿主工具
  * @returns {object} agent
  */
-function makeAgent(id, registered = ['list_agents', 'send_message', 'interrupt_agent', 'read']) {
+function makeAgent(id, registered = [
+  'list_agents', 'send_message', 'interrupt_agent', 'read', 'write',
+  'worker_done', 'spawn_worker', 'message_worker', 'list_cards',
+]) {
   const restrictions = []
   const names = new Set(registered)
   return {
     id,
     ctx: {
       tools: {
-        restrict: (filter) => { restrictions.push(filter); return () => {} },
+        // 照宿主的真实行为：名单里有当前组合没有的全局工具名就抛错。
+        restrict: (filter) => {
+          const unknown = filter.deny.filter((name) => !names.has(name))
+          if (unknown.length > 0) {
+            throw new Error(`tools.restrict() names unknown global tool${unknown.length > 1 ? 's' : ''} ${unknown.map((name) => `"${name}"`).join(', ')}; known global tools: ${[...names].sort().join(', ')}`)
+          }
+          restrictions.push(filter)
+          return () => {}
+        },
         get: (name) => (names.has(name) ? { name } : undefined),
         schemas: () => registered.map((name) => ({ name })),
       },
@@ -91,9 +102,41 @@ test('applyToolGate 只对受限角色调 restrict，并在作用域上留下限
   assert.deepEqual(workerDenied, [...COORDINATOR_ONLY_TOOLS])
 })
 
+test('三件宿主工具改由 preset 子树注册时仍然被 deny', () => {
+  // `get(name)` 省略 scope 只看全局层；web-app 把这三件在宿主平面 disabled，
+  // 改由 preset 子树注册——用 get 探测会把它们全判成「不存在」，限制失效。
+  const coordinator = makeAgent('c')
+  coordinator.ctx.tools.get = () => undefined
+
+  const denied = applyToolGate({
+    agent: coordinator,
+    isCoordinatorSession: (id) => id === 'c',
+    isWorkerSession: () => false,
+  })
+
+  assert.deepEqual(denied, [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS])
+  assert.deepEqual(coordinator.restrictions, [{ deny: [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS] }])
+})
+
+test('restrict 抛的不是「未知工具名」时照常抛出，不吞装配错误', () => {
+  const coordinator = makeAgent('c')
+  coordinator.ctx.tools.restrict = () => {
+    throw new Error('tools.restrict() requires a scoped context (agent.ctx)')
+  }
+
+  assert.throws(
+    () => applyToolGate({
+      agent: coordinator,
+      isCoordinatorSession: (id) => id === 'c',
+      isWorkerSession: () => false,
+    }),
+    /scoped context/,
+  )
+})
+
 test('宿主没装 subagent 控制工具时跳过那三件，不拿未注册的工具名去 restrict', () => {
   // `restrict()` 对没注册过的全局工具名直接报错，而这三件来自可被禁用的宿主组合。
-  const coordinator = makeAgent('c', ['read', 'write'])
+  const coordinator = makeAgent('c', ['read', 'write', 'worker_done', 'spawn_worker', 'message_worker', 'list_cards'])
   const denied = applyToolGate({
     agent: coordinator,
     isCoordinatorSession: (id) => id === 'c',

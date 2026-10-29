@@ -20,6 +20,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { agentPresetOptions, agentPresetResumeSetup } from './agent-preset.js'
 import { createUserMessage } from './message.js'
 
 /**
@@ -185,15 +186,23 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
         throw new Error('dsh-coordinator: 当前组合未启用 agents 服务，无法创建 worker 会话')
       }
       const sessionId = `worker-${randomUUID()}`
+      // 先解析 preset 再登记：解析失败就不该建会话——一个没有 bash / read 的
+      // worker 只会空转，不如当场报错。
+      const preset = await agentPresetOptions(ctx, logger)
       // 先登记再创建：`agent/created` 在 create 内部就发出来了，晚一步判定不到。
       workerIds.add(sessionId)
+      const meta = {
+        ...cwd === undefined ? {} : { cwd },
+        ...preset.agentPreset === undefined ? {} : { agentPreset: preset.agentPreset },
+      }
       let handle
       try {
         handle = await agents.create({
           sessionId,
           signal,
           ...agentOptionsFromDefaults(),
-          ...cwd === undefined ? {} : { meta: { cwd } },
+          ...preset.setup === undefined ? {} : { setup: preset.setup },
+          ...Object.keys(meta).length === 0 ? {} : { meta },
         })
       } catch (error) {
         // 会话没建成，身份也不能留着——否则这个 id 永远被判成 worker。
@@ -232,7 +241,9 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
         if (agents === undefined) {
           throw new Error('dsh-coordinator: 当前组合未启用 agents 服务，无法唤醒 worker 会话')
         }
-        handle = await agents.resume({ resumeSessionId: sessionId, signal })
+        // 冷恢复建的是新的作用域，preset 组合不会自己回来；按会话投影里记的
+        // preset 重新挂（宿主 resume 路径同样走 composeAgent）。
+        handle = await agents.resume({ resumeSessionId: sessionId, signal, ...agentPresetResumeSetup(ctx, logger) })
         live.set(sessionId, handle)
         workerIds.add(sessionId)
       }
