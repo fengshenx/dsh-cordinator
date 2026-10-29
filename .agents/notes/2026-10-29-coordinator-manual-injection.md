@@ -17,7 +17,7 @@
 - **按身份决定，按目录取值**：注入函数只拿到 `resolveDirectory(sessionId)`，实现在 `src/host/index.js` 里接 `projectService.directoryOfCoordinator()`——只有协调者会话有值，worker 与普通会话一律 `undefined`。这比再传一个 `isCoordinatorSession` 判断少一条可能不一致的真源。
 - **上下文顺序 104**，排在角色槽位（105）之前：协调者手册说的是「谁在指挥这个项目」，属于身份事实，先于「我这次承担哪个角色」。
 - **缺失不回落**。`SLOTS.md` 缺失时回落到默认三角色，因为槽位名本身是协议的一部分；`COORDINATOR.md` 缺失时不生成兜底正文——通用方法已经由 `coordinator-mode` skill 覆盖，凭空生成一段「你是协调者」的空话只会挤占上下文。
-- **读失败与正文为空都注入空串**，并记日志。手册是增量信息，不能让一次文件读取失败把整个 turn 打崩。
+- **读失败与正文为空都注入空串**，不阻断会话。两种空分开：文件缺失（`ENOENT`）是常态，静默；其他读失败（`EISDIR`、`EACCES`、磁盘 I/O）走 `logger` 留痕——否则用户改了手册却看不到生效，无从排查。手册是增量信息，不能让一次文件读取失败把整个 turn 打崩。
 
 ## 边界
 
@@ -28,6 +28,8 @@
 
 ## 验证
 
-- `tests/coordinator-context.test.js` 新增 7 个用例：注册项属性（名称 / 顺序 / 必需 / 不插值）、无会话、非协调者、正常注入、缺失与空白、目录不可读、渲染异常记日志。
-- 双向验证：把 `renderCoordinatorContext` 的正文分支临时改成恒返回空串，「协调者会话注入项目根手册正文」变红；还原后 7 个用例全绿。
-- `npm run check` 全量通过（446 个用例）。真机未取证：需要起 dev 实例把一个项目注册到本仓目录，观察协调者会话的请求里是否带上手册正文，留待下一次 GUI 取证。
+- `tests/coordinator-context.test.js` 新增 8 个用例：注册项属性（名称 / 顺序 / 必需 / 不插值）、无会话、非协调者、正常注入、缺失与空白、缺失不记日志、读失败记日志、渲染异常记日志。
+- **顺序断言用常量而非字面量**：`COORDINATOR_CONTEXT_ORDER < ROLE_CONTEXT_ORDER`。硬编码 `105` 守不住这条不变量——槽位顺序下调时旧断言照样通过（实测把 `ROLE_CONTEXT_ORDER` 改成 103，旧断言全绿、新断言变红）。
+- **装配层用例**（`tests/coordinator-wiring.test.js`）：假 ctx + 假 `sessions`（cwd 指向另一份带手册的目录）跑一遍 `apply()`，断言非协调者会话不注入、协调者会话注入的是项目注册表里的目录。判据可双向验证：把接线换成 `isCoordinatorSession ? ctx.get('sessions')…header.cwd : undefined`，该用例变红；还原后绿。参数化单元测试发现不了这类接线错位——`resolveDirectory` 在桩里都是常量。
+- 双向验证：把 `renderCoordinatorContext` 的正文分支临时改成恒返回空串，「协调者会话注入项目根手册正文」变红；撤掉读取失败的日志分支，「读失败（文件位置被目录占用）时返回空串并记日志」变红。还原后全绿。
+- `npm run check` 全量通过。真机未取证：需要起 dev 实例把一个项目注册到本仓目录，观察协调者会话的请求里是否带上手册正文，留待下一次 GUI 取证。

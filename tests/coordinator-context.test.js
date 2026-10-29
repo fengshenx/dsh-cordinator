@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -10,6 +10,7 @@ import {
   applyCoordinatorContext,
   loadCoordinatorManual,
 } from '../src/host/coordinator-context.js'
+import { ROLE_CONTEXT_ORDER } from '../src/host/slots/index.js'
 
 /**
  * 建一个假的服务上下文，捕获注册进来的运行时上下文。
@@ -55,7 +56,7 @@ test('注册为运行时上下文，排在角色槽位之前', () => {
   applyCoordinatorContext({ ctx, resolveDirectory: () => undefined })
   assert.equal(holder.registered.name, COORDINATOR_CONTEXT_NAME)
   assert.equal(holder.registered.order, COORDINATOR_CONTEXT_ORDER)
-  assert.ok(holder.registered.order < 105)
+  assert.ok(COORDINATOR_CONTEXT_ORDER < ROLE_CONTEXT_ORDER)
   assert.equal(holder.registered.required, true)
   assert.equal(holder.registered.interpolate, false)
 })
@@ -106,9 +107,37 @@ test('手册缺失或只有空白时返回空串', async () => {
   }
 })
 
-test('目录不可读时按没有手册处理', () => {
-  assert.equal(loadCoordinatorManual('/definitely/not/a/directory'), '')
-  assert.equal(loadCoordinatorManual(undefined), '')
+test('手册缺失时按没有手册处理，且不记日志', async () => {
+  const missing = await createProject(undefined)
+  try {
+    const logged = []
+    const logger = (message) => logged.push(message)
+    assert.equal(loadCoordinatorManual(missing.directory, logger), '')
+    assert.equal(loadCoordinatorManual(undefined, logger), '')
+    assert.deepEqual(logged, [])
+  } finally {
+    await missing.cleanup()
+  }
+})
+
+test('读失败（文件位置被目录占用）时返回空串并记日志', async () => {
+  const project = await createProject(undefined)
+  try {
+    await mkdir(join(project.directory, COORDINATOR_CONTEXT_FILE))
+    const logged = []
+    const logger = (message) => logged.push(message)
+    assert.equal(loadCoordinatorManual(project.directory, logger), '')
+    assert.equal(logged.length, 1)
+    assert.match(logged[0], /读取协调者手册失败/)
+    assert.match(logged[0], new RegExp(COORDINATOR_CONTEXT_FILE))
+    // 组装路径同样只留日志、不抛错：logger 要一路传到读取点。
+    const { ctx, holder } = createFakeCtx()
+    applyCoordinatorContext({ ctx, resolveDirectory: () => project.directory, logger })
+    assert.equal(holder.registered.text({ agent: { id: 'session-a' } }), '')
+    assert.equal(logged.length, 2)
+  } finally {
+    await project.cleanup()
+  }
 })
 
 test('渲染出错时返回空串并记日志，不把错误抛给组装流程', () => {

@@ -32,18 +32,24 @@ export const COORDINATOR_CONTEXT_ORDER = 104
 /**
  * 读项目目录下的协调者手册。
  *
- * 文件缺失、读失败或正文为空都返回空串——手册是增量信息，不是必需品，缺了不该
- * 让整个插件报错，也不该注入一段空壳标题。
+ * 返回空串，不让整个插件报错，也不注入一段空壳标题——手册是增量信息，不是必需品。
+ * 但两种空要分开：文件缺失（ENOENT）是常态，静默；其他读失败（EISDIR、EACCES、
+ * 磁盘 I/O）要留日志，否则用户改了手册却看不到生效时无从排查。
  *
  * @param {string | undefined} directory - 项目目录绝对路径
+ * @param {(message: string) => void} [logger] - 日志输出
  * @returns {string} 手册正文；没有时为空串
  */
-export function loadCoordinatorManual(directory) {
+export function loadCoordinatorManual(directory, logger = () => {}) {
   if (typeof directory !== 'string' || directory === '') return ''
+  const file = join(directory, COORDINATOR_CONTEXT_FILE)
   let content
   try {
-    content = readFileSync(join(directory, COORDINATOR_CONTEXT_FILE), 'utf8')
-  } catch {
+    content = readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      logger(`dsh-coordinator: 读取协调者手册失败（${file}）：${error instanceof Error ? error.message : String(error)}`)
+    }
     return ''
   }
   return content.trim()
@@ -56,12 +62,13 @@ export function loadCoordinatorManual(directory) {
  * @param {string | undefined} options.sessionId - 会话 id
  * @param {(sessionId: string) => string | undefined} options.resolveDirectory - 取会话所属项目目录；
  *   只有该项目的协调者会话才有值，普通会话与 worker 返回 undefined
+ * @param {(message: string) => void} [options.logger] - 日志输出
  * @returns {string} 上下文文本；不是协调者、目录不可得或手册为空时为空串
  */
-export function renderCoordinatorContext({ sessionId, resolveDirectory }) {
+export function renderCoordinatorContext({ sessionId, resolveDirectory, logger = () => {} }) {
   if (typeof sessionId !== 'string' || sessionId === '') return ''
   const directory = resolveDirectory(sessionId)
-  const body = loadCoordinatorManual(directory)
+  const body = loadCoordinatorManual(directory, logger)
   if (body === '') return ''
   return [
     '## 协调者手册',
@@ -92,7 +99,7 @@ export function applyCoordinatorContext({ ctx, resolveDirectory, logger = () => 
       const sessionId = context.agent?.id
       if (typeof sessionId !== 'string') return ''
       try {
-        return renderCoordinatorContext({ sessionId, resolveDirectory })
+        return renderCoordinatorContext({ sessionId, resolveDirectory, logger })
       } catch (error) {
         // 求值失败会让整个 turn 崩掉。手册是增量信息，取不到就当没有。
         logger(`dsh-coordinator: 渲染协调者手册失败：${error instanceof Error ? error.message : String(error)}`)
