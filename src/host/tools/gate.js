@@ -78,6 +78,8 @@ export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
  *
  * `COORDINATOR_UNUSABLE_TOOLS` 来自宿主的 subagent 组合，那个组合可以被部署禁用；
  * 而 `restrict()` 遇到没注册过的名字会直接报错，所以只 deny 当前确实存在的。
+ * 探测用不带参数的 `definitions()`——那是全局注册视图，这三件正是全局工具，
+ * 不必也不该猜 agent 的 scope key（那是不透明的内部键）。
  * 本 bundle 自己注册的工具不走这一步——那些缺失是装配错误，应该大声报出来。
  *
  * @param {object} options - 选项
@@ -89,7 +91,7 @@ export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
 export function applyToolGate({ agent, isCoordinatorSession, isWorkerSession }) {
   const denied = deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession })
   if (denied.length === 0) return denied
-  const registered = new Set(agent.ctx.tools.definitions(agent).map((definition) => definition.name))
+  const registered = new Set(agent.ctx.tools.definitions().map((definition) => definition.name))
   const present = denied.filter((name) => !COORDINATOR_UNUSABLE_TOOLS.includes(name) || registered.has(name))
   if (present.length === 0) return present
   agent.ctx.tools.restrict({ deny: present })
