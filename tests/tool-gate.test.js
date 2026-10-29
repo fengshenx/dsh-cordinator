@@ -12,18 +12,25 @@ import {
 /**
  * 造一个 agent 假件，并记录作用域上的 restrict 调用。
  *
+ * 方法面照 `engines.dsh` 的下限（0.2.1-rc.2）构造：只有 `restrict` / `get` /
+ * `schemas`。夹具多给一个宿主方法就会掩盖版本缺口——`definitions()` 是
+ * 0.2.2-alpha.2 才加的，在 0.2.1-rc.2 上调用是 TypeError，而那个调用落在
+ * `agent/created` 上，会让每个会话创建都失败。
+ *
  * @param {string} id - 会话 id
  * @param {string[]} [registered] - 该作用域里已注册的全局工具名，默认包含三件宿主工具
  * @returns {object} agent
  */
 function makeAgent(id, registered = ['list_agents', 'send_message', 'interrupt_agent', 'read']) {
   const restrictions = []
+  const names = new Set(registered)
   return {
     id,
     ctx: {
       tools: {
         restrict: (filter) => { restrictions.push(filter); return () => {} },
-        definitions: () => registered.map((name) => ({ name })),
+        get: (name) => (names.has(name) ? { name } : undefined),
+        schemas: () => registered.map((name) => ({ name })),
       },
     },
     restrictions,
@@ -98,6 +105,18 @@ test('宿主没装 subagent 控制工具时跳过那三件，不拿未注册的�
   })
   assert.deepEqual(denied, [...WORKER_ONLY_TOOLS])
   assert.deepEqual(coordinator.restrictions, [{ deny: [...WORKER_ONLY_TOOLS] }])
+})
+
+test('只依赖 engines 下限的 tools 方法面', () => {
+  // 0.2.1-rc.2 的 ToolsService 没有 definitions()。这个调用落在 agent/created 上，
+  // 一旦用上就是每个会话创建都 TypeError——而且夹具给了假方法就测不出来。
+  const coordinator = makeAgent('c')
+  assert.equal(typeof coordinator.ctx.tools.definitions, 'undefined')
+  assert.doesNotThrow(() => applyToolGate({
+    agent: coordinator,
+    isCoordinatorSession: (id) => id === 'c',
+    isWorkerSession: () => false,
+  }))
 })
 
 test('四组名单两两不重叠，改名时不会悄悄互相覆盖', () => {

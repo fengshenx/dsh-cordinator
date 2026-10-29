@@ -37,10 +37,14 @@
 
 **不做空闲回收**。做了就回到「用完销毁」。常驻到归档或应用退出，未归档 worker 上限 50（`force` 逃逸）因此成为必要护栏。
 
+**宿主 API 面按 `engines.dsh` 下限挑，不按本机最新版**。工具面裁剪里要探测「某工具是否已注册」，用的是 `ctx.tools.get(name)` 而不是 `definitions()`——后者是 `0.2.2-alpha.2` 才加的，`engines` 下限 `0.2.1-rc.2` 上没有它，而这个调用落在 `agent/created` 上，用错就是每个会话创建都 `TypeError`。`tests/tool-gate.test.js` 的夹具照 rc.2 的方法面构造（只有 `restrict` / `get` / `schemas`）：夹具多给一个宿主方法就会掩盖版本缺口。
+
+**deny 之前先确认工具真的注册了**。`restrict()` 遇到未注册的全局工具名直接抛错，而 `COORDINATOR_UNUSABLE_TOOLS` 来自可被部署禁用的宿主组合（`agent-team-profile` 就把它 `disabled: true`）。所以只 deny 当前存在的；本 bundle 自己注册的工具不做这层过滤——那些缺失是装配错误，应该大声报出来。
+
 ## 验证
 
-- `npm run check`：404 例全绿（新增 `worker-sessions.test.js` 18 例、`worker-done-tool.test.js` 7 例，重写 `dispatch-continuation.test.js` 与 `tool-gate.test.js`）。
-- 回归有效性双向验证（八组，精确撤销后对应用例变红，还原后全绿）：
+- `npm run check`：405 例全绿（新增 `worker-sessions.test.js` 18 例、`worker-done-tool.test.js` 7 例，重写 `dispatch-continuation.test.js` 与 `tool-gate.test.js`）。
+- 回归有效性双向验证（九组，精确撤销后对应用例变红，还原后全绿）：
   - 撤 `workerSessions.spawn` 里的 `followup(taskMessage(...))` → 「建会话时用带前缀的会话 id，并把任务简报即刻投进去」红。
   - 撤 `reportDone` 里的 `inflight.delete` → 「一轮只结算一次回报，重复上报不重复唤醒」红。
   - 把分组判据换回 `session.origin === 'subagent'` → 6 条分组用例红。
@@ -49,6 +53,7 @@
   - 撤 followup 失败分支里的 `disposeOne` → 「任务投递失败时销毁刚建好的会话，不留孤儿」红。
   - 撤协调者 deny 里的 `COORDINATOR_UNUSABLE_TOOLS` → 「协调者拿不到收作业的工具，也拿不到对 worker 无效的三件宿主工具」与 `applyToolGate` 用例红。
   - 撤掉「按当前已注册工具过滤」那层 → 「宿主没装 subagent 控制工具时跳过那三件」红。
+  - 把工具探测换回 `definitions()`（0.2.2-alpha.2 才有，engines 下限 0.2.1-rc.2 没有） → 「只依赖 engines 下限的 tools 方法面」与另外两条红（`TypeError: definitions is not a function`）。
 - `npm run build:client` 通过。
 
 ## 未覆盖
