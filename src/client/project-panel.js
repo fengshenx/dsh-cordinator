@@ -238,6 +238,8 @@ export function ProjectPanel(props) {
       }
       await callRemote('create', [directory, check.name])
       await refresh()
+      // 新项目行就是唯一回执，列表收着就等于没有回执——建完必须展开给它看。
+      setListExpanded(true)
     } catch (error) {
       setNotice(`建项目失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -262,6 +264,7 @@ export function ProjectPanel(props) {
       await callRemote('create', [naming.directory, naming.name.trim()])
       setNaming(null)
       await refresh()
+      setListExpanded(true)
     } catch (error) {
       setNaming({ ...naming, error: `建项目失败：${error instanceof Error ? error.message : String(error)}` })
     } finally {
