@@ -90,6 +90,25 @@ dsh plugin --profile dev add dsh-coordinator
 
 `engines.dsh` 声明了支持的 dsh 版本范围；不满足时安装与启动会被拒绝——dsh 处于 developer preview，版本范围需随 dsh 跟进。
 
+## 开发
+
+在 worktree 里开发时，一条命令起一个**挂当前工作树插件版本**的 dsh 实例：
+
+```sh
+npm run worktree:spawn my-task    # 建 .worktrees/my-task + feature/my-task（base 取最新 origin/main）
+cd .worktrees/my-task
+npm run dev                       # 起开发实例
+```
+
+`npm run dev` 不碰你日常的 `~/.dsh`：数据根落在工作树内的 `.dev/home`（会话、项目、卡片都在那里，删掉即重置），profile 从 `~/.dsh/profiles/web` 派生，`node_modules` 逐条符号链接到源 profile、只有 `dsh-coordinator` 指向当前工作树。所以几个工作树可以同时跑，各自的插件版本与数据互不干扰；源 profile 升级 dsh 或改插件组合时，开发实例跟着走。
+
+- 端口默认交给系统分配，启动日志里打印带 token 的 URL；要固定就 `DEV_PORT=3210 npm run dev`。
+- 改客户端代码（`src/client/`）要重跑 `npm run dev` 或 `npm run build:client` 再刷新；宿主侧（`src/host/`）由 Node 直接加载，重启实例即可。
+- 依赖共享主 checkout 的 `node_modules`（本仓库只有 esbuild 与 minidenticons），改 `package.json` 请在主 checkout 安装。
+- 覆盖项：`DSH_HOME`（数据根）、`DSH_HOME_SOURCE`（源 HOME，默认 `~/.dsh`）、`DEV_PORT`、`DEV_NO_OPEN=1`（不自动开浏览器）。
+
+也可以不用脚本、手工把插件装进某个 profile：`dsh plugin --profile dev add ../dsh-coordinator`（改代码即生效，但会与装进同一 profile 的其他工作树互相覆盖）。
+
 ## 使用
 
 1. **让模型加载协议层**：`skill` 工具会列出 `coordinator-mode`。协调者会话先读 `playbooks/program.md`，再按阶段读对应 playbook。

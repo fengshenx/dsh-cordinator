@@ -22,8 +22,10 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "for f in index.js $(find src -name '*.js'); do node --check \"$f\" || exit 1; done && node --test tests/*.test.js",
+    "check": "for f in index.js $(find src scripts build \\( -name '*.js' -o -name '*.mjs' \\)); do node --check \"$f\" || exit 1; done && node --test tests/*.test.js",
     "build:client": "node build/client.mjs",
+    "dev": "node scripts/dev.mjs",
+    "worktree:spawn": "node scripts/worktree-spawn.mjs",
     "prepublishOnly": "npm run build:client"
   },
   "engines": {
