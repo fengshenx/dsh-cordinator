@@ -264,22 +264,28 @@ const STYLE_TEXT = `
   line-height: 18px;
   cursor: pointer;
 }
-/* 会话列表与项目行左边缘对齐：官方树里会话行不额外缩进，层级由行首状态位
-   交代（宿主 Rows.module.css 的 sessionRow 缩进只跟 --dsh-workspace-indent）。 */
+/* 会话列表与项目行左边缘对齐：项目树只有一层，取官方会话行 depth=0 的形态。
+   官方那棵树是按深度缩进的——Rows.module.css 的 sessionRow 在 padding-inline-start
+   里加 var(--dsh-workspace-indent)，WorkspaceBrowser.tsx 把它设成 depth * 12px。
+   我们没有嵌套层级，所以不加缩进项。 */
 .dsh-coordinator-project-sessions {
   display: flex;
   flex-direction: column;
   padding: 2px 0 4px;
 }
 /* 会话行逐项照官方工作区会话行（宿主 Rows.module.css 的 sessionRow 与
-   sessionRow 下的 title）：行高 32、左右各 8 内边距、行内不设 gap（标题自带
-   左右外边距）、文字用一级标签色。 */
+   sessionRow 下的 title）：行高 32、行内不设 gap（标题自带左右外边距）、文字用
+   一级标签色。左右内边距照官方两代写法：0.2.2 起行用透明边框吃掉 paint-inset、
+   padding 只留 row_padding 与它的差，hover 背景才会比内容窄一圈；rc.2 这两个变量
+   都不存在，落到 8 / 0，与那版硬编码的 8px 一致。 */
 .dsh-coordinator-session-row {
   display: flex;
   align-items: center;
   gap: 0;
   height: 32px;
-  padding: 0 8px;
+  border-inline: var(--dsh-sidebar-paint-inset, 0px) solid transparent;
+  background-clip: padding-box;
+  padding: 0 calc(var(--dsh-sidebar-row-padding, 8px) - var(--dsh-sidebar-paint-inset, 0px));
   box-sizing: border-box;
   border-radius: var(--dsw-radius-md);
   color: var(--dsw-alias-label-primary);
@@ -292,7 +298,8 @@ const STYLE_TEXT = `
     background: var(--dsw-alias-interactive-bg-hover);
   }
 }
-/* 状态位：官方会话行的 slot 是 16×20，圆点或加载器在里面居中。 */
+/* 状态位：尺寸照官方会话行的 slot（16×20）。官方在这里放运行状态圆点或加载器，
+   我们只区分「运行中」，所以只放加载器。 */
 .dsh-coordinator-session-status {
   flex: none;
   width: 16px;
@@ -307,7 +314,9 @@ const STYLE_TEXT = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* 与官方工作区会话行同字号（宿主 Rows.module.css 的 .title）。 */
+  /* 与官方工作区会话行同字号（宿主 Rows.module.css 的 .title）。左外边距是
+     刻意写的变量加兜底：rc.2 那版硬编码 4px（仓里没有这个变量），0.2.2 起官方
+     改用 --dsh-sidebar-label-gap（6px）。别简化成硬编码，否则另一版会错位。 */
   font-size: 14px;
   line-height: 20px;
   margin: 0 6px 0 var(--dsh-sidebar-label-gap, 4px);
@@ -322,8 +331,10 @@ const STYLE_TEXT = `
   border-radius: 50%;
   animation: dsh-coordinator-spin 0.8s linear infinite;
 }
-/* 归档按钮：外观照官方会话行的 hover 动作（24×24、三级标签色、悬停提亮）。
-   容器不加外边距——按钮自己的 -4px 负外边距负责把 24px 目标对到紧凑图标中心。 */
+/* 归档按钮：外观照官方会话行的 hover 动作（三级标签色、悬停提亮）。
+   尺寸取宿主 0.2.2 的形态：24×24 目标 + -4px 负边距，净占位 16×16；rc.2 那版
+   直接是 16×16 无负边距，净占位相同，两版视觉一致。容器不加外边距——负边距
+   由按钮自己带，容器再补一份会把图标推离行右边缘。 */
 .dsh-coordinator-session-actions {
   flex: none;
   display: none;
@@ -361,11 +372,14 @@ const STYLE_TEXT = `
   opacity: 0.5;
 }
 /* 展开/收起按钮：外观照官方工作区树的 overflow 按钮（12px、三级标签色、
-   与会话行同样的行高与内边距，悬停时提亮到二级色）。 */
+   与会话行同样的行高，悬停时提亮到二级色）。左内边距必须落在会话行标题的
+   左边缘上，否则文字会比标题缩进一截：官方 rc.2 是 calc(28px + 缩进)，0.2.2
+   改成 calc(row_padding + 16 + label_gap + 缩进)。写成同一公式、给 rc.2 没有的
+   变量兜底，那版得 28、0.2.2 得 34，两版都与标题对齐。右内边距两版都是 12。 */
 .dsh-coordinator-session-overflow {
   width: 100%;
   height: 28px;
-  padding: 0 8px 0 20px;
+  padding: 0 12px 0 calc(var(--dsh-sidebar-row-padding, 8px) + 16px + var(--dsh-sidebar-label-gap, 4px));
   border: none;
   border-radius: var(--dsw-radius-sm);
   background: transparent;
