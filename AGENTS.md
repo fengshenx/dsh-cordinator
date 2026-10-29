@@ -23,6 +23,7 @@ dsh-coordinator —— dsh（DeepSeek Harness）的**仓外插件 bundle**：协
 | worker 生命周期、派工与结算 | [2026-10-29-worker-as-root-session.md](.agents/notes/2026-10-29-worker-as-root-session.md)、[2026-10-23-dispatch-and-wakeup.md](.agents/notes/2026-10-23-dispatch-and-wakeup.md) |
 | 卡片、槽位与项目绑定 | [2026-10-23-card-storage-and-numbering-scope.md](.agents/notes/2026-10-23-card-storage-and-numbering-scope.md)、[2026-10-27-project-bound-board.md](.agents/notes/2026-10-27-project-bound-board.md) |
 | 真机 / GUI 取证 | [docs/e2e-testing.md](docs/e2e-testing.md) |
+| 审查 PR、以 bot 身份发评论 | [用 bot 身份发评论](#用-bot-身份发评论)、`scripts/github-app-token.mjs` |
 | 协议层文案（`skills/`） | 现有 `skills/coordinator-mode/` 的行文与结构，保持同一口吻 |
 
 ## 目录与职责
@@ -87,6 +88,18 @@ npm run worktree:prune            # 清已合并的 worktree（默认只打印�
 - 行为变更同步 README 与相关 `docs/`。
 - 交付做到 PR 为止；合并与 approve 需用户明确指令。
 - **收尾才清 worktree**：`worktree:prune` 只在 PR 合并后跑，且先确认工作区干净。未合并的分支即使 PR 关掉也不删——那是没进 `main` 的代码。
+
+## 用 bot 身份发评论
+
+审查意见走 GitHub App `telov-review-bot`，评论显示为 `telov-review-bot[bot]`，与作者账号（`fengshenx`）分离。merge、push 用本人凭证，bot 不做；approve 需用户明确指令。
+
+- 凭据在机器本地、不入库：`~/.telov/github-app.env`（`GITHUB_APP_ID` / `GITHUB_APP_INSTALLATION_ID`）、`~/.telov/github-app.pem`（`chmod 600`）。该 App 的 installation 覆盖 `fengshenx` 名下全部仓库，同一份凭据 Telov 与本仓通用。
+- 换 token：`node scripts/github-app-token.mjs`（RS256 JWT → installation token，1 小时有效，不落盘）。
+- **取 token 与调用必须写在同一行**：`TOKEN=$(node scripts/github-app-token.mjs) && GH_TOKEN="$TOKEN" gh pr comment <n> --body-file /tmp/review.md`。分两次 shell 调用时 `$TOKEN` 已丢失，`gh` 回落到本人凭证——评论照样发出，身份却静默变成作者账号；`&&` 短路是第二道防线，取不到 token 就不执行 `gh`。
+- 正文含中文、换行、代码块时先写临时文件再 `--body-file`，避开 shell 引号转义；临时文件用完删掉。
+- **别用 `gh api user` 验身份**：installation token 访问该端点一律 403（`Resource not accessible by integration`），那是预期形态不是故障——身份由 App slug 决定（`GET /app` 的 `slug` 是 `telov-review-bot`），用它签出的 token 发评必然显示为 `[bot]`。要确认可用性就查 `gh api /installation/repositories` 里有没有目标仓库。
+- App 权限只有 `issues` / `pull_requests` / `metadata`：能发评论，不能 merge、不能 push；也**不要**把 token `export` 成全局 `GH_TOKEN`，那会让后续所有 `gh` 操作变成 bot 身份。
+
 
 ## 编辑本文件
 
