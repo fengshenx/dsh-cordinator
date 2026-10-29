@@ -1,13 +1,14 @@
 /**
  * `message_worker` 工具：给已派出的 worker 发后续消息。
  *
- * 续聊走宿主的 subagent 服务层 API（`sendMessage`）：worker 还在运行时消息并入
- * 当前执行；已结束的 worker 由宿主从持久化日志冷恢复，带着完整上下文继续跑。
- * 结束后的完成通知与第一轮同源同格式（`src/host/dispatch.js`）。
+ * 投递走 `src/host/worker-sessions.js`：worker 的会话还在内存里就直接 `followup`
+ * 投进去（并入当前执行）；进程重启后会话不在内存，先 `agents.resume` 冷恢复再从
+ * 持久化日志接着跑，带完整上下文。结束后的完成通知与第一轮同源同格式
+ * （`src/host/dispatch.js`）。
  *
  * 参数面：`sessionId` 寻址目标 worker，`message` 是消息正文，可选 `rename` 与投递
- * 同次改名。不复用宿主全局的 `send_message` 工具：那是 dsh 内部子会话协议，语义
- * 与派工协议不同，且名字已被占用。
+ * 同次改名。不复用宿主全局的 `send_message` 工具：它只认宿主 subagent 体系的子
+ * 会话，我们的 worker 是普通根会话，调它拿不到目标。
  *
  * @module dsh-coordinator/host/tools/message-worker
  */

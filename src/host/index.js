@@ -191,9 +191,12 @@ export function apply(ctx) {
     })
   })
 
-  // 失活的 agent 会静默接受 followup，投递前必须知道会话已销毁。
+  // 失活的 agent 会静默接受 followup，投递前必须知道会话已销毁。worker 会话还要
+  // 从活表里摘掉：否则后续 `message_worker` 会投给一个死会话，回执成功而 worker
+  // 一动不动。
   ctx.on('agent/disposed', ({ agent }) => {
     dispatcher.markDisposed(agent.id)
+    workerSessions.forget(agent.id)
   })
 
   // 外部输入抵达即重置该会话的自动续行计数——人工介入后护栏应重新开始计数。

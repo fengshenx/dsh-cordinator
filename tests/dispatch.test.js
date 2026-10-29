@@ -1206,3 +1206,40 @@ test('一轮只结算一次回报，重复上报不重复唤醒', async () => {
   assert.equal(fixture.delivered.length, 1)
   assert.equal(record.childId, fixture.spawned[0].sessionId)
 })
+
+test('通知落盘失败时保留在飞记录，worker 再报一次能重试', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const real = createNotificationStore({ home })
+  let failures = 1
+  const store = {
+    ...real,
+    enqueue: async (notification) => {
+      if (failures > 0) {
+        failures -= 1
+        throw new Error('DISK_FULL')
+      }
+      return real.enqueue(notification)
+    },
+  }
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store, workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+
+  // 落盘失败要抛出去（fail loud），而且不能把在飞记录删掉——删了这条回报就没了，
+  // 协调者还在等它。
+  await assert.rejects(() => finishWorker(dispatcher, fixture), /DISK_FULL/)
+  assert.equal(dispatcher.inflightCount(), 1)
+
+  assert.equal(await finishWorker(dispatcher, fixture), true)
+  assert.equal(dispatcher.inflightCount(), 0)
+  await waitFor(() => fixture.delivered.length === 1)
+  assert.match(fixture.delivered[0].content[0].text, /产物在此/)
+})

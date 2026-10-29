@@ -616,16 +616,13 @@ export function createDispatcher({
   async function reportDone({ sessionId, summary, outcome = 'completed' }) {
     const record = inflight.get(sessionId)
     if (record === undefined) return false
-    inflight.delete(sessionId)
     const judged = outcome === 'completed'
       ? { ok: true, result: { output: [{ type: 'text', text: summary }] } }
       : { ok: false, error: new Error(summary) }
-    try {
-      await emitNotification(record, judged)
-    } catch (error) {
-      // 落盘失败不该带走整个进程：通知留在下一轮结算或人工补投。
-      logger(`dsh-coordinator: 完成通知落盘失败：${error instanceof Error ? error.message : String(error)}`)
-    }
+    // 先落盘再删在飞记录：落盘失败时记录还在，worker 再报一次就能重试；先删的话
+    // 通知直接丢掉，没有任何回收入口，而协调者还在等这一轮的回报。
+    await emitNotification(record, judged)
+    inflight.delete(sessionId)
     return true
   }
 

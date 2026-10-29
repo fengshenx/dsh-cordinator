@@ -54,15 +54,14 @@ bundle **零运行时依赖**：只用 Node 内置模块与 Cordis 注入的 `ct
 | 派工给后台 worker | `spawn_worker` | 本 bundle |
 | 给 worker 续聊 / 改名 | `message_worker` | 本 bundle |
 | worker 收尾交作业 | `worker_done` | 本 bundle |
-| 查执行者名录 | `list_agents` | dsh 原生（`agent_id` 即 worker 会话 id） |
-| 给执行者传话 | `send_message` | dsh 原生 |
-| 中止执行者当前回合 | `interrupt_agent` | dsh 原生 |
 | 读 worker 回报 | 完成通知 | 本 bundle 的唤醒器 |
 | 建卡 / 改卡 / 查卡 | `create_card` / `update_card` / `list_cards` | 本 bundle |
 | 写入仓库工程约定 | `init_project` | 本 bundle |
 | 列项目 / 注册项目 / 切项目 / 注销项目 | `list_projects` / `add_project` / `switch_project` / `remove_project` | 本 bundle |
 
 `spawn_worker` / `message_worker` / `worker_done` 这套接口是为「协调者派活、worker 交作业」设计的：会话由 `agents.create` 建，生命周期归本 bundle 管，不经 dsh 的 subagent 机制（subagent 结算即销毁，界面上还只读，既不能常驻也不能让人下钻对话）。
+
+**worker 不走宿主的三件 subagent 控制工具**：`list_agents` 只列 subagent 目录里的子会话（worker 是根会话，列表里没有它）；`send_message` 要校验子会话的 `parentSession` 血统（worker 没有，走不通）；`interrupt_agent` 找不到目标时**静默返回成功**——拿它当中止手段会得到一个假回执。worker 的一切交互只经 `spawn_worker` 与 `message_worker`。
 
 **工具面按角色分配**（会话创建时裁剪，不是靠参数隐藏）：协调者拿到全部工具但没有 `worker_done`（它不是在干活的那个，调它只会指向不存在的派工记录）；普通会话既没有 `spawn_worker` / `message_worker` / `list_cards`（它连项目都没进，看不到项目里有哪些卡，也不该派工），也没有 `worker_done`；worker 再少掉 `list_projects` / `add_project` / `switch_project` / `remove_project` / `init_project`（它派工时已经拿到目录与任务，改项目表只会制造并发写）。`create_card` / `update_card` 对所有会话开放——worker 边干活边把状态写回卡片。
 
@@ -109,6 +108,8 @@ dsh plugin --profile dev add dsh-coordinator
 ## 已知限制
 
 - **后台编排只适用于长驻组合**（web / desktop / sdk）。headless 是一次性 CLI，会话在 turn 结束后即被销毁，届时没有载体接收完成通知——这是宿主语义，不是本 bundle 的缺陷。
+- **协调者没有中止 worker 的手段，也没有模型侧的名录工具**。worker 是普通根会话，宿主的 `list_agents` / `send_message` / `interrupt_agent` 都作用在 subagent 体系上，对它无效（`interrupt_agent` 还会返回一个假的成功回执）。worker 卡住或跑偏时，只能请人去那个会话里处理；要看项目里有哪些 worker，看项目树（那一层在前端，模型看不到）。这是常驻化的直接代价：换掉 subagent 换来常驻与可下钻，也就换掉了宿主的这套控制面。
+- **worker 忘调 `worker_done` 时协调者会一直等**。根会话没有终态 promise，宿主也没留「读最后一轮产出」的 API，完成信号只能由 worker 自报；在飞表没有超时，那条记录会一直被判在跑（名册的可复用候选里也一直排除它）。恢复办法是给它发一条 `message_worker` 提醒收尾。
 - **看板按项目组织，不按会话**。一个项目一个看板：面板按当前会话解析出所属项目（协调者会话走注册表指针，其它会话按 cwd 与项目目录的 realpath 相同），再按项目拉卡片——协调者建的卡与 worker 建的卡在同一处。数据源是宿主的卡片库，不再重放会话事件流（跨不了会话，也扛不住宿主回收）。不属于任何项目的会话没有看板，面板会说明这一点。
 - **卡片按项目归属，归属由宿主判定**。`create_card` 时宿主按调用方会话反查项目，把 `projectId` 写进卡片记录，模型不传项目参数——它未必知道自己在哪个项目的语境里调工具。`list_cards` 默认只列本项目，`scope=all` 才跨项目；有归属的卡只能被本项目的会话改，跨项目改卡会被拒绝。**存量卡片不迁移**（记录里没有创建会话 id，无法可靠反推归属），它们不出现在任何项目看板，只能用 `list_cards`（`scope=all`）看到。
 - **卡片编号仍是全局的**。按项目过滤后编号会有空洞，但全局唯一，`@#n` 不歧义——比按项目编号更好（见[卡片存储与编号作用域](.agents/notes/2026-10-23-card-storage-and-numbering-scope.md)）。
@@ -127,7 +128,7 @@ dsh plugin --profile dev add dsh-coordinator
 - **「项目会话不出现在官方工作区树」是渲染层排除，不是数据层**。官方没有按外部集合排除行的扩展点，本仓认 `data-row-key="session:<id>"` 给命中排除集的行加隐藏类。排除集含项目的协调者会话与全部 worker 会话（worker 是普通根会话，官方树不会自己滤掉，不排除就会同时出现在两棵树里）。代价：官方分组行上的会话计数仍包含被隐藏的会话；被隐藏的行仍在 DOM 里，官方搜索仍能命中。
 - **子目录里的 worker 不算项目下的 worker**。归属按会话 cwd 与项目目录的 realpath 精确相等判定；两个项目指向同一目录时先注册的归属。
 - **点项目会把项目目录注册成 dsh 工作区**。dsh 的官方界面只能打开归属工作区的会话（建会话时传目录而不是传工作区，会话不归属任何工作区，官方树里没有它的位置）。本仓因此在打开项目时把协调者会话挂到项目目录对应的工作区上，目录还不是工作区就注册一个（幂等）。
-- **项目目录的工作区不再从官方工作区树隐藏**。插件注册的项目工作区原先走渲染层隐藏（宿主的工作区记录是封闭 schema，没有隐藏位），但项目树现在只列 worker 会话——用户在项目目录里手动开的会话既不在项目树里，又被整棵工作区藏掉，就此无处可寻。取消隐藏后它们回到官方树：项目目录是一个普通工作区，里面是用户自己的会话；项目的协调者会话仍由渲染层排除，worker 会话由宿主自己滤掉，都不在那里重复出现。代价是官方左栏里多出项目目录这一项；项目目录里除协调者外没有别的会话时，这一项是个**空分组**——分组行在、展开后没有内容（宿主的 `archivedFilter !== 'only'` 时即使成员为空也照样建分组）。
+- **项目目录的工作区不再从官方工作区树隐藏**。插件注册的项目工作区原先走渲染层隐藏（宿主的工作区记录是封闭 schema，没有隐藏位），但项目树现在只列 worker 会话——用户在项目目录里手动开的会话既不在项目树里，又被整棵工作区藏掉，就此无处可寻。取消隐藏后它们回到官方树：项目目录是一个普通工作区，里面是用户自己的会话；项目的协调者与 worker 会话都在渲染层排除集里（worker 是普通根会话，官方树不会自己滤掉），不会重复出现。代价是官方左栏里多出项目目录这一项；项目目录里除协调者外没有别的会话时，这一项是个**空分组**——分组行在、展开后没有内容（宿主的 `archivedFilter !== 'only'` 时即使成员为空也照样建分组）。
 - **图标数据与宿主 `artwork.ts` 耦合**。宿主 web 端把图标在构建期内联进产物，运行时 DOM 里没有 sprite 节点，第三方 bundle 在运行时渲染只能自己带路径数据——本仓内联的路径取自宿主 `dsh-client-ui-primitives` 的 `artwork.ts`（regular 字重），宿主改图标时本仓要同步。
 - **worker 回报不进会话标题、turn 摘要与 markdown 转录导出**。宿主只把 `source.kind === 'user'` 的消息算作真人输入；本仓的回报用自定义 source kind（`dsh-coordinator/worker-report`），因此会话自动标题不取它、turn 摘要 prompt 不取它、markdown 转录导出会跳过它。换来的是它不会被误当成用户说的话——标题、摘要、导出这三处都只认真人输入。
 - **worker 回报的渲染依赖宿主的会话节点扩展位**。本仓注册一个独立的 Chat node kind 并用 exclusive claim 接管这类消息（见 [worker 回报气泡](.agents/notes/2026-10-27-worker-report-bubble.md)）。宿主若改了 claim 或分组语义，这条消息会退化成普通的右对齐用户气泡——内容不会丢。

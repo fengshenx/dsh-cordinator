@@ -129,7 +129,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | `@deepseek-ai/dsh-tool-subagent-control`（base bundle 默认启用） | 父子 | `agent_id` 即子会话 id | 调用者派出的子会话 |
 | `@deepseek-ai/dsh-tool-agent-team`（experimental，base bundle 未启用） | 同伴 | teammate 名字 | team 成员 |
 
-**影响**：本流程用**父子模型**那套（`tool-subagent-control`）。早期方案文档按 team 工具写过映射表，是错的——team 的 `sendMessage` 走 `ctx.agentTeams`，管不到用 `ctx.subagents.startActivation` 派出的子会话。协议层已按实测订正，并显式提示「不要与同伴模型那套混用」。
+**影响**：本流程两者都不用。worker 是本 bundle 用 `ctx.agents.create` 建的普通根会话，不在任何 subagent 目录里：`list_agents` 列不到它；`send_message` 的 `authorizeLineage` 要求子会话头的 `parentSession`（根会话没有），走不通；`interrupt_agent` 对非 resident 目标静默 `return`，工具却仍报成功。worker 的所有交互只经本 bundle 的 `spawn_worker` / `message_worker`——也因此协调者没有中止常驻 worker 的手段，worker 卡住只能请人去那个会话处理（见 README「已知限制」）。早期方案文档按 team 工具写过映射表，同样不适用于本流程。
 
 ### 14. 工具的结构化结果不进事件流 content，只在 `presentationMeta` 投影的 `meta` 里
 
@@ -147,7 +147,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **实测**：`session_event_read` / `session_search` / `session_trace` 属 `@deepseek-ai/dsh-tool-session-query`（experimental），base bundle 未启用；其「authorized session」授权校验在 dsh 内部，仓外插件无法零依赖正确复刻。
 
-**影响**：读 worker 原始回合没有直接对应物，降级为「完成通知携带产物摘要」；需要深挖时用 `send_message` 向该 worker 追问（会唤醒它开新回合）。若要直读子会话原始事件，须显式安装 `tool-session-query` 并接受其 experimental 状态。
+**影响**：读 worker 原始回合没有直接对应物，降级为「完成通知携带产物摘要」；需要深挖时用 `message_worker` 向该 worker 追问（会唤醒它开新回合）。若要直读会话原始事件，须显式安装 `tool-session-query` 并接受其 experimental 状态。
 
 ### 17. storage domain 需要 dsh 内部包与 zod，与「bundle 零内部依赖」冲突
 
@@ -355,6 +355,6 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 - **worktree 隔离**：team 明确不提供 worktree；`dsh-experimental-worktree` 是否能接入编排约定，未实测。
 - **真实模型下的协议遵循**：本轮用 mock 触发的工具调用验证了工具通路，未验证模型在真实推理下是否按协议层派工。
 - **web 组合下的唤醒**：P1 的完整链路在 sdk profile 验证；web profile 的组合更接近真实使用，但其会话由 UI 创建，尚未用同一套探针跑通。
-- **`list_agents` 能否列出本 bundle 派出的 worker**：源码路径一致（同一 `ctx.subagents` 与 catalog 投影），但未跑实测。
+- **`list_agents` 能不能列出 worker**：已于 2026-10-29 定论——worker 是 `ctx.agents.create` 建的根会话，不在 subagent 目录里，`list_agents` 列不到（见第 13 条）。
 - **看板的信号灯**：信号灯纯投影已在 P4 实现（七档：等你输入 / 需注意 / 执行中 / 未读 / 空闲 / 状态未知 / 无信号，聚合自槽位会话状态，不落存储）。运行态与未读读宿主会话状态存储（`useSessionStatus`），已实测跑通；「等你输入」档暂无数据源（见第 35 条）。
 

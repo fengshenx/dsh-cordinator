@@ -39,12 +39,14 @@
 
 ## 验证
 
-- `npm run check`：395 例全绿（新增 `worker-sessions.test.js` 13 例、`worker-done-tool.test.js` 7 例，重写 `dispatch-continuation.test.js` 与 `tool-gate.test.js`）。
-- 回归有效性双向验证（四组，精确撤销后对应用例变红，还原后全绿）：
+- `npm run check`：403 例全绿（新增 `worker-sessions.test.js` 18 例、`worker-done-tool.test.js` 7 例，重写 `dispatch-continuation.test.js` 与 `tool-gate.test.js`）。
+- 回归有效性双向验证（六组，精确撤销后对应用例变红，还原后全绿）：
   - 撤 `workerSessions.spawn` 里的 `followup(taskMessage(...))` → 「建会话时用带前缀的会话 id，并把任务简报即刻投进去」红。
   - 撤 `reportDone` 里的 `inflight.delete` → 「一轮只结算一次回报，重复上报不重复唤醒」红。
   - 把分组判据换回 `session.origin === 'subagent'` → 6 条分组用例红。
   - 撤 `detachSession` 里的 `workerSessions.dispose` → 「归档 worker 会话时顺带销毁常驻 agent」红。
+  - 撤 spawn 失败分支里的 `workerIds.delete` → 「建会话失败时不留 worker 身份」红。
+  - 撤 followup 失败分支里的 `disposeOne` → 「任务投递失败时销毁刚建好的会话，不留孤儿」红。
 - `npm run build:client` 通过。
 
 ## 未覆盖

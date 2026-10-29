@@ -75,7 +75,7 @@ worker 的工作目录强制是项目目录：协调者不能指定 worker 的 c
 
 ## 派工与接收
 
-派工用 `spawn_worker`：它建一个常驻 worker 会话并立即返回会话 id，worker 调 `worker_done` 交作业后自动唤醒你并附完成通知与产物摘要，同一轮可连派多个工。worker 是普通会话——人能在项目树里打开它直接聊，那种轮次不经过你，也不会唤醒你。续聊与改名用 `message_worker`（`sessionId` + `message` 必填，可选 `rename`）。查执行者名录、传话与中止用宿主的 `list_agents`、`send_message`、`interrupt_agent`，`agent_id` 就是 worker 的会话 id。卡片用 `create_card`、`update_card`、`list_cards`，改卡带 `expectedRevision` 做乐观并发——这个版本号从 `list_cards` 的列表里读（每行都带 `revision`），要读某张卡的规格与检查点全文就传 `cardId` 单卡查询。完整对应见 [协调者动作与工具](playbooks/program.md#协调者动作与工具)。
+派工用 `spawn_worker`：它建一个常驻 worker 会话并立即返回会话 id，worker 调 `worker_done` 交作业后自动唤醒你并附完成通知与产物摘要，同一轮可连派多个工。worker 是普通会话——人能在项目树里打开它直接聊，那种轮次不经过你，也不会唤醒你。**worker 只有 `spawn_worker` 与 `message_worker` 两个入口**（续聊与改名：`sessionId` + `message` 必填，可选 `rename`）。宿主的 `list_agents` / `send_message` / `interrupt_agent` 认的是宿主 subagent 体系，看不到也投不到我们的 worker——其中 `interrupt_agent` 对找不到的目标仍返回成功，别拿它当中止手段；worker 卡住就请人去那个会话处理。卡片用 `create_card`、`update_card`、`list_cards`，改卡带 `expectedRevision` 做乐观并发——这个版本号从 `list_cards` 的列表里读（每行都带 `revision`），要读某张卡的规格与检查点全文就传 `cardId` 单卡查询。完整对应见 [协调者动作与工具](playbooks/program.md#协调者动作与工具)。
 
 派工确保原简报、后续指令、实际产物与版本均可沿指针完整恢复，不依赖「done」摘要继承变更。按 [协调者传话纪律](playbooks/program.md#输出与传话纪律)保留边界与验收，已落盘正文不抄入派单。按宿主与任务权限使用 worker；现有 owner 与 worktree 状态能可信恢复时续跑，新上下文更合适时新派，不能丢原约束。停止/恢复遵守用户指令与宿主契约；能力不可用明确 limitation，不声称多模型独立评估。
 

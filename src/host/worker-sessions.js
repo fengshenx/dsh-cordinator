@@ -150,6 +150,22 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
     },
 
     /**
+     * 忘掉一个已被宿主销毁的会话。
+     *
+     * 宿主自己销毁会话（会话管理里删除、外部归档等）时，这边的活表还留着失活
+     * 句柄——之后 `message_worker` 会走 live 分支投给一个死会话，回执是成功而
+     * worker 不会动。所以 `agent/disposed` 里要把记录摘掉，让续聊改走冷恢复。
+     *
+     * 只摘记录，不调宿主 dispose：会话已经没了，再销毁一次是多余动作。
+     *
+     * @param {string} sessionId - 会话 id
+     * @returns {void}
+     */
+    forget(sessionId) {
+      live.delete(sessionId)
+    },
+
+    /**
      * 新建一个 worker 会话并即刻派活。
      *
      * @param {object} options - 派工参数
@@ -168,15 +184,29 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
       const sessionId = `worker-${randomUUID()}`
       // 先登记再创建：`agent/created` 在 create 内部就发出来了，晚一步判定不到。
       workerIds.add(sessionId)
-      const handle = await agents.create({
-        sessionId,
-        signal,
-        ...agentOptionsFromDefaults(),
-        ...cwd === undefined ? {} : { meta: { cwd } },
-      })
+      let handle
+      try {
+        handle = await agents.create({
+          sessionId,
+          signal,
+          ...agentOptionsFromDefaults(),
+          ...cwd === undefined ? {} : { meta: { cwd } },
+        })
+      } catch (error) {
+        // 会话没建成，身份也不能留着——否则这个 id 永远被判成 worker。
+        workerIds.delete(sessionId)
+        throw error
+      }
       live.set(sessionId, handle)
       renameTitle(handle, name)
-      handle.agent.followup(taskMessage(initialMessage, name, parentSessionId))
+      try {
+        handle.agent.followup(taskMessage(initialMessage, name, parentSessionId))
+      } catch (error) {
+        // 会话建起来了却没收到任务：它不在任何登记表与在飞表里，协调者与名册都
+        // 看不见它。留着就是一个没人管的常驻会话，直接销毁并把原错误抛回去。
+        await disposeOne(sessionId)
+        throw error
+      }
       return sessionId
     },
 

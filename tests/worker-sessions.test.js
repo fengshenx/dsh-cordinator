@@ -12,17 +12,21 @@ import { createWorkerSessions } from '../src/host/worker-sessions.js'
 /**
  * 造一个假的宿主上下文：记录建/恢复/投递/销毁。
  *
- * @param {{ missingAgents?: boolean, missingModel?: boolean }} [options] - 夹具选项
+ * @param {{ missingAgents?: boolean, missingModel?: boolean, createError?: Error, followupError?: Error }} [options] - 夹具选项
  * @returns {object} 上下文与记录
  */
-function createFixture({ missingAgents = false, missingModel = false } = {}) {
+function createFixture({ missingAgents = false, missingModel = false, createError, followupError } = {}) {
   const created = []
   const resumed = []
   const titles = []
+  /** 传给 `agents.create` 的会话 id，含没建成的那些 */
+  const requested = []
   let sequence = 0
 
   const agents = {
     async create(options) {
+      requested.push(options.sessionId)
+      if (createError !== undefined) throw createError
       sequence += 1
       const sessionId = options.sessionId ?? `worker-${sequence}`
       const entry = { options, sessionId, messages: [], disposed: false }
@@ -32,6 +36,7 @@ function createFixture({ missingAgents = false, missingModel = false } = {}) {
           id: sessionId,
           session: { id: sessionId, header: { id: sessionId } },
           followup(message) {
+            if (followupError !== undefined) throw followupError
             entry.messages.push(message)
           },
         },
@@ -75,7 +80,7 @@ function createFixture({ missingAgents = false, missingModel = false } = {}) {
       return undefined
     },
   }
-  return { ctx, created, resumed, titles }
+  return { ctx, created, resumed, titles, requested }
 }
 
 test('建会话时用带前缀的会话 id，并把任务简报即刻投进去', async () => {
@@ -341,4 +346,64 @@ test('宿主销毁失败只记日志，不改判成没销毁', async () => {
   assert.ok(warnings.some((message) => message.includes('ALREADY_GONE')))
   // 内存里已经没有它了，工具面判定也要跟着失效。
   assert.equal(sessions.isWorkerSession(sessionId), false)
+})
+
+test('建会话失败时不留 worker 身份', async () => {
+  const fixture = createFixture({ createError: new Error('NO_CAPACITY') })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await assert.rejects(
+    () => sessions.spawn({
+      name: 'w',
+      initialMessage: 'x',
+      parentSessionId: 'c',
+      signal: new AbortController().signal,
+    }),
+    /NO_CAPACITY/,
+  )
+
+  // 身份先于 create 登记（`agent/created` 在 create 内部就发出），失败必须回滚，
+  // 否则这个 id 会被永远判成 worker。
+  assert.equal(fixture.requested.length, 1)
+  assert.equal(sessions.isWorkerSession(fixture.requested[0]), false)
+})
+
+test('任务投递失败时销毁刚建好的会话，不留孤儿', async () => {
+  const fixture = createFixture({ followupError: new Error('INBOX_CLOSED') })
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+
+  await assert.rejects(
+    () => sessions.spawn({
+      name: 'w',
+      initialMessage: 'x',
+      parentSessionId: 'c',
+      signal: new AbortController().signal,
+    }),
+    /INBOX_CLOSED/,
+  )
+
+  // 会话建起来了但没收到任务：它不在登记表、不在在飞表，协调者与名册都看不见它。
+  const entry = fixture.created.at(-1)
+  assert.equal(entry.disposed, true)
+  assert.equal(sessions.get(entry.sessionId), undefined)
+  assert.equal(sessions.isWorkerSession(entry.sessionId), false)
+})
+
+test('宿主要求忘掉已销毁的会话时只摘记录，不再调 dispose', async () => {
+  const fixture = createFixture()
+  const sessions = createWorkerSessions({ ctx: fixture.ctx })
+  const sessionId = await sessions.spawn({
+    name: 'w',
+    initialMessage: 'x',
+    parentSessionId: 'c',
+    signal: new AbortController().signal,
+  })
+
+  sessions.forget(sessionId)
+
+  // 宿主已经销毁过了，这里再 dispose 一次是多余动作；但活表必须摘掉，否则后续
+  // 续聊会投给死会话、回执还报成功。
+  assert.equal(fixture.created[0].disposed, false)
+  assert.equal(sessions.get(sessionId), undefined)
+  assert.equal(sessions.isWorkerSession(sessionId), true)
 })
