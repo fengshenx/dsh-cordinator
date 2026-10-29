@@ -55,6 +55,9 @@
   - 撤掉「按当前已注册工具过滤」那层 → 「宿主没装 subagent 控制工具时跳过那三件」红。
   - 把工具探测换回 `definitions()`（0.2.2-alpha.2 才有，engines 下限 0.2.1-rc.2 没有） → 「只依赖 engines 下限的 tools 方法面」与另外两条红（`TypeError: definitions is not a function`）。
 - `npm run build:client` 通过。
+- 真机（`dsh 0.2.1-rc.2` + mock provider）：普通会话的 `request/header.tools` 共 39 个，`spawn_worker` / `message_worker` / `list_cards` / `worker_done` 全被裁掉，三件宿主工具保留。
+
+**真机验证要证明代码路径被执行过，不能只证明没有报错。** 上一轮的真机「验证」是打开会话看日志没报错——可那次一个 agent 都没创建，`agent/created` 的处理器一次都没跑，日志干净恰好说明什么都没发生。可观测的判据是「预期的新行为出现了」（工具面少了哪几项），不是「没有红色输出」。
 
 ## 未覆盖
 
