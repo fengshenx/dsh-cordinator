@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   fetchBoardCards,
+  isBoardViewable,
   isCoordinatorProject,
   newCardIds,
   resolveProject,
+  sameProjectSummary,
 } from '../src/client/project-board-data.js'
 
 test('解析项目：通道返回项目就返回，返回空就说没有项目', async () => {
@@ -29,6 +31,25 @@ test('看板只认项目协调者：worker 与同目录普通会话都不算', (
   assert.equal(isCoordinatorProject({ id: 'p1' }, 'coordinator-1'), false)
   assert.equal(isCoordinatorProject({ id: 'p1', coordinatorSessionId: '' }, ''), false)
   assert.equal(isCoordinatorProject(undefined, 'coordinator-1'), false)
+})
+
+test('看板可看性：协调者会话还得没失效', () => {
+  const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'coordinator-1'), true)
+  // 存活状态未知时按「还在」处理，不误报失效
+  assert.equal(isBoardViewable(base, 'coordinator-1'), true)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: false }, 'coordinator-1'), false)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'worker-1'), false)
+  assert.equal(isBoardViewable(undefined, 'coordinator-1'), false)
+})
+
+test('项目摘要比较：协调者或存活状态变了才算变化', () => {
+  const base = { id: 'p1', coordinatorSessionId: 'c1', coordinatorAlive: true }
+  assert.equal(sameProjectSummary(base, { ...base }), true)
+  assert.equal(sameProjectSummary(base, { ...base, coordinatorAlive: false }), false)
+  assert.equal(sameProjectSummary(base, { ...base, coordinatorSessionId: 'c2' }), false)
+  assert.equal(sameProjectSummary(undefined, undefined), true)
+  assert.equal(sameProjectSummary(undefined, base), false)
 })
 
 test('取项目卡片：通道返回数组才认，非数组当空列表', async () => {

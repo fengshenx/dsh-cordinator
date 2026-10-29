@@ -240,9 +240,14 @@ export function createCreateCardTool({ store, resolveProject }) {
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ title: string, spec?: string, links?: object[], slots?: object }} */ (args)
+      const input = /** @type {{ title: string, spec?: string, links?: object[], slots?: object, checkpoint?: unknown }} */ (args)
       if (typeof input.title !== 'string' || input.title.trim() === '') {
         throw new Error('create_card: title 不能为空')
+      }
+      // checkpoint 已移除：旧会话仍传这个字段时明确拒绝，而不是收下成功回执、
+      // 再把事实丢掉。
+      if (input.checkpoint !== undefined) {
+        throw new Error('create_card: checkpoint 已移除，任务事实请写进 spec')
       }
       const spec = optionalString(input.spec, 'spec')
       const links = input.links === undefined ? undefined : normalizeLinks(input.links)
@@ -314,9 +319,13 @@ export function createUpdateCardTool({ store, resolveProject }) {
       },
     },
     async execute(args, exec) {
-      const input = /** @type {{ id: string, expectedRevision?: number, title?: string, spec?: string, status?: string, links?: object[], slots?: object, sortOrder?: number }} */ (args)
+      const input = /** @type {{ id: string, expectedRevision?: number, title?: string, spec?: string, status?: string, links?: object[], slots?: object, sortOrder?: number, checkpoint?: unknown }} */ (args)
       if (typeof input.id !== 'string' || input.id.trim() === '') {
         throw new Error('update_card: id 不能为空')
+      }
+      // 见 create_card：废弃字段显式拒收，避免「回执成功但事实没落盘」。
+      if (input.checkpoint !== undefined) {
+        throw new Error('update_card: checkpoint 已移除，任务事实请写进 spec')
       }
       // 入参 schema 里的 required 与类型在运行时不生效（手写 ToolDefinition，
       // 宿主只校验输出 schema），因此这里逐项校验裸字段。

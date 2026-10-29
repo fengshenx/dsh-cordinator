@@ -155,6 +155,25 @@ export function createProjectService({
     }
   }
 
+  /**
+   * 项目摘要：客户端拿它判定看板可见性，以及协调者会话是否还在。
+   *
+   * `coordinatorAlive` 与 `list()` 同口径；判定不出来时是 `undefined`（不知道），
+   * 客户端按「还在」处理，不把未知误报成失效。
+   *
+   * @param {object} project - 项目记录
+   * @returns {Promise<object>} 项目摘要
+   */
+  async function summarizeProject(project) {
+    return {
+      id: project.id,
+      name: project.name,
+      directory: project.directory,
+      coordinatorSessionId: project.coordinatorSessionId ?? '',
+      coordinatorAlive: await coordinatorExists(project.coordinatorSessionId),
+    }
+  }
+
   return {
     /**
      * 重建协调者索引。进程启动时调用：内存镜像是进程内的，崩溃后不会留下。
@@ -249,8 +268,8 @@ export function createProjectService({
      * 明确说「不归属任何项目」，不猜：把卡挂到猜出来的项目上，比不挂更难查。
      *
      * @param {string} sessionId - 会话 id
-     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory, coordinatorSessionId }`）；
-     *   不归属时 undefined
+     * @returns {Promise<object | undefined>} 所属项目（`{ id, name, directory,
+     *   coordinatorSessionId, coordinatorAlive }`）；不归属时 undefined
      */
     async resolveProjectOfSession(sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return undefined
@@ -260,14 +279,7 @@ export function createProjectService({
       const coordinator = coordinatorIndex.get(sessionId)
       if (coordinator !== undefined) {
         const project = await store.get(coordinator.projectId)
-        if (project !== undefined) {
-          return {
-            id: project.id,
-            name: project.name,
-            directory: project.directory,
-            coordinatorSessionId: project.coordinatorSessionId ?? '',
-          }
-        }
+        if (project !== undefined) return summarizeProject(project)
       }
       const cwd = ctx.get('sessions')?.get?.(sessionId)?.header?.cwd
       if (typeof cwd !== 'string' || cwd === '') return undefined
@@ -277,12 +289,7 @@ export function createProjectService({
       if (project === undefined) return undefined
       // 项目里的普通会话与 worker 也能解析到项目（卡片归属要用），但看板只对
       // 协调者开放——客户端拿这条指针判断。
-      return {
-        id: project.id,
-        name: project.name,
-        directory: project.directory,
-        coordinatorSessionId: project.coordinatorSessionId ?? '',
-      }
+      return summarizeProject(project)
     },
 
     /**

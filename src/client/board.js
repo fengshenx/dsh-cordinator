@@ -29,14 +29,23 @@ import {
 import {
   BOARD_REFRESH_MS,
   fetchBoardCards,
-  isCoordinatorProject,
+  isBoardViewable,
   resolveProject,
+  sameProjectSummary,
 } from './project-board-data.js'
 import { SlotRetention, retainTargetOf } from './slot-retain.js'
 import { BoardCard } from './board-card.js'
 import { CardDetail } from './card-detail.js'
 import { ensureBoardStyles } from './board-styles.js'
 import { productIcon } from './icons.js'
+
+/**
+ * 项目归属与协调者身份的复核间隔。
+ *
+ * 卡片每 2 秒拉一次，但「这个会话还是不是该项目的协调者」不必那么频繁：协调者
+ * 被换新或归档是低频事件，30 秒足以让旧面板切到提示。
+ */
+const PROJECT_RECHECK_MS = 30_000
 
 /**
  * 看板面板主体。
@@ -306,7 +315,8 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   }, [])
 
   // 看板是项目维度的：先按面板所属的会话解析出项目。会话换了（面板随之重挂载）
-  // 就重新解析。
+  // 就重新解析；同一会话下定期复核——协调者可能在面板打开期间被换新或归档，
+  // 身份与存活状态不能只在挂载时问一次。
   useEffect(() => {
     let cancelled = false
     setError(null)
@@ -314,18 +324,29 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
     // 换了会话就是换了项目，上一个项目的卡片不能留在面板里。
     setCards([])
     setLoaded(false)
-    resolveProject(callRemote, sessionId)
-      .then((resolvedProject) => {
-        if (cancelled) return
-        setProject(resolvedProject)
-        setResolved(true)
-        setError(null)
-      })
-      .catch((cause) => {
-        if (cancelled) return
-        setError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
-      })
-    return () => { cancelled = true }
+    const load = () => {
+      resolveProject(callRemote, sessionId)
+        .then((resolvedProject) => {
+          if (cancelled) return
+          // 摘要没变时保持旧引用：否则卡片取数的 effect 会跟着每 30 秒重启一次。
+          setProject((previous) => (sameProjectSummary(previous, resolvedProject) ? previous : resolvedProject))
+          setResolved(true)
+          setError(null)
+        })
+        .catch((cause) => {
+          if (cancelled) return
+          setError(`读取项目失败：${cause instanceof Error ? cause.message : String(cause)}`)
+        })
+    }
+    load()
+    const timer = setInterval(load, PROJECT_RECHECK_MS)
+    const onFocus = () => { load() }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [sessionId, callRemote])
 
   // 卡片取数：挂载时拉一次，之后定时刷新，窗口重新聚焦时立刻刷一次。
@@ -333,8 +354,8 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 的窗口里，等不到它的变化。
   useEffect(() => {
     // 看板只对项目协调者开放：项目目录里的普通会话与 worker 也能解析到项目
-    // （卡片归属要用），但这里不给它们取卡。
-    if (project === undefined || !isCoordinatorProject(project, sessionId)) return undefined
+    // （卡片归属要用），但这里不给它们取卡。协调者会话已失效时同样不取。
+    if (project === undefined || !isBoardViewable(project, sessionId)) return undefined
     let cancelled = false
     const refresh = () => {
       fetchBoardCards(callRemote, project.id)
@@ -421,9 +442,11 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
     )
   }
 
-  // 属于项目但不是该项目的协调者（worker、项目目录里手动开的普通会话）：这个
-  // 会话有项目语境，却不拥有看板的呈现面。说清去哪看，不展示项目卡片。
-  if (!isCoordinatorProject(project, sessionId)) {
+  // 属于项目但不是可看的协调者：拆两种出口——执行会话指路去协调者；协调者
+  // 本身已失效（归档或被替换但绑定没改）时指路去左栏换新协调者，不把人指向
+  // 一个打不开的会话。
+  if (!isBoardViewable(project, sessionId)) {
+    const coordinatorDead = project.coordinatorAlive === false
     return createElement(
       'div',
       { className: 'dsh-coordinator-board-list' },
@@ -433,12 +456,14 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
         createElement(
           'div',
           { className: 'dsh-coordinator-board-empty-title' },
-          '看板只在项目协调者会话中打开',
+          coordinatorDead ? '该项目的协调者会话已失效' : '看板只在项目协调者会话中打开',
         ),
         createElement(
           'div',
           { className: 'dsh-coordinator-board-empty-hint' },
-          `这是「${project.name ?? '本项目'}」里的执行会话；去该项目的协调者会话查看交付看板。`,
+          coordinatorDead
+            ? '请在左栏项目区块对该项目换新协调者，再打开看板。'
+            : `这是「${project.name ?? '本项目'}」里的执行会话；去该项目的协调者会话查看交付看板。`,
         ),
       ),
     )

@@ -47,6 +47,38 @@ export function isCoordinatorProject(project, sessionId) {
 }
 
 /**
+ * 这个会话当前能不能看项目看板。
+ *
+ * 是协调者还不够：协调者会话可能已被归档或替换，项目里的绑定不会因此自动改。
+ * `coordinatorAlive` 为 `undefined`（不知道）时按「还在」处理，不误报失效。
+ *
+ * @param {object | undefined} project - 项目摘要
+ * @param {string} sessionId - 当前面板所属会话
+ * @returns {boolean} 是否可展示看板
+ */
+export function isBoardViewable(project, sessionId) {
+  return isCoordinatorProject(project, sessionId) && project?.coordinatorAlive !== false
+}
+
+/**
+ * 两份项目摘要是否描述同一个可展示状态。
+ *
+ * 面板每 30 秒复核一次项目：内容没变时保持旧对象引用，否则卡片取数的
+ * effect 会跟着重启轮询。协调者或存活状态变了才算变化。
+ *
+ * @param {object | undefined} left - 旧摘要
+ * @param {object | undefined} right - 新摘要
+ * @returns {boolean} 是否等价
+ */
+export function sameProjectSummary(left, right) {
+  if (left === right) return true
+  if (left === undefined || right === undefined) return false
+  return left.id === right.id
+    && left.coordinatorSessionId === right.coordinatorSessionId
+    && left.coordinatorAlive === right.coordinatorAlive
+}
+
+/**
  * 取项目的看板卡片。
  *
  * @param {(method: string, args: unknown[]) => Promise<unknown>} callRemote - 远程调用

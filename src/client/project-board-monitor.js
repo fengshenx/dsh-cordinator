@@ -17,10 +17,18 @@
 import {
   BOARD_REFRESH_MS,
   fetchBoardCards,
-  isCoordinatorProject,
+  isBoardViewable,
   newCardIds,
   resolveProject,
 } from './project-board-data.js'
+
+/**
+ * 重新解析项目、复核协调者身份的间隔（轮数）。
+ *
+ * 卡片每 2 秒拉一次；协调者被换新或归档是低频事件，15 轮（约 30 秒）复核一次
+ * 即可，避免每轮都多一次远程调用。
+ */
+const RECHECK_TICKS = 15
 
 /** 本插件的看板 tab 类型 kind。 */
 export const BOARD_TAB_KIND = 'dsh-coordinator-board'
@@ -46,6 +54,8 @@ export function createBoardWatch({ callRemote, onNewCard }) {
   let baseline = []
   /** @type {boolean} 是否已经拿到过这个项目的第一轮卡片 */
   let primed = false
+  /** @type {number} 已解析项目后的轮询计数，用于定期复核身份 */
+  let ticks = 0
 
   return {
     /**
@@ -60,6 +70,7 @@ export function createBoardWatch({ callRemote, onNewCard }) {
       ineligible = false
       baseline = []
       primed = false
+      ticks = 0
     },
 
     /**
@@ -78,7 +89,17 @@ export function createBoardWatch({ callRemote, onNewCard }) {
       if (project === undefined) {
         const resolved = await resolveProject(callRemote, sessionId)
         if (resolved === undefined) return
-        if (!isCoordinatorProject(resolved, sessionId)) {
+        if (!isBoardViewable(resolved, sessionId)) {
+          ineligible = true
+          return
+        }
+        project = resolved
+      } else if ((ticks += 1) % RECHECK_TICKS === 0) {
+        // 协调者可能在监视期间被换新或归档：定期复核身份与存活状态，别把新卡
+        // 继续弹给一个已经不是协调者的会话。
+        const resolved = await resolveProject(callRemote, sessionId)
+        if (resolved === undefined) return
+        if (!isBoardViewable(resolved, sessionId)) {
           ineligible = true
           return
         }
