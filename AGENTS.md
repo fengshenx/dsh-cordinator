@@ -73,8 +73,8 @@ npm run worktree:prune            # 清已合并的 worktree（默认只打印�
 ## 宿主契约要点
 
 - `tools.restrict({ deny })` 对**未注册的全局工具名直接抛错**，deny 之前先探存在性。
-- 工具面按会话角色裁剪，在 `agent/created` 上应用——每次创建与冷恢复都会重算。那个事件在**建会话内部**就发出来了，所以「按身份分配工具面」的会话必须在建会话**之前**把身份登记好，晚一步就只能按默认档裁，且裁错的限制不会自己松开（`restrict()` 是追加，撤回要等下次冷恢复）。
-- 建会话的实现接受调用方传入的 `sessionId`（`sessionController.create({ sessionId })` 与 `agents.create({ sessionId })`），预生成 id 是让身份先于会话存在的唯一手段。
+- 工具面按会话角色裁剪，在 `agent/created` 上应用——那个事件在**建会话内部**就发出来了，所以按身份分配工具面的会话必须让身份先于会话存在（第 37 条）。
+- 建会话的实现接受调用方传入的 `sessionId`（`sessionController.create({ sessionId })` 与 `agents.create({ sessionId })`），预生成 id 是唯一不需要事后纠正的手段。
 - 仓外插件不能新增 session event 类型（capability-gaps 第 8 条），卡片与项目状态只能走独立存储域 + session projection。
 - client 产物不能用 `node:` 内置模块（第 23 条）。
 - `ctx.sessions.list()` 只返回 live session，从会话推导的列表会随重启漂移（第 21 条）。
@@ -93,13 +93,14 @@ npm run worktree:prune            # 清已合并的 worktree（默认只打印�
 
 审查意见走 GitHub App `telov-review-bot`，评论显示为 `telov-review-bot[bot]`，与作者账号（`fengshenx`）分离。merge、push 用本人凭证，bot 不做；approve 需用户明确指令。
 
+**这套通道依赖本机私有凭据**：`scripts/github-app-token.mjs` 读 `~/.telov/`，仓库本身不带这个能力。换机器、别人 clone、或将来接 CI 都要自备 App 与 installation——没有凭据时脚本按 Fail Loud 报缺文件并以 1 退出，不会静默降级成作者身份。
+
 - 凭据在机器本地、不入库：`~/.telov/github-app.env`（`GITHUB_APP_ID` / `GITHUB_APP_INSTALLATION_ID`）、`~/.telov/github-app.pem`（`chmod 600`）。该 App 的 installation 覆盖 `fengshenx` 名下全部仓库，同一份凭据 Telov 与本仓通用。
 - 换 token：`node scripts/github-app-token.mjs`（RS256 JWT → installation token，1 小时有效，不落盘）。
 - **取 token 与调用必须写在同一行**：`TOKEN=$(node scripts/github-app-token.mjs) && GH_TOKEN="$TOKEN" gh pr comment <n> --body-file /tmp/review.md`。分两次 shell 调用时 `$TOKEN` 已丢失，`gh` 回落到本人凭证——评论照样发出，身份却静默变成作者账号；`&&` 短路是第二道防线，取不到 token 就不执行 `gh`。
 - 正文含中文、换行、代码块时先写临时文件再 `--body-file`，避开 shell 引号转义；临时文件用完删掉。
 - **别用 `gh api user` 验身份**：installation token 访问该端点一律 403（`Resource not accessible by integration`），那是预期形态不是故障——身份由 App slug 决定（`GET /app` 的 `slug` 是 `telov-review-bot`），用它签出的 token 发评必然显示为 `[bot]`。要确认可用性就查 `gh api /installation/repositories` 里有没有目标仓库。
 - App 权限只有 `issues` / `pull_requests` / `metadata`：能发评论，不能 merge、不能 push；也**不要**把 token `export` 成全局 `GH_TOKEN`，那会让后续所有 `gh` 操作变成 bot 身份。
-
 
 ## 编辑本文件
 

@@ -98,10 +98,14 @@ export function createProjectService({
     ?? ((sessionId) => sessionExistsWithCtx(ctx, sessionId))
 
   /**
-   * 协调者会话 id → 项目的内存镜像（值是 `{ projectId, directory }`）。
+   * 协调者会话 id → 项目的内存镜像（值是 `{ directory }`，项目记录落盘后再补
+   * `projectId`）。
    *
    * 项目注册表是异步落盘的，而提示词组装与派工都需要**同步**拿到「这个会话属于
    * 哪个项目」。卡片库用的是同一手法：落盘是真源，内存镜像是读路径。
+   *
+   * 建项目期间会有只有 `directory` 的占位条目——身份登记早于会话创建（见
+   * `openRegisteredCoordinatorSession`），读 `projectId` 的地方必须容忍它缺席。
    */
   const coordinatorIndex = new Map()
 

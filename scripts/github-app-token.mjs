@@ -1,25 +1,18 @@
 /**
- * 为 GitHub App 生成 installation access token（默认 1 小时有效）。
+ * 为 GitHub App 生成 installation access token（默认 1 小时有效），用于以 bot 身份
+ * 发 PR 评论。用法、身份边界与防错理由见 AGENTS.md「用 bot 身份发评论」。
  *
- * 用途：审查评论以项目 bot 身份发布，与作者账号分离。
+ * 本机工具：读 `~/.telov/github-app.env`（`GITHUB_APP_ID` /
+ * `GITHUB_APP_INSTALLATION_ID`）与 `~/.telov/github-app.pem`，凭据不入库。
+ *
  *   TOKEN=$(node scripts/github-app-token.mjs) && GH_TOKEN="$TOKEN" gh pr comment <n> --body-file /tmp/review.md
- *
- * 取 token 与 gh 调用必须写在同一行：分两次 shell 调用时 $TOKEN 已丢失，gh 会回落到
- * 本人 keyring 凭证，评论照样发出、身份却静默变成作者账号——`&&` 短路是另一道防线，
- * 取不到 token 时干脆不执行 gh。
- *
- * 凭证在机器本地，不入库：
- *   ~/.telov/github-app.env  —— GITHUB_APP_ID / GITHUB_APP_INSTALLATION_ID
- *   ~/.telov/github-app.pem  —— App 页面「Generate a private key」下载的私钥（chmod 600）
- *
- * 该 App 的 installation 覆盖 `fengshenx` 名下全部仓库（repository_selection: all），
- * 所以同一份凭据对 Telov 与本仓都适用，不必按仓库另配。
  */
 
-import { createSign } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { createJwt } from './github-app-jwt.mjs'
 
 const CREDENTIAL_DIR = join(homedir(), '.telov')
 const ENV_FILE = join(CREDENTIAL_DIR, 'github-app.env')
@@ -48,28 +41,39 @@ function readConfig() {
 }
 
 /**
- * 把一段内容转成 JWT 用的 base64url。
+ * 取 installation token。
  *
- * @param {string | Buffer} input - 待编码内容
- * @returns {string} base64url 字符串
- */
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-/**
- * 用私钥签出 RS256 JWT——GitHub App 认证的第一段，10 分钟有效（上限）。
+ * 非 2xx 先按文本截断报出：代理或网关回 HTML 502 时，`json()` 抛的是
+ * `Unexpected token '<'`，真实状态码被那句解析错误埋掉。
  *
- * @param {string} appId - App id
- * @param {string} privateKey - App 私钥 PEM
- * @returns {string} JWT
+ * `fetchImpl` 只为用例注入假的响应，生产调用不传。
+ *
+ * @param {string} jwt - App JWT
+ * @param {string} installationId - installation id
+ * @param {typeof fetch} [fetchImpl] - fetch 实现
+ * @returns {Promise<string>} installation token
  */
-function createJwt(appId, privateKey) {
-  const now = Math.floor(Date.now() / 1000)
-  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
-  const payload = base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: appId }))
-  const signature = createSign('RSA-SHA256').update(`${header}.${payload}`).sign(privateKey)
-  return `${header}.${payload}.${base64url(signature)}`
+export async function exchangeToken(jwt, installationId, fetchImpl = fetch) {
+  const response = await fetchImpl(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+    method: 'POST',
+    // 网络挂住时不能让调用方一直等；10 秒对一次 token 交换足够宽
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'telov-review-bot',
+    },
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`换取 installation token 失败（HTTP ${response.status}）：${text.slice(0, 400)}`)
+  }
+  const body = await response.json()
+  if (typeof body.token !== 'string') {
+    throw new Error(`换取 installation token 的响应里没有 token：${JSON.stringify(body).slice(0, 400)}`)
+  }
+  return body.token
 }
 
 async function main() {
@@ -77,26 +81,28 @@ async function main() {
     throw new Error(`缺少私钥 ${KEY_FILE}，请在 GitHub App 设置页「Generate a private key」下载后移入`)
   }
   const { appId, installationId } = readConfig()
-  const jwt = createJwt(appId, readFileSync(KEY_FILE, 'utf8'))
-
-  const response = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  })
-  const body = await response.json()
-  if (!response.ok || typeof body.token !== 'string') {
-    throw new Error(`换取 installation token 失败（HTTP ${response.status}）：${JSON.stringify(body).slice(0, 400)}`)
-  }
-  process.stdout.write(`${body.token}\n`)
+  const jwt = createJwt({ appId, privateKey: readFileSync(KEY_FILE, 'utf8') })
+  process.stdout.write(`${await exchangeToken(jwt, installationId)}\n`)
+  return 0
 }
 
-try {
-  await main()
-} catch (error) {
-  process.stderr.write(`github-app-token: ${error instanceof Error ? error.message : String(error)}\n`)
-  process.exit(1)
+/**
+ * 判断本模块是被直接执行还是被 import。
+ *
+ * 用 argv 比对而不是 `import.meta.main`：后者在 Node 24.2 之前不存在，属性读成
+ * undefined 会让脚本静默什么都不做。
+ *
+ * @returns {boolean} 直接执行时 true
+ */
+function invokedDirectly() {
+  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+}
+
+if (invokedDirectly()) {
+  try {
+    await main()
+  } catch (error) {
+    process.stderr.write(`github-app-token: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.exit(1)
+  }
 }

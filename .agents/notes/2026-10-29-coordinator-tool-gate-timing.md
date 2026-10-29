@@ -1,7 +1,7 @@
 # 协调者工具面的裁剪时序
 
 **状态**：implemented（2026-10-29）
-**范围**：`src/host/projects/service.js`（`create` / `replaceCoordinator` / `createCoordinatorSessionWithCtx`）
+**范围**：`src/host/projects/service.js`（`create` / `replaceCoordinator` / `createCoordinatorSessionWithCtx`）、`docs/capability-gaps.md` 第 37 条
 
 ## 背景
 
@@ -30,14 +30,18 @@
 
 ## 验证
 
-- `npm run check`：435 例全绿。
-- **回归用例**「建协调者会话那一刻，注册表里已经有它」：在 `createCoordinatorSession` 替身里用钩子站到 `agent/created` 的同一时刻问 `isCoordinatorSession()`，先 `loadIndex()` 复现真实进程（索引已加载、为空）的前提——不先加载的话 `isCoordinatorSession()` 一律放行，用例测不出时序。
-- 双向验证：把 helper 改回「先建会话后登记」→ 上述用例与「换新协调者时，新会话在建立那一刻也已经登记」同时红（32 pass / 2 fail）；还原后 33/33、全仓 435/435。
+- `npm run check`：445 例全绿。
+- **回归用例**「建协调者会话那一刻，注册表里已经有它」：在 `createCoordinatorSession` 替身里用钩子站到 `agent/created` 的同一时刻问 `isCoordinatorSession()`，先 `loadIndex()` 复现真实进程（索引已加载、为空）的前提——不先加载的话 `isCoordinatorSession()` 一律放行，用例测不出时序。钩子结果收集成数组而非标量：标量只留最后一次，工厂被多调一次也察觉不到。
+- 双向验证四组，都是精确删除后看对应用例单独变红、其余全绿：
+  - helper 改回「先建会话后登记」→ 两条登记时序用例红；
+  - 删 `create()` catch 里的占位清理 → 「项目落盘失败时也撤掉占位」红；
+  - 删 `replaceCoordinator()` catch 里的占位清理 → 「换协调者时改绑失败也撤掉占位」红；
+  - 删 `created !== sessionId` 分支 → 「建会话的实现没按契约用传入 id 时当场失败」红。
 - 失败路径：「建会话失败时不落盘」补两条断言——`directoryOfCoordinator` 与 `isCoordinatorSession` 对预生成的 id 都返回空，占位确实撤掉了。
 - 契约层：`createCoordinatorSessionWithCtx` 的两条用例改成断言 `sessionController.create` 收到的 `sessionId` 与我们传入的一致（`{ workspaceId, sessionId }` 与 `{ cwd, sessionId }` 两种入参形态）。
 
 ## 边界
 
 - **已裁错的会话不会自动修复**：修复前建的项目，协调者会话的工具面仍是普通会话档。重启实例让它冷恢复一次即可，不必重建项目。
-- **依赖宿主尊重传入的 id**：`engines.dsh` 上限是 `<0.3.0`，0.2.x 内两条路径都用调用方 id。真变了会走「id 不一致」抛错路径，建项目直接失败并说明原因，而不是静默退化。
+- **依赖宿主尊重传入的 id**：`engines.dsh` 上限是 `<0.3.0`，0.2.x 内两条路径都用调用方 id。真变了会走「id 不一致」抛错路径，建项目直接失败并说明原因，而不是静默退化。宿主侧的完整约束（`restrict()` 只能同步判定、`agent/created` 早于身份登记）见 `docs/capability-gaps.md` 第 37 条。
 - **`indexLoaded` 的宽松放行不变**：索引重建失败时 `isCoordinatorSession()` 仍对任何会话返回 true，那是为了保证协调者首轮不至于没工具；派工这类高危操作本来就另走 `awaitIndex()` 再判一次。本修复不改变这条口径，只是让正常路径不再依赖它兜底。

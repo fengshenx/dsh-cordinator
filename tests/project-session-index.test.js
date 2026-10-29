@@ -160,6 +160,9 @@ test('服务按项目聚合会话', async () => {
   const project = await service.create({ directory: workspace, name: 'alpha' })
 
   const grouped = await service.sessionsByProject()
+  // 保住判别力：会话没建成就拿不到 id，listSessions 里的协调者条目会变成 undefined
+  // 而被过滤掉，用例照样绿
+  assert.equal(factory.ids.length, 1)
   assert.equal(grouped.length, 1)
   assert.equal(grouped[0].projectId, project.id)
   assert.deepEqual(grouped[0].sessionIds, ['session-worker'])
@@ -267,5 +270,6 @@ test('服务把 worker 判定透传给分组', async () => {
   const project = await service.create({ directory: workspace, name: 'alpha' })
 
   const grouped = await service.sessionsByProject()
+  assert.equal(factory.ids.length, 1)
   assert.deepEqual(grouped, [{ projectId: project.id, sessionIds: ['worker-root'] }])
 })
