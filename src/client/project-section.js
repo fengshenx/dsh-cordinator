@@ -423,7 +423,7 @@ export function ProjectSection(props) {
     projects, busy, notice,
     onAdd,
     naming, onConfirmNaming, onCancelNaming, onNamingChange,
-    onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
+    onOpen, onRename, onReplace, onRemove,
     sessionsByProject, sessionRows, expandedProjects,
     onToggleExpand, onOpenSession, onArchiveSession,
     archivedSessionIds,
@@ -500,7 +500,6 @@ export function ProjectSection(props) {
                 onRename,
                 onReplace,
                 onRemove,
-                onRequestRemoveWorkspace,
                 sessions: sessionsByProject.get(project.id) ?? [],
                 sessionRows,
                 expanded: expandedProjects.has(project.id),
@@ -565,7 +564,7 @@ export function ProjectSection(props) {
  */
 function ProjectRow(props) {
   const {
-    project, busy, onOpen, onRename, onReplace, onRemove, onRequestRemoveWorkspace,
+    project, busy, onOpen, onRename, onReplace, onRemove,
     sessions, sessionRows, expanded, onToggleExpand, onOpenSession, onArchiveSession,
     archivedSessionIds,
   } = props
@@ -612,7 +611,6 @@ function ProjectRow(props) {
     onRename: () => setRenaming(true),
     onReplace,
     onRemove,
-    onRequestRemoveWorkspace,
   })
 
   return createElement(

@@ -100,13 +100,24 @@ export function createProjectRemote({ service, cards, workers, workerSessions, c
     }
 
     /**
-     * 注销项目。协调者会话保留，不在项目里的会话历史不因注销而消失。
+     * 删除项目：先移除插件为它注册的工作区，再删项目记录。
+     *
+     * 工作区删除只删注册，目录与全部会话日志保留，会话因此落到宿主工作区树的
+     * 「未分组」下；协调者会话本身也保留。宿主工作区服务不支持删除时 `reason`
+     * 带回原因，项目照删。
+     *
      * @param {string} id - 项目 id
-     * @returns {Promise<{removed: boolean}>} 是否确实注销了
+     * @returns {Promise<{removed: boolean, workspaceRemoved: boolean, reason?: string}>} 删除结果
      */
-    async unregister(id) {
-      const removed = await this.projects.remove(id)
-      return { removed: removed !== undefined }
+    async deleteProject(id) {
+      const result = await this.projects.remove(id)
+      if (result === undefined) {
+        return { removed: false, workspaceRemoved: false, reason: '项目不存在。' }
+      }
+      const workspaceRemoved = result.workspace.removed === true
+      return result.workspace.reason === undefined
+        ? { removed: true, workspaceRemoved }
+        : { removed: true, workspaceRemoved, reason: result.workspace.reason }
     }
 
     /**
@@ -139,19 +150,6 @@ export function createProjectRemote({ service, cards, workers, workerSessions, c
      */
     async attachCoordinator(id) {
       return this.projects.attachCoordinator(id)
-    }
-
-    /**
-     * 从宿主里移除项目的工作区。
-     *
-     * 只删工作区注册，目录与全部会话日志都留着；协调者会话仍在，只是不再归属
-     * 工作区，下次打开项目会重新注册并挂上。
-     *
-     * @param {string} id - 项目 id
-     * @returns {Promise<{removed: boolean, reason?: string}>} 移除结果
-     */
-    async removeWorkspace(id) {
-      return this.projects.removeWorkspace(id)
     }
 
     /**

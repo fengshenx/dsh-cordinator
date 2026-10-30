@@ -616,32 +616,39 @@ export function createProjectService({
     },
 
     /**
-     * 删项目。
+     * 删项目，连同插件为它注册的工作区一起。
      *
-     * 协调者会话**保留**：它是用户的会话历史，删掉等于丢上下文。删项目后该会话
-     * 仍在左栏可见，只是不再是任何项目的协调者。
+     * 顺序是先移除工作区、再删记录：反过来时中途失败会留下一个谁都不记得的孤儿
+     * 工作区——项目没了，菜单里的删除入口也没了。工作区删除只删注册，目录与全部
+     * 会话日志保留，会话因此落到宿主工作区树的「未分组」下。
+     *
+     * 复用的用户工作区不记在项目记录里，不会被碰到；宿主工作区服务不支持删除时
+     * 如实把原因带回给调用方，项目照删（与「项目仍在、工作区留在宿主里」的旧行为
+     * 一致，用户仍可在官方面板里删掉它）。协调者会话本身也保留：它是用户的会话
+     * 历史，删掉等于丢上下文。
      *
      * @param {string} id - 项目 id
-     * @returns {Promise<object | undefined>} 被删的项目，不存在时 undefined
+     * @returns {Promise<{project: object, workspace: {removed: boolean, reason?: string}} | undefined>} 删除结果，项目不存在时 undefined
      */
     async remove(id) {
+      if (await store.get(id) === undefined) return undefined
+      const workspace = await this.removeWorkspace(id)
       const removed = await store.remove(id)
-      if (removed !== undefined && typeof removed.coordinatorSessionId === 'string') {
+      if (removed === undefined) return undefined
+      if (typeof removed.coordinatorSessionId === 'string') {
         coordinatorIndex.delete(removed.coordinatorSessionId)
       }
-      if (removed !== undefined) {
-        // 目录索引要重建而不是直接删：两个项目可能指向同一目录，删掉其中一个时
-        // 另一个仍占着这个目录，它的卡片还得能归到它名下。
-        const canonical = await canonicalize(removed.directory)
-        canonicalDirectoryIndex.delete(canonical)
-        for (const project of await store.list()) {
-          const other = await canonicalize(project.directory)
-          if (other === canonical && !canonicalDirectoryIndex.has(canonical)) {
-            canonicalDirectoryIndex.set(canonical, project.id)
-          }
+      // 目录索引要重建而不是直接删：两个项目可能指向同一目录，删掉其中一个时
+      // 另一个仍占着这个目录，它的卡片还得能归到它名下。
+      const canonical = await canonicalize(removed.directory)
+      canonicalDirectoryIndex.delete(canonical)
+      for (const project of await store.list()) {
+        const other = await canonicalize(project.directory)
+        if (other === canonical && !canonicalDirectoryIndex.has(canonical)) {
+          canonicalDirectoryIndex.set(canonical, project.id)
         }
       }
-      return removed
+      return { project: removed, workspace }
     },
   }
 }
@@ -679,7 +686,7 @@ async function ensureWorkspace(ctx, directory, canonicalize) {
  * 读项目记录里的工作区 id，只认仍然活着的。
  *
  * 返回的是「项目自己的」工作区，不是当前目录对应的那个：复用的用户工作区不在
- * 记录里，返回 undefined，客户端据此不给「从 dsh 移除工作区」的入口。
+ * 记录里，返回 undefined，删除项目时据此判断要不要动宿主的工作区。
  *
  * @param {object} ctx - Cordis 上下文
  * @param {object} project - 项目记录

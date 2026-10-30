@@ -31,11 +31,10 @@ export const MAX_PROJECT_NAME_LENGTH = 200
 export const PROJECT_REMOTE_METHODS = Object.freeze({
   list: Object.freeze([]),
   create: Object.freeze(['directory', 'name']),
-  unregister: Object.freeze(['id']),
+  deleteProject: Object.freeze(['id']),
   rename: Object.freeze(['id', 'name']),
   replaceCoordinator: Object.freeze(['id']),
   attachCoordinator: Object.freeze(['id']),
-  removeWorkspace: Object.freeze(['id']),
   sessionsByProject: Object.freeze([]),
   resolveProject: Object.freeze(['sessionId']),
   boardCards: Object.freeze(['projectId']),

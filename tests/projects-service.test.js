@@ -440,21 +440,62 @@ test('换新协调者会改绑，旧会话不再指向项目', async () => {
   assert.equal((await service.getByCoordinator(factory.ids[1])).id, project.id)
 })
 
-test('注销项目保留协调者会话', async () => {
+test('删除项目一并移除插件注册的工作区，协调者会话保留', async () => {
   const { home, workspace } = await makeWorkspace()
   const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
   const factory = createSessionFactory()
   const service = makeService({
     store,
-    ctx: createContext(),
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
     createCoordinatorSession: factory,
     sessionExists: async () => true,
   })
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
-  const removed = await service.remove(project.id)
-  assert.equal(removed.coordinatorSessionId, factory.ids[0])
+  assert.equal(registry.list().length, 1)
+  const result = await service.remove(project.id)
+  assert.equal(result.project.coordinatorSessionId, factory.ids[0])
+  assert.deepEqual(result.workspace, { removed: true })
+  assert.equal(registry.list().length, 0)
   assert.deepEqual(await service.list(), [])
+})
+
+test('删除项目不碰复用的用户工作区', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const userWorkspace = {
+    id: 'ws-user',
+    path: await realpath(workspace),
+    title: '我自己的工作区',
+    sessionIds: [],
+    attachSession: async () => {},
+  }
+  const registry = createWorkspaceRegistry({ workspaces: [userWorkspace] })
+  const service = makeService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.remove(project.id)
+  assert.equal(result.workspace.removed, false)
+  assert.match(result.workspace.reason, /没有由插件注册的工作区/)
+  assert.equal(registry.list().length, 1)
+  assert.deepEqual(await service.list(), [])
+})
+
+test('删除不存在的项目返回 undefined', async () => {
+  const { home } = await makeWorkspace()
+  const service = makeService({
+    store: createProjectStore({ home }),
+    ctx: createContext(),
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+  assert.equal(await service.remove('missing'), undefined)
 })
 
 /**

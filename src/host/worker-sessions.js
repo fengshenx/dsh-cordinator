@@ -254,7 +254,7 @@ export function createWorkerSessions({ ctx, logger = () => {} }) {
     },
 
     /**
-     * 销毁一个 worker 会话（归档、注销项目、插件卸载时用）。
+     * 销毁一个 worker 会话（归档、删除项目、插件卸载时用）。
      *
      * @param {string} sessionId - 会话 id
      * @returns {Promise<boolean>} 是否确实销毁了一个在内存里的会话

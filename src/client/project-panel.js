@@ -2,7 +2,7 @@
  * 左栏项目区块。
  *
  * 宿主侧的项目注册表是唯一真源，浏览器侧只做呈现与操作：列项目、加项目、打开
- * 项目的协调者会话、改名、换新协调者、注销项目。
+ * 项目的协调者会话、改名、换新协调者、删除项目。
  *
  * **加项目**：选目录 → 直接建好。宿主在选中的目录里建一个协调者会话并与项目
  * 绑定，项目名默认取目录名（要改随时用行上的「重命名」）。建完就在列表里，不多
@@ -37,6 +37,8 @@ import { productIcon } from './icons.js'
 import {
   collectExcludedSessionIds,
   defaultProjectName,
+  describeDeletionNotice,
+  describeProjectRemoval,
   isArchiveActiveRefusal,
   isProjectOpenable,
   openCoordinatorSession,
@@ -45,7 +47,6 @@ import {
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
 import { createWorkspaceExclusion } from './workspace-exclusion.js'
 import { ConfirmDialog } from './confirm-dialog.js'
-import { describeWorkspaceRemoval } from './project-panel-logic.js'
 
 /**
  * 项目区块。
@@ -72,9 +73,9 @@ export function ProjectPanel(props) {
   const [expandedProjects, setExpandedProjects] = useState(() => new Set())
   /** 整个项目列表是否展开（区块标题可折叠）。 */
   const [listExpanded, setListExpanded] = useState(true)
-  /** 待确认移除工作区的项目；null 表示没有待确认的移除。 */
-  const [pendingRemoval, setPendingRemoval] = useState(null)
-  const [removalError, setRemovalError] = useState('')
+  /** 待确认删除的项目；null 表示没有待确认的删除。 */
+  const [pendingDelete, setPendingDelete] = useState(null)
+  const [deleteError, setDeleteError] = useState('')
   /**
    * 待确认「停止并归档」的会话；null 表示没有。
    *
@@ -300,8 +301,8 @@ export function ProjectPanel(props) {
       setNotice(result.message)
       return
     }
-    // 宿主可能刚注册了工作区：归属要同步回列表，否则「从 dsh 移除工作区」这个
-    // 入口要等页面刷新才出现。
+    // 宿主可能刚注册了工作区：归属要同步回列表，否则删除时不知道它是插件注册
+    // 的，工作区会被漏在宿主里。
     if (result.workspaceId !== project.workspaceId) {
       setProjects((current) => current.map((item) => (
         item.id === project.id ? { ...item, workspaceId: result.workspaceId } : item
@@ -342,49 +343,36 @@ export function ProjectPanel(props) {
     }
   }, [busy, callRemote, refresh])
 
-  const requestRemoveWorkspace = useCallback((project) => {
-    setRemovalError('')
-    setPendingRemoval(project)
+  const requestDelete = useCallback((project) => {
+    setDeleteError('')
+    setPendingDelete(project)
   }, [])
 
-  const cancelRemoveWorkspace = useCallback(() => {
-    setRemovalError('')
-    setPendingRemoval(null)
+  const cancelDelete = useCallback(() => {
+    setDeleteError('')
+    setPendingDelete(null)
   }, [])
 
-  const removeWorkspace = useCallback(async () => {
-    if (busy || pendingRemoval === null) return
-    const project = pendingRemoval
-    setBusy(true)
-    try {
-      const result = await callRemote('removeWorkspace', [project.id])
-      if (result?.removed !== true) {
-        setRemovalError(result?.reason ?? '移除工作区失败。')
-        return
-      }
-      setNotice(`已从 dsh 移除项目「${project.name}」的工作区。协调者会话保留，下次打开项目会重新挂上。`)
-      setPendingRemoval(null)
-      await refresh()
-    } catch (error) {
-      setRemovalError(`移除工作区失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setBusy(false)
-    }
-  }, [busy, callRemote, pendingRemoval, refresh])
-
-  const removeProject = useCallback(async (project) => {
-    if (busy) return
+  const confirmDelete = useCallback(async () => {
+    if (busy || pendingDelete === null) return
+    const project = pendingDelete
     setBusy(true)
     setNotice('')
     try {
-      await callRemote('unregister', [project.id])
+      const result = await callRemote('deleteProject', [project.id])
+      if (result?.removed !== true) {
+        setDeleteError(result?.reason ?? '删除失败。')
+        return
+      }
+      setPendingDelete(null)
+      setNotice(describeDeletionNotice(project, result))
       await refresh()
     } catch (error) {
-      setNotice(`注销项目失败：${error instanceof Error ? error.message : String(error)}`)
+      setDeleteError(`删除失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setBusy(false)
     }
-  }, [busy, callRemote, refresh])
+  }, [busy, callRemote, pendingDelete, refresh])
 
   /**
    * 归档一个会话，并摘掉它留在卡片与派工登记表上的痕迹。
@@ -455,8 +443,7 @@ export function ProjectPanel(props) {
     onOpen: openProject,
     onRename: (project, name) => { void renameProject(project, name) },
     onReplace: (project) => { void replaceCoordinator(project) },
-    onRemove: (project) => { void removeProject(project) },
-    onRequestRemoveWorkspace: requestRemoveWorkspace,
+    onRemove: requestDelete,
     sessionsByProject,
     sessionRows,
     expandedProjects,
@@ -483,16 +470,16 @@ export function ProjectPanel(props) {
   // 弹窗自己 portal 到 body，但必须挂在不会被浮层收起卸载的位置：窄栏下浮层
   // 收起时它的子树整个卸载，放在浮层里会让确认框跟着消失。
   const dialog = createElement(ConfirmDialog, {
-    open: pendingRemoval !== null,
-    title: '从 dsh 移除工作区',
-    description: pendingRemoval === null ? '' : describeWorkspaceRemoval(pendingRemoval),
-    confirmLabel: '移除工作区',
+    open: pendingDelete !== null,
+    title: '删除项目',
+    description: pendingDelete === null ? '' : describeProjectRemoval(pendingDelete),
+    confirmLabel: '删除',
     cancelLabel: '取消',
     danger: true,
     busy,
-    error: removalError,
-    onConfirm: () => { void removeWorkspace() },
-    onCancel: cancelRemoveWorkspace,
+    error: deleteError,
+    onConfirm: () => { void confirmDelete() },
+    onCancel: cancelDelete,
   })
 
   const archiveDialog = createElement(ConfirmDialog, {

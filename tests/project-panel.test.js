@@ -5,7 +5,8 @@ import {
   buildProjectMenuItems,
   collectExcludedSessionIds,
   defaultProjectName,
-  describeWorkspaceRemoval,
+  describeDeletionNotice,
+  describeProjectRemoval,
   isProjectOpenable,
   openCoordinatorSession,
   selectProjectSessionRows,
@@ -173,40 +174,49 @@ test('远程调用抛错时不打开会话并报出原因', async () => {
   assert.deepEqual(opened, [])
 })
 
-test('项目菜单在没有工作区时不给出移除入口', () => {
+test('项目菜单只有一条删除入口，没有工作区也出现', () => {
   const items = buildProjectMenuItems({ id: 'p1' }, menuHandlers())
+  const removals = items.filter((item) => item.danger === true)
+  assert.equal(removals.length, 1)
+  assert.equal(removals[0].id, 'remove')
+  assert.equal(removals[0].label, '删除')
+  assert.equal(removals[0].icon, 'trash-outline')
+  // 移除工作区这个入口已经并进删除，菜单里不再有它
   assert.equal(items.some((item) => item.id === 'remove-workspace'), false)
 })
 
-test('项目菜单在有工作区时给出移除入口', () => {
-  const items = buildProjectMenuItems({ id: 'p1', workspaceId: 'ws-1' }, menuHandlers())
-  const entry = items.find((item) => item.id === 'remove-workspace')
-  assert.ok(entry)
-  assert.equal(entry.icon, 'close-outline')
-})
-
-test('移除工作区与注销项目是两条不同的入口', () => {
-  const items = buildProjectMenuItems({ id: 'p1', workspaceId: 'ws-1' }, menuHandlers())
-  const removeWorkspace = items.find((item) => item.id === 'remove-workspace')
-  const remove = items.find((item) => item.id === 'remove')
-  assert.notEqual(removeWorkspace.icon, remove.icon)
-  assert.equal(remove.danger, true)
-})
-
-test('移除工作区的说明讲清会话会保留', () => {
-  const text = describeWorkspaceRemoval({ name: 'demo' })
+test('有插件工作区时删除说明讲清工作区移除与会话落未分组', () => {
+  const text = describeProjectRemoval({ name: 'demo', workspaceId: 'ws-1' })
   assert.match(text, /demo/)
-  assert.match(text, /会话记录都会保留/)
-  assert.match(text, /协调者会话仍在/)
+  assert.match(text, /从 dsh 工作区列表移除/)
+  assert.match(text, /文件夹与会话记录都会保留/)
+  assert.match(text, /未分组/)
 })
 
-test('菜单里的移除入口只发请求，不直接执行', () => {
+test('没有插件工作区时删除说明不提工作区', () => {
+  const text = describeProjectRemoval({ name: 'demo' })
+  assert.match(text, /删除/)
+  assert.match(text, /文件夹与会话记录都会保留/)
+  assert.doesNotMatch(text, /工作区/)
+})
+
+test('删除成功的提示按工作区结果分三种', () => {
+  assert.match(describeDeletionNotice({ name: 'demo' }, { workspaceRemoved: true }), /未分组/)
+  const failed = describeDeletionNotice({ name: 'demo' }, { workspaceRemoved: false, reason: '宿主不支持删除工作区。' })
+  assert.match(failed, /工作区未移除/)
+  assert.match(failed, /宿主不支持删除工作区/)
+  const quiet = describeDeletionNotice({ name: 'demo' }, { workspaceRemoved: false })
+  assert.doesNotMatch(quiet, /工作区/)
+  assert.match(quiet, /文件夹与会话记录保留/)
+})
+
+test('菜单里的删除入口只发请求，不直接执行', () => {
   const asked = []
-  const items = buildProjectMenuItems({ id: 'p1', workspaceId: 'ws-1' }, {
+  const items = buildProjectMenuItems({ id: 'p1' }, {
     ...menuHandlers(),
-    onRequestRemoveWorkspace: (project) => asked.push(project.id),
+    onRemove: (project) => asked.push(project.id),
   })
-  items.find((item) => item.id === 'remove-workspace').onSelect()
+  items.find((item) => item.id === 'remove').onSelect()
   assert.deepEqual(asked, ['p1'])
 })
 
@@ -222,6 +232,5 @@ function menuHandlers() {
     onRename: noop,
     onReplace: noop,
     onRemove: noop,
-    onRequestRemoveWorkspace: noop,
   }
 }
