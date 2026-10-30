@@ -68,7 +68,17 @@ function createHost({ resumeError } = {}) {
     },
   }
 
+  /** 订阅上来的 `session/event` 监听器 */
+  const sessionEventListeners = []
   const ctx = {
+    on(event, listener) {
+      assert.equal(event, 'session/event')
+      sessionEventListeners.push(listener)
+      return () => {
+        const at = sessionEventListeners.indexOf(listener)
+        if (at >= 0) sessionEventListeners.splice(at, 1)
+      }
+    },
     get(key) {
       if (key === 'agents') return agents
       if (key === 'sessions') return { get: () => undefined }
@@ -78,7 +88,29 @@ function createHost({ resumeError } = {}) {
       return undefined
     },
   }
-  return { ctx, spawned, resumed }
+
+  /**
+   * 让某个 worker 走完一轮：先落 assistant 文本，再落 `turn/end`。
+   *
+   * @param {string} sessionId - 会话 id
+   * @param {{ text?: string, reason?: object }} [options] - 轮次内容
+   * @returns {Promise<unknown>} 结算结果（是否确实结算了一条在飞记录）
+   */
+  async function finishTurn(sessionId, { text = '产物在此', reason = { kind: 'completed' } } = {}) {
+    const settle = sessionEventListeners
+      .map((listener) => listener({ id: sessionId }, {
+        type: 'assistant/message',
+        data: { message: { content: [{ type: 'text', text }] } },
+      }))
+      .filter((item) => item !== undefined)
+    await Promise.all(settle)
+    const settled = sessionEventListeners
+      .map((listener) => listener({ id: sessionId }, { type: 'turn/end', data: { reason } }))
+      .filter((item) => item !== undefined)
+    return (await Promise.all(settled))[0]
+  }
+
+  return { ctx, spawned, resumed, finishTurn }
 }
 
 /** 协调者索引假件：续聊用例都在协调者会话里跑，默认放行。 */
@@ -146,6 +178,7 @@ test('派工同时登记进 worker 登记表', async () => {
 test('缺会话持久化后端时拒绝派工', async () => {
   const host = createHost()
   const ctx = {
+    on: () => () => {},
     get: (key) => (key === 'sessionPersistence'
       ? undefined
       : key === 'sessionQuery'
@@ -177,6 +210,7 @@ test('缺会话持久化后端时拒绝派工', async () => {
 test('缺会话查询后端时拒绝派工', async () => {
   const host = createHost()
   const ctx = {
+    on: () => () => {},
     get: (key) => (key === 'sessionQuery'
       ? undefined
       : key === 'sessionPersistence'
@@ -296,6 +330,9 @@ test('冷恢复失败时不登记在飞记录，也不投递回报', async () =>
     signal: new AbortController().signal,
   })
   const restarted = fixture.makeDispatcher()
+  // 真实进程里重启后只剩这一个派工器；夹具里两个都还订阅着，先卸掉旧的——
+  // 否则下面那个 `turn/end` 会被上一轮派工的记录结算掉，测的就不是重启后了。
+  fixture.dispatcher.dispose()
 
   await assert.rejects(
     () => restarted.message({
@@ -307,8 +344,8 @@ test('冷恢复失败时不登记在飞记录，也不投递回报', async () =>
     /NOT_RESUMABLE/,
   )
 
-  // 投递没成功，这一轮不存在：worker 即便事后上报也不该结算出通知。
-  assert.equal(await restarted.reportDone({ sessionId: record.childId, summary: 'x' }), false)
+  // 投递没成功，这一轮不存在：worker 那时结束的轮次也不该结算出通知。
+  assert.equal(await fixture.finishTurn(record.childId, { text: 'x' }), false)
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(fixture.delivered.length, 0)
   assert.equal((await fixture.store.listPending()).length, 0)

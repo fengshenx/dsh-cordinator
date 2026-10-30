@@ -42,6 +42,8 @@ function createFixture() {
   const titles = new Map()
   /** 父会话 agent（测试用 `agents.set` 挂进来） */
   const parents = new Map()
+  /** 订阅上来的 `session/event` 监听器 */
+  const sessionEventListeners = []
   let sequence = 0
 
   /**
@@ -102,6 +104,20 @@ function createFixture() {
   }
 
   const ctx = {
+    /**
+     * 订阅会话事件的假身：派工器靠它结算 worker 的轮次。
+     * @param {string} event - 事件名
+     * @param {(session: object, payload: object) => unknown} listener - 监听器
+     * @returns {() => void} 解除订阅
+     */
+    on(event, listener) {
+      assert.equal(event, 'session/event')
+      sessionEventListeners.push(listener)
+      return () => {
+        const at = sessionEventListeners.indexOf(listener)
+        if (at >= 0) sessionEventListeners.splice(at, 1)
+      }
+    },
     get(key) {
       if (key === 'agents') return agents
       if (key === 'sessions') return { get: (id) => sessions.get(id) }
@@ -117,7 +133,50 @@ function createFixture() {
       return undefined
     },
   }
-  return { ctx, agents, spawned, resumed, delivered, sessions, titles, workers: createMemoryRegistry() }
+  return {
+    ctx,
+    agents,
+    spawned,
+    resumed,
+    delivered,
+    sessions,
+    titles,
+    workers: createMemoryRegistry(),
+
+    /**
+     * 模拟宿主 append 一条会话事件。
+     *
+     * 返回监听器的结算结果（非结算事件返回 undefined）——宿主的 `session/event` 是
+     * fire-and-forget，同步返回，所以结算是否完成要靠监听器自己的 promise。
+     *
+     * @param {string} sessionId - 会话 id
+     * @param {object} event - 会话事件
+     * @returns {Promise<unknown> | undefined} 结算结果
+     */
+    emitSessionEvent(sessionId, event) {
+      const pending = sessionEventListeners
+        .map((listener) => listener({ id: sessionId }, event))
+        .filter((item) => item !== undefined)
+      return pending.length === 0 ? undefined : Promise.all(pending).then((list) => list[0])
+    },
+
+    /**
+     * 让某个 worker 走完一轮：先落这一轮的 assistant 文本，再落 `turn/end`。
+     *
+     * @param {string} sessionId - 会话 id
+     * @param {{ text?: string, reason?: object, withMessage?: boolean }} [options] - 轮次内容
+     * @returns {Promise<unknown>} 结算结果（是否确实结算了一条在飞记录）
+     */
+    async finishTurn(sessionId, { text = '产物在此', reason = { kind: 'completed' }, withMessage = true } = {}) {
+      if (withMessage) {
+        await this.emitSessionEvent(sessionId, {
+          type: 'assistant/message',
+          data: { message: { content: [{ type: 'text', text }] } },
+        })
+      }
+      return await this.emitSessionEvent(sessionId, { type: 'turn/end', data: { reason } })
+    },
+  }
 }
 
 /**
@@ -186,7 +245,7 @@ function createParent(id, delivered, status = 'idle') {
 }
 
 /**
- * 让最近派出的 worker 报完工（等价于 worker 调 `worker_done`）。
+ * 让最近派出的 worker 走完一轮（宿主落 `assistant/message` 与 `turn/end`）。
  *
  * @param {object} dispatcher - 派工器
  * @param {object} fixture - 夹具
@@ -195,7 +254,10 @@ function createParent(id, delivered, status = 'idle') {
  */
 function finishWorker(dispatcher, fixture, { summary = '产物在此', outcome = 'completed' } = {}) {
   const target = fixture.spawned.at(-1)
-  return dispatcher.reportDone({ sessionId: target.sessionId, summary, outcome })
+  return fixture.finishTurn(target.sessionId, {
+    text: summary,
+    reason: outcome === 'completed' ? { kind: 'completed' } : { kind: 'error', error: { message: summary } },
+  })
 }
 
 test('通知正文包含任务标签、状态与产物摘要', () => {
@@ -238,6 +300,137 @@ test('worker 报失败时通知判失败并写明原因', async () => {
   const text = fixture.delivered[0].content[0].text
   assert.match(text, /状态：failed/)
   assert.match(text, /max-tokens/)
+})
+
+test('worker 一轮说完话就自动回报，不需要它调任何工具', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store: createNotificationStore({ home }), workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+  const childId = fixture.spawned.at(-1).sessionId
+  // 宿主在收尾时自己落这两条事件：worker 全程没调过任何「报告完成」的工具。
+  await fixture.finishTurn(childId, { text: '改完了 auth.js' })
+  await waitFor(() => fixture.delivered.length === 1)
+
+  assert.equal(dispatcher.inflightCount(), 0)
+  assert.match(fixture.delivered[0].content[0].text, /改完了 auth\.js/)
+  assert.match(fixture.delivered[0].content[0].text, /状态：completed/)
+})
+
+test('人直接跟 worker 聊的轮次不打扰协调者', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store: createNotificationStore({ home }), workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+  const childId = fixture.spawned.at(-1).sessionId
+  await fixture.finishTurn(childId, { text: '这一轮做完了' })
+  await waitFor(() => fixture.delivered.length === 1)
+
+  // 人在这个 worker 会话里自己又问了一句：不经过派工器，没有在飞记录。
+  const settled = await fixture.finishTurn(childId, { text: '顺手问一句' })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.equal(settled, false)
+  assert.equal(fixture.delivered.length, 1)
+})
+
+test('一轮里有多个 step 时，摘要取最后一条 assistant 文本', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store: createNotificationStore({ home }), workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+  const childId = fixture.spawned.at(-1).sessionId
+  // 一个 turn 里有多个 step，前面几步往往只有「我先看一下」这类过程叙述。
+  await fixture.emitSessionEvent(childId, {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: '先看一下现有实现' }] } },
+  })
+  await fixture.emitSessionEvent(childId, {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: '改完了 auth.js，362 例全绿' }] } },
+  })
+  await fixture.emitSessionEvent(childId, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+  await waitFor(() => fixture.delivered.length === 1)
+
+  const text = fixture.delivered[0].content[0].text
+  assert.match(text, /改完了 auth\.js/)
+  assert.doesNotMatch(text, /先看一下现有实现/)
+})
+
+test('这一轮只调了工具没说话，摘要如实说没产出文本', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store: createNotificationStore({ home }), workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+  await fixture.finishTurn(fixture.spawned.at(-1).sessionId, { withMessage: false })
+  await waitFor(() => fixture.delivered.length === 1)
+
+  assert.match(fixture.delivered[0].content[0].text, /（worker 未产出文本）/)
+})
+
+test('被取消、被阻断、撞 token 上限的轮次都判失败并写明原因', async () => {
+  const cases = [
+    // `aborted.reason` 在 rc.2 是对象（`{ kind: 'user' | 'parent' | 'hook' | … }`），
+    // 不是字符串——夹具按宿主真实形状造，渲染成 `[object Object]` 才能暴露出来。
+    { reason: { kind: 'aborted', reason: { kind: 'user' } }, pattern: /被取消：user/ },
+    { reason: { kind: 'blocked' }, pattern: /被阻断/ },
+    { reason: { kind: 'max-tokens' }, pattern: /token 上限/ },
+    { reason: { kind: 'error', error: { message: '模型不可用' } }, pattern: /失败：模型不可用/ },
+  ]
+  for (const { reason, pattern } of cases) {
+    const fixture = createFixture()
+    const home = await makeTempDir('dsh-coordinator-dispatch-')
+    const dispatcher = makeDispatcher({ ctx: fixture.ctx, store: createNotificationStore({ home }), workers: fixture.workers })
+    const parent = createParent('parent-1', fixture.delivered)
+    fixture.agents.set('parent-1', parent)
+
+    await dispatcher.dispatch({
+      parent,
+      initialMessage: '做一件事',
+      name: '实现派工',
+      signal: new AbortController().signal,
+    })
+    // 失败的轮次里 assistant 文本往往只写到一半，摘要必须用终态原因而不是它。
+    await fixture.finishTurn(fixture.spawned.at(-1).sessionId, { text: '写到一半', reason })
+    await waitFor(() => fixture.delivered.length === 1)
+
+    const text = fixture.delivered[0].content[0].text
+    assert.match(text, /状态：failed/, `${JSON.stringify(reason)}`)
+    assert.match(text, pattern)
+    assert.doesNotMatch(text, /写到一半/, `${JSON.stringify(reason)} 不该拿半截产物当摘要`)
+  }
 })
 
 test('漏传 coordinatorIndex 时装配直接报错，不静默跳过派工校验', () => {
@@ -429,7 +622,7 @@ test('改造前落盘的旧通知补投不会失败', async () => {
   }
 })
 
-test('插件卸载后不再起定时器', async () => {
+test('插件卸载后不再观察会话，也不再起定时器', async () => {
   const fixture = createFixture()
   const home = await makeTempDir('dsh-coordinator-dispatch-')
   const store = createNotificationStore({ home })
@@ -447,9 +640,10 @@ test('插件卸载后不再起定时器', async () => {
     })
     await finishWorker(dispatcher, fixture)
     await new Promise((resolve) => setTimeout(resolve, 1200))
-    // 卸载后不再投递，也不该有轮询把它送出去
+    // 卸载时订阅已解除：worker 结束轮次也不会被结算，既不投递也不入队，
+    // 更不该有轮询把它送出去。
     assert.equal(fixture.delivered.length, 0)
-    assert.equal((await store.listPending()).length, 1)
+    assert.equal((await store.listPending()).length, 0)
   } finally {
     dispatcher.dispose()
   }
@@ -709,6 +903,7 @@ test('未启用 agents 服务时派工明确报错', async () => {
     // 续聊后端都在，只缺建会话的 agents 服务：报错要指向真正的缺口。
     const dispatcher = makeDispatcher({
       ctx: {
+        on: () => () => {},
         get: (key) => (key === 'sessionPersistence'
           ? { append() {} }
           : key === 'sessionQuery'
@@ -863,7 +1058,7 @@ test('投递途中 worker 报完工，不误报发不出去', async () => {
   // 真实环境里随时可能发生。
   const entry = fixture.spawned.find((item) => item.sessionId === record.childId)
   entry.onFollowup = () => {
-    void dispatcher.reportDone({ sessionId: record.childId, summary: '上一轮做完了' })
+    void fixture.finishTurn(record.childId, { text: '上一轮做完了' })
   }
 
   const outcome = await dispatcher.message({
@@ -1207,7 +1402,87 @@ test('一轮只结算一次回报，重复上报不重复唤醒', async () => {
   assert.equal(record.childId, fixture.spawned[0].sessionId)
 })
 
-test('通知落盘失败时保留在飞记录，worker 再报一次能重试', async () => {
+test('投递写盘失败不会重结算，也不会把新一轮产物标成这一轮', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const real = createNotificationStore({ home })
+  let failures = 1
+  const store = {
+    ...real,
+    markDelivered: async (id) => {
+      if (failures > 0) {
+        failures -= 1
+        throw new Error('EIO: i/o error, write')
+      }
+      return real.markDelivered(id)
+    },
+  }
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store, workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+  // 通知已经投出，但「已投递」标记写盘失败：落盘即结算成功，不能再结算一遍。
+  assert.equal(await finishWorker(dispatcher, fixture, { summary: '第一轮产物' }), true)
+  assert.equal(fixture.delivered.length, 1)
+  assert.equal(dispatcher.inflightCount(), 0)
+
+  // worker 随后又跑了一轮（这一轮没有派工）：不产生第二条通知。
+  await finishWorker(dispatcher, fixture, { summary: '新一轮产物' })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+
+  assert.equal(fixture.delivered.length, 1)
+  assert.match(fixture.delivered[0].content[0].text, /第一轮产物/)
+  assert.doesNotMatch(fixture.delivered[0].content[0].text, /新一轮产物/)
+  // 队列里的那一条等空闲检测或补投通道处理，不重复入队。
+  const pending = await real.listPending()
+  assert.equal(pending.length, 1)
+  assert.match(pending[0].text, /第一轮产物/)
+})
+
+test('非派工的轮次不攒 assistant 文本，不会把人的话当成 worker 产物', async () => {
+  const fixture = createFixture()
+  const home = await makeTempDir('dsh-coordinator-dispatch-')
+  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store: createNotificationStore({ home }), workers: fixture.workers })
+  const parent = createParent('parent-1', fixture.delivered)
+  fixture.agents.set('parent-1', parent)
+
+  const record = await dispatcher.dispatch({
+    parent,
+    initialMessage: '做一件事',
+    name: '实现派工',
+    signal: new AbortController().signal,
+  })
+  await finishWorker(dispatcher, fixture, { summary: '第一轮做完了' })
+  await waitFor(() => fixture.delivered.length === 1)
+
+  // 人下钻到 worker 会话自己聊：这一轮还在跑，assistant 文本已落、turn/end 未到。
+  await fixture.emitSessionEvent(record.childId, {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: '人自己聊出来的东西' }] } },
+  })
+  // 协调者此时给它投了下一轮，登记在飞记录。
+  await dispatcher.message({
+    parent,
+    sessionId: record.childId,
+    message: '接着做',
+    signal: new AbortController().signal,
+  })
+  // 人的这一轮结束：它不是派工轮，这一轮没有派工产物，摘要不能拿人那句话。
+  assert.equal(await fixture.finishTurn(record.childId, { withMessage: false }), true)
+  await waitFor(() => fixture.delivered.length === 2)
+
+  const text = fixture.delivered[1].content[0].text
+  assert.match(text, /（worker 未产出文本）/)
+  assert.doesNotMatch(text, /人自己聊出来的东西/)
+})
+
+test('通知落盘失败时保留在飞记录，重试送出的仍是这一轮的产物', async () => {
   const fixture = createFixture()
   const home = await makeTempDir('dsh-coordinator-dispatch-')
   const real = createNotificationStore({ home })
@@ -1222,7 +1497,13 @@ test('通知落盘失败时保留在飞记录，worker 再报一次能重试', a
       return real.enqueue(notification)
     },
   }
-  const dispatcher = makeDispatcher({ ctx: fixture.ctx, store, workers: fixture.workers })
+  const logs = []
+  const dispatcher = makeDispatcher({
+    ctx: fixture.ctx,
+    store,
+    workers: fixture.workers,
+    logger: (line) => logs.push(line),
+  })
   const parent = createParent('parent-1', fixture.delivered)
   fixture.agents.set('parent-1', parent)
 
@@ -1233,13 +1514,18 @@ test('通知落盘失败时保留在飞记录，worker 再报一次能重试', a
     signal: new AbortController().signal,
   })
 
-  // 落盘失败要抛出去（fail loud），而且不能把在飞记录删掉——删了这条回报就没了，
-  // 协调者还在等它。
-  await assert.rejects(() => finishWorker(dispatcher, fixture), /DISK_FULL/)
+  // 落盘失败要留痕，而且不能把在飞记录删掉——删了这条回报就没了，协调者还在等它。
+  assert.equal(await finishWorker(dispatcher, fixture, { summary: '第一轮产物' }), false)
   assert.equal(dispatcher.inflightCount(), 1)
+  assert.ok(logs.some((line) => /DISK_FULL/.test(line)), `期望日志留痕，实际：${logs.join(' / ')}`)
 
-  assert.equal(await finishWorker(dispatcher, fixture), true)
+  // 这个 worker 下一次轮次结束时再结算。第二轮文本刻意不同：重试必须送出第一轮
+  // 冻结下来的摘要，而不是被下一轮覆盖后的内容。
+  assert.equal(await finishWorker(dispatcher, fixture, { summary: '第二轮产物' }), true)
   assert.equal(dispatcher.inflightCount(), 0)
   await waitFor(() => fixture.delivered.length === 1)
-  assert.match(fixture.delivered[0].content[0].text, /产物在此/)
+  const text = fixture.delivered[0].content[0].text
+  assert.match(text, /第一轮产物/)
+  assert.doesNotMatch(text, /第二轮产物/)
+  assert.equal((await store.listPending()).length, 0)
 })

@@ -3,7 +3,6 @@ import { test } from 'node:test'
 import {
   COORDINATOR_ONLY_TOOLS,
   COORDINATOR_UNUSABLE_TOOLS,
-  WORKER_ONLY_TOOLS,
   applyToolGate,
   deniedToolsFor,
 } from '../src/host/tools/gate.js'
@@ -22,7 +21,7 @@ import {
  */
 function makeAgent(id, registered = [
   'list_agents', 'send_message', 'interrupt_agent', 'read', 'write',
-  'worker_done', 'spawn_worker', 'message_worker', 'list_cards',
+  'spawn_worker', 'message_worker', 'list_cards',
 ]) {
   const restrictions = []
   const names = new Set(registered)
@@ -53,29 +52,27 @@ test('协调者拿不到收作业的工具，也拿不到对 worker 无效的三
     isCoordinatorSession: (id) => id === 'coordinator-1',
     isWorkerSession: () => false,
   })
-  // worker_done 报的是「本次派工的回报」，协调者调它只会指向不存在的在飞记录；
-  // 另三件宿主 subagent 工具对根会话 worker 全部无效，其中一个还返回假成功回执，
+  // 三件宿主 subagent 工具对根会话 worker 全部无效，其中一个还返回假成功回执，
   // 从工具面直接摘掉比只在文档里叮嘱可靠。
-  assert.deepEqual(denied, [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS])
+  assert.deepEqual(denied, [...COORDINATOR_UNUSABLE_TOOLS])
 })
 
-test('worker 看不到派工与全库查询，但能交作业', () => {
+test('worker 看不到派工与全库查询', () => {
   const denied = deniedToolsFor({
     agent: makeAgent('worker-1'),
     isCoordinatorSession: () => false,
     isWorkerSession: (id) => id === 'worker-1',
   })
   assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS])
-  assert.equal(denied.includes('worker_done'), false)
 })
 
-test('普通会话禁掉派工与交作业', () => {
+test('普通会话禁掉派工与全库查询', () => {
   const denied = deniedToolsFor({
     agent: makeAgent('plain-1'),
     isCoordinatorSession: () => false,
     isWorkerSession: () => false,
   })
-  assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS, ...WORKER_ONLY_TOOLS])
+  assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS])
 })
 
 test('缺 worker 判定时按普通会话处理，不误判成 worker', () => {
@@ -83,7 +80,7 @@ test('缺 worker 判定时按普通会话处理，不误判成 worker', () => {
     agent: makeAgent('whatever'),
     isCoordinatorSession: () => false,
   })
-  assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS, ...WORKER_ONLY_TOOLS])
+  assert.deepEqual(denied, [...COORDINATOR_ONLY_TOOLS])
 })
 
 test('applyToolGate 只对受限角色调 restrict，并在作用域上留下限制', () => {
@@ -93,7 +90,7 @@ test('applyToolGate 只对受限角色调 restrict，并在作用域上留下限
     isCoordinatorSession: (id) => id === 'c',
     isWorkerSession: () => false,
   })
-  assert.deepEqual(coordinator.restrictions, [{ deny: [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS] }])
+  assert.deepEqual(coordinator.restrictions, [{ deny: [...COORDINATOR_UNUSABLE_TOOLS] }])
 
   const worker = makeAgent('w')
   const workerDenied = applyToolGate({
@@ -117,8 +114,8 @@ test('三件宿主工具改由 preset 子树注册时仍然被 deny', () => {
     isWorkerSession: () => false,
   })
 
-  assert.deepEqual(denied, [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS])
-  assert.deepEqual(coordinator.restrictions, [{ deny: [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS] }])
+  assert.deepEqual(denied, [...COORDINATOR_UNUSABLE_TOOLS])
+  assert.deepEqual(coordinator.restrictions, [{ deny: [...COORDINATOR_UNUSABLE_TOOLS] }])
 })
 
 test('restrict 抛的不是「未知工具名」时照常抛出，不吞装配错误', () => {
@@ -139,14 +136,14 @@ test('restrict 抛的不是「未知工具名」时照常抛出，不吞装配�
 
 test('宿主没装 subagent 控制工具时跳过那三件，不拿未注册的工具名去 restrict', () => {
   // `restrict()` 对没注册过的全局工具名直接报错，而这三件来自可被禁用的宿主组合。
-  const coordinator = makeAgent('c', ['read', 'write', 'worker_done', 'spawn_worker', 'message_worker', 'list_cards'])
+  const coordinator = makeAgent('c', ['read', 'write', 'spawn_worker', 'message_worker', 'list_cards'])
   const denied = applyToolGate({
     agent: coordinator,
     isCoordinatorSession: (id) => id === 'c',
     isWorkerSession: () => false,
   })
-  assert.deepEqual(denied, [...WORKER_ONLY_TOOLS])
-  assert.deepEqual(coordinator.restrictions, [{ deny: [...WORKER_ONLY_TOOLS] }])
+  assert.deepEqual(denied, [])
+  assert.deepEqual(coordinator.restrictions, [])
 })
 
 test('只依赖 engines 下限的 tools 方法面', () => {
@@ -161,12 +158,7 @@ test('只依赖 engines 下限的 tools 方法面', () => {
   }))
 })
 
-test('三组名单两两不重叠，改名时不会悄悄互相覆盖', () => {
-  const groups = [COORDINATOR_ONLY_TOOLS, WORKER_ONLY_TOOLS, COORDINATOR_UNUSABLE_TOOLS]
-  for (let index = 0; index < groups.length; index += 1) {
-    for (let other = index + 1; other < groups.length; other += 1) {
-      const overlap = groups[index].filter((name) => groups[other].includes(name))
-      assert.deepEqual(overlap, [])
-    }
-  }
+test('两组名单不重叠，改名时不会悄悄互相覆盖', () => {
+  const overlap = COORDINATOR_ONLY_TOOLS.filter((name) => COORDINATOR_UNUSABLE_TOOLS.includes(name))
+  assert.deepEqual(overlap, [])
 })
