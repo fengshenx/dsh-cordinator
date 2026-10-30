@@ -255,9 +255,9 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 28. Typert 远程方法的名字要避开官方命名空间服务的保留字
 
-**dsh 实测**：客户端挂载贡献时，官方命名空间服务逐个检查方法名（`packages/api/gateway/src/client/index.ts` 的 `RemoteNamespaceService.assertMethodAvailable`）：撞上命名空间服务自身的字段（`ctx`、`name`、`methods`、`namespace` 等）或 Cordis 服务原型的成员即拒收整个命名空间，报 `client api: method "projects/remove" conflicts with its namespace service`。`remove` 正是 Cordis 服务原型上的成员。
+**dsh 实测**：客户端挂载贡献时，官方命名空间服务逐个检查方法名（`packages/api/gateway/src/client/index.ts` 的 `RemoteNamespaceService.assertMethodAvailable`）：撞上命名空间服务自身的字段（`ctx`、`name`、`methods`、`namespace` 等）、它原型上的成员（`:707` 的 `remove(kind, method, token)`），或 Cordis 服务原型的成员，即拒收整个命名空间，报 `client api: method "projects/remove" conflicts with its namespace service`。`remove` 命中的是 `RemoteNamespaceService.prototype.remove`——**不是** Cordis 服务原型的成员（`'remove' in Service.prototype` 在 vendor/cordis 上实测为 false），照后者判断会得出「没撞名」的错误结论。
 
-**影响**：第三方远程方法要挑业务前缀足够远的名字（本仓把 `remove` 改成 `unregister`），否则整个命名空间挂不上，表现为界面上一片「通道未就绪」而不是某个方法缺失。
+**影响**：第三方远程方法要挑业务前缀足够远的名字（本仓叫 `deleteProject`），否则整个命名空间挂不上，表现为界面上一片「通道未就绪」而不是某个方法缺失。
 
 ### 29. 官方只有工作区树，没有项目树；「按项目排除会话」也没有扩展点
 
@@ -391,7 +391,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
 | 项目树（client 侧） | 通过 | 点行首槽位展开，列出该项目目录下的会话（协调者不在其中，会话行为纯文字行、无左右图标）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
 | 点项目打开协调者会话 | 通过 | 点项目行 → 先由宿主把协调者会话挂到项目目录的工作区，再打开会话；协调者会话注册并激活了第三方会话视图目标，官方外壳因此切到 active 形态（见第 34 条），浏览器实测主区域 `data-phase` 由 `hero` 变 `active`、页面无「Into the Unknown」、转录零节点、输入框几何与官方 active 布局一致 |
-| 项目删除（连同工作区） | 通过 | 项目菜单只有一条「删除」，先弹二次确认：项目记录删掉，插件注册的工作区随 `workspaceRegistry.delete` 一并移除（只删注册，会话与目录全保留，会话落到工作区树的「未分组」下）；复用的用户工作区不碰（见第 33 条） |
+| 项目删除（连同工作区） | 通过（接口层已验、GUI 未取证） | 项目菜单只有一条「删除」，先弹二次确认：项目记录删掉，插件注册的工作区随 `workspaceRegistry.delete` 一并移除（只删注册，会话与目录全保留，会话落到工作区树的「未分组」下）；复用的用户工作区不碰（见第 33 条）。隔离 `DSH_HOME` 的 web 实例上按接口层实测过删带工作区与不带工作区两种项目（`workspace.json` / `projects.json` 终态对得上）；菜单三项的渲染、两支弹窗文案与提示条样式仍待一次绑定工作区的浏览器会话 |
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
 | 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
 | 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |

@@ -481,10 +481,84 @@ test('删除项目不碰复用的用户工作区', async () => {
 
   const project = await service.create({ directory: workspace, name: 'alpha' })
   const result = await service.remove(project.id)
-  assert.equal(result.workspace.removed, false)
-  assert.match(result.workspace.reason, /没有由插件注册的工作区/)
+  // 复用的用户工作区不在项目记录里，删除时没有东西可摘：是 skipped，不是失败。
+  assert.deepEqual(result.workspace, { removed: false, skipped: true })
   assert.equal(registry.list().length, 1)
   assert.deepEqual(await service.list(), [])
+})
+
+test('宿主没有工作区服务时删项目：工作区跳过，不当成失败', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = makeService({
+    store,
+    ctx: createContext(),
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.remove(project.id)
+  assert.deepEqual(result.workspace, { removed: false, skipped: true })
+  assert.deepEqual(await service.list(), [])
+})
+
+test('记录里的工作区已不在宿主里：跳过并清掉悬空归属', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const service = makeService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? createWorkspaceRegistry() : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  await store.update(project.id, { workspaceId: 'ws-gone' })
+  assert.deepEqual(await service.removeWorkspace(project.id), { removed: false, skipped: true })
+  // 悬空归属顺手清掉，不再挡住下次注册。
+  assert.equal((await service.get(project.id)).workspaceId, undefined)
+})
+
+test('宿主工作区服务不支持删除：项目照删，原因带回', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  delete registry.delete
+  const service = makeService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  const result = await service.remove(project.id)
+  assert.equal(result.workspace.removed, false)
+  assert.notEqual(result.workspace.skipped, true)
+  assert.match(result.workspace.reason, /不支持删除/)
+  // 工作区留在宿主里，用户仍可在官方面板手动删。
+  assert.equal(registry.list().length, 1)
+  assert.deepEqual(await service.list(), [])
+})
+
+test('工作区在检查之后被别的调用摘掉：跳过而不是失败', async () => {
+  const { home, workspace } = await makeWorkspace()
+  const store = createProjectStore({ home })
+  const registry = createWorkspaceRegistry()
+  // 并发删同一个项目时，list 里还在、delete 时已经被另一个调用摘掉——rc.2 的
+  // `delete` 对未知 id 返回 false。
+  registry.delete = async () => false
+  const service = makeService({
+    store,
+    ctx: { get: (key) => (key === 'workspaceRegistry' ? registry : undefined) },
+    createCoordinatorSession: createSessionFactory(),
+    sessionExists: async () => true,
+  })
+
+  const project = await service.create({ directory: workspace, name: 'alpha' })
+  assert.deepEqual(await service.removeWorkspace(project.id), { removed: false, skipped: true })
+  assert.equal((await service.get(project.id)).workspaceId, undefined)
 })
 
 test('删除不存在的项目返回 undefined', async () => {
@@ -790,10 +864,8 @@ test('从宿主移除项目工作区会清掉记录', async () => {
   assert.equal(removed.removed, true)
   assert.equal(registry.list().length, 0)
   assert.equal((await service.get(project.id)).workspaceId, undefined)
-  // 再移除一次：工作区已经不在了，如实说明而不是报错。
-  const again = await service.removeWorkspace(project.id)
-  assert.equal(again.removed, false)
-  assert.match(again.reason, /没有由插件注册的工作区/)
+  // 再移除一次：已经摘过了，没有东西可摘是 skipped，不是失败。
+  assert.deepEqual(await service.removeWorkspace(project.id), { removed: false, skipped: true })
 })
 
 test('建项目不发起任何模型调用', async () => {

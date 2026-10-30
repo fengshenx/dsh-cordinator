@@ -35,6 +35,7 @@ import { createPortal } from 'react-dom'
 import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import {
+  classifyDeletionResult,
   collectExcludedSessionIds,
   defaultProjectName,
   describeDeletionNotice,
@@ -365,12 +366,18 @@ export function ProjectPanel(props) {
     setNotice('')
     try {
       const result = await callRemote('deleteProject', [project.id])
-      if (result?.removed !== true) {
+      const outcome = classifyDeletionResult(result)
+      if (outcome === 'failed') {
         setDeleteError(result?.reason ?? '删除失败。')
+        await refresh()
         return
       }
       setPendingDelete(null)
-      setNotice(describeDeletionNotice(project, result))
+      // 项目已经不在了（别人先删了、或重复确认）：目标已达成，按幂等成功收尾，
+      // 不再念叨工作区的事。
+      setNotice(outcome === 'alreadyGone'
+        ? `已删除项目「${project.name}」。`
+        : describeDeletionNotice(project, result))
       await refresh()
     } catch (error) {
       setDeleteError(`删除失败：${error instanceof Error ? error.message : String(error)}`)

@@ -211,11 +211,16 @@ export function describeProjectRemoval(project) {
 /**
  * 删除成功后的提示。
  *
- * 工作区没被移除（宿主服务不支持删除）时必须报出来：项目记录已经没了，用户
- * 再也看不到这个工作区属于谁，只能去官方面板手动删。
+ * 三支按工作区结果分：真移除了、真摘失败（`reason`）、没有工作区可摘。第三支
+ * 覆盖宿主没有工作区服务、项目没有插件注册的工作区、工作区已不在宿主里三种
+ * （宿主都报 `skipped`），不能并进失败支——那会把正常删除说成「工作区未移除」，
+ * 与确认弹窗「只删项目、不提工作区」自相矛盾。
+ *
+ * 摘失败必须报出来：项目记录已经没了，用户再也看不到这个工作区属于谁，只能去
+ * 官方面板手动删。
  *
  * @param {object} project - 被删的项目
- * @param {{workspaceRemoved?: boolean, reason?: string}} result - 宿主返回的删除结果
+ * @param {{workspaceRemoved?: boolean, skipped?: boolean, reason?: string}} result - 宿主返回的删除结果
  * @returns {string} 提示文字
  */
 export function describeDeletionNotice(project, result) {
@@ -226,4 +231,20 @@ export function describeDeletionNotice(project, result) {
     return `已删除项目「${project.name}」。工作区未移除：${result.reason}`
   }
   return `已删除项目「${project.name}」。文件夹与会话记录保留。`
+}
+
+/**
+ * 判定删除请求该怎么收尾。
+ *
+ * 删除是幂等的：项目已经不在了（`notFound`）说明目标已经达成，不能报成失败——
+ * 否则弹窗卡在「删除失败：项目不存在。」里出不来，行也不消失，用户只能取消再
+ * 手动刷新。
+ *
+ * @param {{removed?: boolean, notFound?: boolean, reason?: string}} result - 宿主返回的删除结果
+ * @returns {'removed' | 'alreadyGone' | 'failed'} 收尾方式
+ */
+export function classifyDeletionResult(result) {
+  if (result?.removed === true) return 'removed'
+  if (result?.notFound === true) return 'alreadyGone'
+  return 'failed'
 }

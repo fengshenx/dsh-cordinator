@@ -468,37 +468,43 @@ export function createProjectService({
     },
 
     /**
-     * 从宿主里移除项目的工作区。
+     * 移除项目在宿主里注册的工作区。
      *
-     * 插件注册的工作区在官方左栏里是隐藏的，用户在官方界面里没法直接删它——
-     * 这里给出项目侧的入口。宿主的 `delete` 只删注册，目录与全部会话日志都留着
-     * （`packages/workspace/workspace/src/index.ts:302-312`），协调者会话仍然在，
-     * 只是不再归属工作区；下次打开项目会重新注册并挂上。
+     * 它是 `remove()` 的内部步骤：插件注册的工作区在官方左栏里是隐藏的，用户在
+     * 官方界面里没法直接删它，删项目时要顺手摘掉。宿主的 `delete` 只删注册，目录
+     * 与全部会话日志都留着（`packages/workspace/workspace/src/index.ts:302-312`），
+     * 协调者会话仍然在，只是不再归属工作区。
+     *
+     * 「没有东西可摘」与「摘失败」必须分开：宿主没有工作区服务、记录里没有归属
+     * （复用的用户工作区）、归属指向的工作区已不在宿主里，这三种都是 `skipped`，
+     * 不是故障——调用方不该把它们报成「工作区未移除」。
      *
      * @param {string} id - 项目 id
-     * @returns {Promise<{removed: boolean, reason?: string}>} 移除结果
+     * @returns {Promise<{removed: boolean, skipped?: boolean, reason?: string}>} 移除结果；`skipped` 表示没有需要移除的工作区，`reason` 只出现在真失败上
      */
     async removeWorkspace(id) {
       const project = await store.get(id)
       if (project === undefined) throw new Error('项目不存在')
       const registry = ctx.get('workspaceRegistry')
       if (registry === undefined || typeof registry.list !== 'function') {
-        return { removed: false, reason: '当前宿主没有工作区服务。' }
+        return { removed: false, skipped: true }
       }
       const workspaceId = project.workspaceId
       if (typeof workspaceId !== 'string' || workspaceId === '') {
-        return { removed: false, reason: '该项目没有由插件注册的工作区。' }
+        return { removed: false, skipped: true }
       }
       if (!registry.list().some((workspace) => workspace.id === workspaceId)) {
         await store.update(project.id, { workspaceId: undefined })
-        return { removed: false, reason: '工作区已经不在宿主里了。' }
+        return { removed: false, skipped: true }
       }
       if (typeof registry.delete !== 'function') {
         return { removed: false, reason: '当前宿主的工作区服务不支持删除。' }
       }
-      await registry.delete(workspaceId)
+      // `delete` 报 false 说明工作区已经不在了（并发删同一个项目时另一个调用先
+      // 摘掉了它），结果与成功等价，不该按失败回传。
+      const deleted = (await registry.delete(workspaceId)) !== false
       await store.update(project.id, { workspaceId: undefined })
-      return { removed: true }
+      return deleted ? { removed: true } : { removed: false, skipped: true }
     },
 
     /**
@@ -628,7 +634,7 @@ export function createProjectService({
      * 历史，删掉等于丢上下文。
      *
      * @param {string} id - 项目 id
-     * @returns {Promise<{project: object, workspace: {removed: boolean, reason?: string}} | undefined>} 删除结果，项目不存在时 undefined
+     * @returns {Promise<{project: object, workspace: {removed: boolean, skipped?: boolean, reason?: string}} | undefined>} 删除结果，项目不存在时 undefined
      */
     async remove(id) {
       if (await store.get(id) === undefined) return undefined
