@@ -174,19 +174,17 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
 /**
  * 构造项目行「更多」菜单的条目。
  *
- * 纯函数：删除是唯一一个破坏性入口，永远出现——项目不管有没有插件注册的工作区
- * 都能删；工作区只在它是插件注册的（记在项目记录的 `workspaceId` 上）时才会被
- * 一并移除，复用的用户工作区不碰。
+ * 纯函数：菜单里只放行点击之外的动作——打开协调者会话就是点项目行本身，不再
+ * 重复一个入口。删除是唯一一个破坏性入口，永远出现——项目不管有没有插件注册
+ * 的工作区都能删；工作区只在它是插件注册的（记在项目记录的 `workspaceId` 上）
+ * 时才会被一并移除，复用的用户工作区不碰。
  *
  * @param {object} project - 项目
- * @param {{open: boolean, onOpen: Function, onRename: Function, onReplace: Function, onRemove: Function}} handlers - 各项的处理函数
+ * @param {{onRename: Function, onReplace: Function, onRemove: Function}} handlers - 各项的处理函数
  * @returns {object[]} 菜单条目
  */
 export function buildProjectMenuItems(project, handlers) {
   const items = []
-  if (handlers.open) {
-    items.push({ id: 'open', label: '打开协调者会话', icon: 'new-chat-outline', onSelect: () => handlers.onOpen(project) })
-  }
   items.push({ id: 'rename', label: '重命名', icon: 'edit-outline', onSelect: () => handlers.onRename(project) })
   items.push({ id: 'replace', label: '换新协调者', icon: 'refresh-outline', onSelect: () => handlers.onReplace(project) })
   items.push({ id: 'remove', label: '删除', icon: 'trash-outline', danger: true, onSelect: () => handlers.onRemove(project) })

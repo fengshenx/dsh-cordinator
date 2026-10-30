@@ -185,6 +185,12 @@ test('项目菜单只有一条删除入口，没有工作区也出现', () => {
   assert.equal(items.some((item) => item.id === 'remove-workspace'), false)
 })
 
+test('项目菜单不再重复「打开协调者会话」——点项目行就是打开', () => {
+  const items = buildProjectMenuItems({ id: 'p1' }, menuHandlers())
+  assert.equal(items.some((item) => item.id === 'open'), false)
+  assert.deepEqual(items.map((item) => item.id), ['rename', 'replace', 'remove'])
+})
+
 test('有插件工作区时删除说明讲清工作区移除与会话落未分组', () => {
   const text = describeProjectRemoval({ name: 'demo', workspaceId: 'ws-1' })
   assert.match(text, /demo/)
@@ -227,8 +233,6 @@ test('菜单里的删除入口只发请求，不直接执行', () => {
 function menuHandlers() {
   const noop = () => {}
   return {
-    open: true,
-    onOpen: noop,
     onRename: noop,
     onReplace: noop,
     onRemove: noop,

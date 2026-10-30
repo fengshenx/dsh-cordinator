@@ -606,8 +606,6 @@ function ProjectRow(props) {
   const folded = foldSessions(childSessions, watermark)
 
   const menuItems = buildProjectMenuItems(project, {
-    open: openable,
-    onOpen,
     onRename: () => setRenaming(true),
     onReplace,
     onRemove,
