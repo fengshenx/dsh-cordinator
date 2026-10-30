@@ -362,7 +362,7 @@ export function createProjectService({
       const project = await store.get(projectId)
       if (project === undefined) return undefined
       // 项目里的普通会话与 worker 也能解析到项目（卡片归属要用），但看板只对
-      // 协调者开放——客户端拿这条指针判断。
+      // 项目会话开放——客户端拿这条指针与 worker 表判断。
       return summarizeProject(project)
     },
 

@@ -613,6 +613,67 @@ const STYLE_TEXT = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 右栏 guide 页的入口胶囊：复刻宿主 EntryBox 的数值（380px 宽、56px 最小高、
+   14/20 内边距、14px 图标间距），宿主改样式时这里要跟着改。 */
+.dsh-coordinator-guide-entry {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  box-sizing: border-box;
+  width: 380px;
+  max-width: 100%;
+  min-height: 56px;
+  padding: 14px 20px;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  text-align: left;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-xl);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .dsh-coordinator-guide-entry:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.dsh-coordinator-guide-entry-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.dsh-coordinator-guide-entry-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dsh-coordinator-guide-entry-title {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dsh-coordinator-guide-entry-description {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 `
 
 /**
