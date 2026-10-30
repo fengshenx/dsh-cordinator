@@ -4,10 +4,13 @@ import {
   basenameOf,
   buildProjectMenuItems,
   collectExcludedSessionIds,
+  collectHiddenWorkspaceIds,
+  currentSessionIdOf,
   defaultProjectName,
   describeWorkspaceRemoval,
   isProjectOpenable,
   openCoordinatorSession,
+  quietWorkspaceOf,
   selectProjectSessionRows,
   isArchiveActiveRefusal,
   validateProjectName,
@@ -113,6 +116,47 @@ test('没有项目或没有 worker 会话时排除集为空', () => {
     [...collectExcludedSessionIds([{ id: 'p1', coordinatorSessionId: 'c' }], new Map())],
     ['c'],
   )
+})
+
+test('插件注册的工作区整行藏掉，用户自己的工作区不藏', () => {
+  const hidden = collectHiddenWorkspaceIds([
+    { id: 'p1', workspaceId: 'w-plugin' },
+    // 复用用户已有的工作区时不记 workspaceId——那不是我们的东西。
+    { id: 'p2' },
+    { id: 'p3', workspaceId: '' },
+  ])
+  assert.deepEqual([...hidden], ['w-plugin'])
+  assert.equal(collectHiddenWorkspaceIds([]).size, 0)
+})
+
+test('当前会话取主区域持有的那条', () => {
+  assert.equal(currentSessionIdOf({
+    's1': { retainedBy: { sidebar: 1 } },
+    's2': { retainedBy: { mainView: 1 } },
+  }), 's2')
+  assert.equal(currentSessionIdOf({ 's1': { retainedBy: {} } }), undefined)
+  assert.equal(currentSessionIdOf(undefined), undefined)
+})
+
+test('当前会话被排除时压掉它所属工作区的激活态', () => {
+  const workspaces = [
+    { workspaceId: 'w1', sessionIds: ['s1'] },
+    { workspaceId: 'w2', sessionIds: ['s2', 's3'] },
+  ]
+  assert.equal(quietWorkspaceOf('s2', new Set(['s2', 's3']), workspaces), 'w2')
+})
+
+test('当前会话没被排除时不动任何工作区', () => {
+  const workspaces = [{ workspaceId: 'w1', sessionIds: ['s1'] }]
+  // 用户在项目目录里手动开的会话留在官方树里，点亮它所属的工作区是对的。
+  assert.equal(quietWorkspaceOf('s1', new Set(['s2']), workspaces), undefined)
+  // 主区域没有会话时也不该压灰。
+  assert.equal(quietWorkspaceOf(undefined, new Set(['s1']), workspaces), undefined)
+})
+
+test('排除集里的会话不在任何工作区视图里时不压灰', () => {
+  assert.equal(quietWorkspaceOf('s9', new Set(['s9']), [{ workspaceId: 'w1', sessionIds: ['s1'] }]), undefined)
+  assert.equal(quietWorkspaceOf('s9', new Set(['s9']), undefined), undefined)
 })
 
 test('归档失败只在「会话还在跑」时要求确认', () => {
