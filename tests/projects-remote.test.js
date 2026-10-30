@@ -44,11 +44,10 @@ function fakeService() {
     },
     async remove(id) {
       calls.push(['remove', id])
-      return { id, name: 'gone', directory: '/tmp/gone', coordinatorSessionId: 's3' }
-    },
-    async removeWorkspace(id) {
-      calls.push(['removeWorkspace', id])
-      return { removed: true }
+      return {
+        project: { id, name: 'gone', directory: '/tmp/gone', coordinatorSessionId: 's3' },
+        workspace: { removed: true },
+      }
     },
     async rename(id, name) {
       calls.push(['rename', id, name])
@@ -179,8 +178,8 @@ test('方法把调用转给项目服务', async () => {
   assert.deepEqual(await remote.sessionsByProject(), [
     { projectId: 'p1', sessionIds: ['s1', 's5'] },
   ])
-  assert.deepEqual(await remote.removeWorkspace('p1'), { removed: true })
-  assert.deepEqual(service.calls.at(-1), ['removeWorkspace', 'p1'])
+  assert.deepEqual(await remote.deleteProject('p1'), { removed: true, workspaceRemoved: true })
+  assert.deepEqual(service.calls.at(-1), ['remove', 'p1'])
   // 看板取数走卡片存储，按项目过滤
   assert.deepEqual(await remote.boardCards('p1'), [{ id: 'c1', number: 1, title: '任务' }])
   assert.deepEqual(cards.calls.at(-1), ['list', { projectId: 'p1' }])
@@ -193,14 +192,53 @@ test('方法把调用转给项目服务', async () => {
   assert.deepEqual(workers.calls.at(-1), ['remove', 's5'])
 })
 
-test('注销项目返回布尔结果，不返回可能缺失的项目对象', async () => {
+test('删除项目带回工作区移除结果，项目不存在时明确返回未删除', async () => {
   const { ctx } = fakeCtx()
   const service = fakeService()
   const remote = createProjectRemote({ service, cards: fakeCards(), workers: fakeWorkers(), ctx })
 
-  assert.deepEqual(await remote.unregister('p1'), { removed: true })
+  assert.deepEqual(await remote.deleteProject('p1'), { removed: true, workspaceRemoved: true })
   service.remove = async () => undefined
-  assert.deepEqual(await remote.unregister('p1'), { removed: false })
+  // `notFound` 让客户端把重复删除当幂等成功收尾，而不是报「删除失败」。
+  assert.deepEqual(await remote.deleteProject('p1'), {
+    removed: false,
+    workspaceRemoved: false,
+    notFound: true,
+    reason: '项目不存在。',
+  })
+})
+
+test('工作区没删掉时把原因带回来，项目照样算删了', async () => {
+  const { ctx } = fakeCtx()
+  const service = fakeService()
+  service.remove = async () => ({
+    project: { id: 'p1' },
+    workspace: { removed: false, reason: '当前宿主的工作区服务不支持删除。' },
+  })
+  const remote = createProjectRemote({ service, cards: fakeCards(), workers: fakeWorkers(), ctx })
+
+  assert.deepEqual(await remote.deleteProject('p1'), {
+    removed: true,
+    workspaceRemoved: false,
+    reason: '当前宿主的工作区服务不支持删除。',
+  })
+})
+
+test('没有工作区可移除时报 skipped 而不是失败原因', async () => {
+  const { ctx } = fakeCtx()
+  const service = fakeService()
+  service.remove = async () => ({
+    project: { id: 'p1' },
+    workspace: { removed: false, skipped: true },
+  })
+  const remote = createProjectRemote({ service, cards: fakeCards(), workers: fakeWorkers(), ctx })
+
+  // 带 reason 会被客户端渲染成「工作区未移除」，把正常删除说成失败。
+  assert.deepEqual(await remote.deleteProject('p1'), {
+    removed: true,
+    workspaceRemoved: false,
+    skipped: true,
+  })
 })
 
 test('归档 worker 会话时顺带销毁常驻 agent', async () => {

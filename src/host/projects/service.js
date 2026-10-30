@@ -468,37 +468,43 @@ export function createProjectService({
     },
 
     /**
-     * 从宿主里移除项目的工作区。
+     * 移除项目在宿主里注册的工作区。
      *
-     * 插件注册的工作区在官方左栏里是隐藏的，用户在官方界面里没法直接删它——
-     * 这里给出项目侧的入口。宿主的 `delete` 只删注册，目录与全部会话日志都留着
-     * （`packages/workspace/workspace/src/index.ts:302-312`），协调者会话仍然在，
-     * 只是不再归属工作区；下次打开项目会重新注册并挂上。
+     * 它是 `remove()` 的内部步骤：插件注册的工作区在官方左栏里是隐藏的，用户在
+     * 官方界面里没法直接删它，删项目时要顺手摘掉。宿主的 `delete` 只删注册，目录
+     * 与全部会话日志都留着（`packages/workspace/workspace/src/index.ts:302-312`），
+     * 协调者会话仍然在，只是不再归属工作区。
+     *
+     * 「没有东西可摘」与「摘失败」必须分开：宿主没有工作区服务、记录里没有归属
+     * （复用的用户工作区）、归属指向的工作区已不在宿主里，这三种都是 `skipped`，
+     * 不是故障——调用方不该把它们报成「工作区未移除」。
      *
      * @param {string} id - 项目 id
-     * @returns {Promise<{removed: boolean, reason?: string}>} 移除结果
+     * @returns {Promise<{removed: boolean, skipped?: boolean, reason?: string}>} 移除结果；`skipped` 表示没有需要移除的工作区，`reason` 只出现在真失败上
      */
     async removeWorkspace(id) {
       const project = await store.get(id)
       if (project === undefined) throw new Error('项目不存在')
       const registry = ctx.get('workspaceRegistry')
       if (registry === undefined || typeof registry.list !== 'function') {
-        return { removed: false, reason: '当前宿主没有工作区服务。' }
+        return { removed: false, skipped: true }
       }
       const workspaceId = project.workspaceId
       if (typeof workspaceId !== 'string' || workspaceId === '') {
-        return { removed: false, reason: '该项目没有由插件注册的工作区。' }
+        return { removed: false, skipped: true }
       }
       if (!registry.list().some((workspace) => workspace.id === workspaceId)) {
         await store.update(project.id, { workspaceId: undefined })
-        return { removed: false, reason: '工作区已经不在宿主里了。' }
+        return { removed: false, skipped: true }
       }
       if (typeof registry.delete !== 'function') {
         return { removed: false, reason: '当前宿主的工作区服务不支持删除。' }
       }
-      await registry.delete(workspaceId)
+      // `delete` 报 false 说明工作区已经不在了（并发删同一个项目时另一个调用先
+      // 摘掉了它），结果与成功等价，不该按失败回传。
+      const deleted = (await registry.delete(workspaceId)) !== false
       await store.update(project.id, { workspaceId: undefined })
-      return { removed: true }
+      return deleted ? { removed: true } : { removed: false, skipped: true }
     },
 
     /**
@@ -616,32 +622,39 @@ export function createProjectService({
     },
 
     /**
-     * 删项目。
+     * 删项目，连同插件为它注册的工作区一起。
      *
-     * 协调者会话**保留**：它是用户的会话历史，删掉等于丢上下文。删项目后该会话
-     * 仍在左栏可见，只是不再是任何项目的协调者。
+     * 顺序是先移除工作区、再删记录：反过来时中途失败会留下一个谁都不记得的孤儿
+     * 工作区——项目没了，菜单里的删除入口也没了。工作区删除只删注册，目录与全部
+     * 会话日志保留，会话因此落到宿主工作区树的「未分组」下。
+     *
+     * 复用的用户工作区不记在项目记录里，不会被碰到；宿主工作区服务不支持删除时
+     * 如实把原因带回给调用方，项目照删（与「项目仍在、工作区留在宿主里」的旧行为
+     * 一致，用户仍可在官方面板里删掉它）。协调者会话本身也保留：它是用户的会话
+     * 历史，删掉等于丢上下文。
      *
      * @param {string} id - 项目 id
-     * @returns {Promise<object | undefined>} 被删的项目，不存在时 undefined
+     * @returns {Promise<{project: object, workspace: {removed: boolean, skipped?: boolean, reason?: string}} | undefined>} 删除结果，项目不存在时 undefined
      */
     async remove(id) {
+      if (await store.get(id) === undefined) return undefined
+      const workspace = await this.removeWorkspace(id)
       const removed = await store.remove(id)
-      if (removed !== undefined && typeof removed.coordinatorSessionId === 'string') {
+      if (removed === undefined) return undefined
+      if (typeof removed.coordinatorSessionId === 'string') {
         coordinatorIndex.delete(removed.coordinatorSessionId)
       }
-      if (removed !== undefined) {
-        // 目录索引要重建而不是直接删：两个项目可能指向同一目录，删掉其中一个时
-        // 另一个仍占着这个目录，它的卡片还得能归到它名下。
-        const canonical = await canonicalize(removed.directory)
-        canonicalDirectoryIndex.delete(canonical)
-        for (const project of await store.list()) {
-          const other = await canonicalize(project.directory)
-          if (other === canonical && !canonicalDirectoryIndex.has(canonical)) {
-            canonicalDirectoryIndex.set(canonical, project.id)
-          }
+      // 目录索引要重建而不是直接删：两个项目可能指向同一目录，删掉其中一个时
+      // 另一个仍占着这个目录，它的卡片还得能归到它名下。
+      const canonical = await canonicalize(removed.directory)
+      canonicalDirectoryIndex.delete(canonical)
+      for (const project of await store.list()) {
+        const other = await canonicalize(project.directory)
+        if (other === canonical && !canonicalDirectoryIndex.has(canonical)) {
+          canonicalDirectoryIndex.set(canonical, project.id)
         }
       }
-      return removed
+      return { project: removed, workspace }
     },
   }
 }
@@ -679,7 +692,7 @@ async function ensureWorkspace(ctx, directory, canonicalize) {
  * 读项目记录里的工作区 id，只认仍然活着的。
  *
  * 返回的是「项目自己的」工作区，不是当前目录对应的那个：复用的用户工作区不在
- * 记录里，返回 undefined，客户端据此不给「从 dsh 移除工作区」的入口。
+ * 记录里，返回 undefined，删除项目时据此判断要不要动宿主的工作区。
  *
  * @param {object} ctx - Cordis 上下文
  * @param {object} project - 项目记录

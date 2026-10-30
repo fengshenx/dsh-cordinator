@@ -235,36 +235,77 @@ export async function openCoordinatorSession({ project, callRemote, openSession 
 /**
  * 构造项目行「更多」菜单的条目。
  *
- * 纯函数：菜单项的显隐规则只有一条——项目有由插件注册的工作区时，才给
- * 「从 dsh 移除工作区」这个入口；没有就没有，免得点了只得到一句「没有工作区」。
+ * 纯函数：菜单里只放行点击之外的动作——打开协调者会话就是点项目行本身，不再
+ * 重复一个入口。删除是唯一一个破坏性入口，永远出现——项目不管有没有插件注册
+ * 的工作区都能删；工作区只在它是插件注册的（记在项目记录的 `workspaceId` 上）
+ * 时才会被一并移除，复用的用户工作区不碰。
  *
  * @param {object} project - 项目
- * @param {{open: boolean, onOpen: Function, onRename: Function, onReplace: Function, onRemove: Function, onRequestRemoveWorkspace: Function}} handlers - 各项的处理函数
+ * @param {{onRename: Function, onReplace: Function, onRemove: Function}} handlers - 各项的处理函数
  * @returns {object[]} 菜单条目
  */
 export function buildProjectMenuItems(project, handlers) {
   const items = []
-  if (handlers.open) {
-    items.push({ id: 'open', label: '打开协调者会话', icon: 'new-chat-outline', onSelect: () => handlers.onOpen(project) })
-  }
   items.push({ id: 'rename', label: '重命名', icon: 'edit-outline', onSelect: () => handlers.onRename(project) })
   items.push({ id: 'replace', label: '换新协调者', icon: 'refresh-outline', onSelect: () => handlers.onReplace(project) })
-  if (typeof project.workspaceId === 'string' && project.workspaceId !== '') {
-    items.push({ id: 'remove-workspace', label: '从 dsh 移除工作区', icon: 'close-outline', onSelect: () => handlers.onRequestRemoveWorkspace(project) })
-  }
-  items.push({ id: 'remove', label: '注销项目', icon: 'trash-outline', danger: true, onSelect: () => handlers.onRemove(project) })
+  items.push({ id: 'remove', label: '删除', icon: 'trash-outline', danger: true, onSelect: () => handlers.onRemove(project) })
   return items
 }
 
 /**
- * 说清「移除工作区」会发生什么。
+ * 说清「删除」会发生什么。
  *
- * 宿主的工作区删除只删注册，目录与全部会话日志都留着，协调者会话仍在——用户
- * 最担心的是「会话被删了」，这句必须把这点讲明白。
+ * 删除 = 删项目记录 + 移除插件为它注册的工作区（宿主 `workspaceRegistry.delete`
+ * 只删注册）。用户最担心的是「会话被删了」，这句必须把会话与文件夹都讲明白；
+ * 没有插件工作区时不要提工作区——那会让用户以为自己的工作区也被删了。
  *
  * @param {object} project - 项目
  * @returns {string} 确认弹窗的说明文字
  */
-export function describeWorkspaceRemoval(project) {
-  return `将把项目「${project.name}」的工作区从 dsh 里移除。文件夹与全部会话记录都会保留，协调者会话仍在；下次打开这个项目会重新挂上。`
+export function describeProjectRemoval(project) {
+  const hasWorkspace = typeof project.workspaceId === 'string' && project.workspaceId !== ''
+  return hasWorkspace
+    ? `将把项目「${project.name}」删除，并把它的工作区从 dsh 工作区列表移除。文件夹与会话记录都会保留，其会话将显示在“未分组”下。`
+    : `将把项目「${project.name}」删除。文件夹与会话记录都会保留。`
+}
+
+/**
+ * 删除成功后的提示。
+ *
+ * 三支按工作区结果分：真移除了、真摘失败（`reason`）、没有工作区可摘。第三支
+ * 覆盖宿主没有工作区服务、项目没有插件注册的工作区、工作区已不在宿主里三种
+ * （宿主都报 `skipped`），不能并进失败支——那会把正常删除说成「工作区未移除」，
+ * 与确认弹窗「只删项目、不提工作区」自相矛盾。
+ *
+ * 摘失败必须报出来：项目记录已经没了，用户再也看不到这个工作区属于谁，只能去
+ * 官方面板手动删。
+ *
+ * @param {object} project - 被删的项目
+ * @param {{workspaceRemoved?: boolean, skipped?: boolean, reason?: string}} result - 宿主返回的删除结果
+ * @returns {string} 提示文字
+ */
+export function describeDeletionNotice(project, result) {
+  if (result?.workspaceRemoved === true) {
+    return `已删除项目「${project.name}」。文件夹与会话记录保留，其会话显示在“未分组”下。`
+  }
+  if (typeof result?.reason === 'string' && result.reason !== '') {
+    return `已删除项目「${project.name}」。工作区未移除：${result.reason}`
+  }
+  return `已删除项目「${project.name}」。文件夹与会话记录保留。`
+}
+
+/**
+ * 判定删除请求该怎么收尾。
+ *
+ * 删除是幂等的：项目已经不在了（`notFound`）说明目标已经达成，不能报成失败——
+ * 否则弹窗卡在「删除失败：项目不存在。」里出不来，行也不消失，用户只能取消再
+ * 手动刷新。
+ *
+ * @param {{removed?: boolean, notFound?: boolean, reason?: string}} result - 宿主返回的删除结果
+ * @returns {'removed' | 'alreadyGone' | 'failed'} 收尾方式
+ */
+export function classifyDeletionResult(result) {
+  if (result?.removed === true) return 'removed'
+  if (result?.notFound === true) return 'alreadyGone'
+  return 'failed'
 }

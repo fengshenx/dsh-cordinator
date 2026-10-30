@@ -255,9 +255,9 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 ### 28. Typert 远程方法的名字要避开官方命名空间服务的保留字
 
-**dsh 实测**：客户端挂载贡献时，官方命名空间服务逐个检查方法名（`packages/api/gateway/src/client/index.ts` 的 `RemoteNamespaceService.assertMethodAvailable`）：撞上命名空间服务自身的字段（`ctx`、`name`、`methods`、`namespace` 等）或 Cordis 服务原型的成员即拒收整个命名空间，报 `client api: method "projects/remove" conflicts with its namespace service`。`remove` 正是 Cordis 服务原型上的成员。
+**dsh 实测**：客户端挂载贡献时，官方命名空间服务逐个检查方法名（`packages/api/gateway/src/client/index.ts` 的 `RemoteNamespaceService.assertMethodAvailable`）：撞上命名空间服务自身的字段（`ctx`、`name`、`methods`、`namespace` 等）、它原型上的成员（`:707` 的 `remove(kind, method, token)`），或 Cordis 服务原型的成员，即拒收整个命名空间，报 `client api: method "projects/remove" conflicts with its namespace service`。`remove` 命中的是 `RemoteNamespaceService.prototype.remove`——**不是** Cordis 服务原型的成员（`'remove' in Service.prototype` 在 vendor/cordis 上实测为 false），照后者判断会得出「没撞名」的错误结论。
 
-**影响**：第三方远程方法要挑业务前缀足够远的名字（本仓把 `remove` 改成 `unregister`），否则整个命名空间挂不上，表现为界面上一片「通道未就绪」而不是某个方法缺失。
+**影响**：第三方远程方法要挑业务前缀足够远的名字（本仓叫 `deleteProject`），否则整个命名空间挂不上，表现为界面上一片「通道未就绪」而不是某个方法缺失。
 
 ### 29. 官方只有工作区树，没有项目树；「按项目排除会话」也没有扩展点
 
@@ -293,7 +293,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **dsh 实测**：工作区记录是封闭 schema（`packages/workspace/workspace/src/spec.ts` 的 `workspaceRecord`：只有 `path` / `title` / `sessionIds` / `createdAt` / `updatedAt`），没有备注、标签或可见性字段；归档只作用于会话（`workspaceDomainState.archivedSessionIds`），工作区级别没有归档。工作区实体的公开接口（`packages/workspace/workspace/src/types.ts`）也只有 `setTitle` / `attachSession` / `insertSessionBefore` / `detachSession` / `status`，没有隐藏或删除可见性的方法。
 
-**影响**：第三方为了让自己建的会话能被官方 UI 打开（见第 32 条）不得不注册工作区，那个工作区就会出现在官方左栏的工作区树里，而官方没有「按外部集合隐藏分组」的扩展点。可行的只有两条路：**归属**记在第三方自己的注册表里（第三方知道哪些工作区是自己建的，宿主的封闭 schema 不必改），**隐藏**走渲染层（官方工作区分组行带 `data-row-key="workspace:<id>"`，命中集合的行由样式表隐藏）。代价是隐藏只在左栏成立——欢迎页的工作区选择器与工作区管理面板仍列着它；官方的工作区控制器不走 `/api` 通道（`/api/workspaces/list` 与 `/api/workspaces/rename` 均 404），第三方只能经 `workspaceRegistry` 服务改它，删除入口因此放在第三方自己的项目菜单里，并配二次确认弹窗——弹窗不能复用官方 `Modal` 组件（第三方 bundle 不得 import 宿主 UI 包），只能照 `packages/client/ui-primitives/src/Modal.tsx` 复制改写。
+**影响**：第三方为了让自己建的会话能被官方 UI 打开（见第 32 条）不得不注册工作区，那个工作区就会出现在官方左栏的工作区树里，而官方没有「按外部集合隐藏分组」的扩展点。可行的只有两条路：**归属**记在第三方自己的注册表里（第三方知道哪些工作区是自己建的，宿主的封闭 schema 不必改），**隐藏**走渲染层（官方工作区分组行带 `data-row-key="workspace:<id>"`，命中集合的行由样式表隐藏）。代价是隐藏只在左栏成立——欢迎页的工作区选择器与工作区管理面板仍列着它；官方的工作区控制器不走 `/api` 通道（`/api/workspaces/list` 与 `/api/workspaces/rename` 均 404），第三方只能经 `workspaceRegistry` 服务改它，删除入口因此放在第三方自己的项目菜单里（删除项目时把它一并删掉），并配二次确认弹窗——弹窗不能复用官方 `Modal` 组件（第三方 bundle 不得 import 宿主 UI 包），只能照 `packages/client/ui-primitives/src/Modal.tsx` 复制改写。
 
 ### 34. 空会话一律渲染欢迎页——没有「标记会话非空」的入口
 
@@ -316,7 +316,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 
 **目标形态**：卡片详情浮层带编辑能力（改标题、状态、链接、槽位、排序）。
 
-**dsh 实测**：宿主官方未暴露通用远程方法注册面（`connection.rpc.handle` 对仓外插件不可用）。但浏览器侧 → 宿主侧的写通道**本仓已经有了**：自建的 Typert SRC 命名空间 `projects`（见第 26 条）在 P3 实测通过，8 个写方法（create / unregister / rename / replaceCoordinator / attachCoordinator / removeWorkspace 等）都跑通了。缺的不是通道，是**卡片自己的写方法**——而卡片的写入语义（revision 乐观并发、归档终态）住在 host 侧的卡片存储里，改卡要走那套规则。
+**dsh 实测**：宿主官方未暴露通用远程方法注册面（`connection.rpc.handle` 对仓外插件不可用）。但浏览器侧 → 宿主侧的写通道**本仓已经有了**：自建的 Typert SRC 命名空间 `projects`（见第 26 条）在 P3 实测通过，8 个写方法（create / deleteProject / rename / replaceCoordinator / attachCoordinator 等）都跑通了。缺的不是通道，是**卡片自己的写方法**——而卡片的写入语义（revision 乐观并发、归档终态）住在 host 侧的卡片存储里，改卡要走那套规则。
 
 **影响**：本轮卡片详情浮层只读，完成、置顶、重命名、删除都没做，卡面也不放操作按钮。补齐是本仓自己的活：在 `projects` 之外加一组卡片远程方法，宿主侧转调卡片存储的既有领域规则。属独立议题，不是宿主拦路。
 
@@ -391,7 +391,7 @@ dsh 要求仓外事件必须带 `ignorable` 标记且不进读路径（`packages
 | 项目区块（client 侧） | 通过 | web profile 实测：左栏「项目」区块位于「自动化任务」之下、工作区之上，列出已注册项目（含目录路径）；数据走 Typert SRC 通道，浏览器实测取回列表（见第 26 条） |
 | 项目树（client 侧） | 通过 | 点行首槽位展开，列出该项目目录下的会话（协调者不在其中，会话行为纯文字行、无左右图标）；归属由宿主按 realpath 判定后经远程方法下发（见第 21b、29 条） |
 | 点项目打开协调者会话 | 通过 | 点项目行 → 先由宿主把协调者会话挂到项目目录的工作区，再打开会话；协调者会话注册并激活了第三方会话视图目标，官方外壳因此切到 active 形态（见第 34 条），浏览器实测主区域 `data-phase` 由 `hero` 变 `active`、页面无「Into the Unknown」、转录零节点、输入框几何与官方 active 布局一致 |
-| 插件工作区隐藏与移除 | 通过 | 官方工作区行命中即打标记属性并隐藏，浏览器实测假行 `display:none`；官方标题保持原样，归属记在项目注册表的 `workspaceId` 上；项目菜单可移除工作区，入口先弹二次确认（宿主 `workspaceRegistry.delete` 只删注册，会话与目录全保留）（见第 33 条） |
+| 项目删除（连同工作区） | 通过（接口层已验、GUI 未取证） | 项目菜单只有一条「删除」，先弹二次确认：项目记录删掉，插件注册的工作区随 `workspaceRegistry.delete` 一并移除（只删注册，会话与目录全保留，会话落到工作区树的「未分组」下）；复用的用户工作区不碰（见第 33 条）。隔离 `DSH_HOME` 的 web 实例上按接口层实测过删带工作区与不带工作区两种项目（`workspace.json` / `projects.json` 终态对得上）；菜单三项的渲染、两支弹窗文案与提示条样式仍待一次绑定工作区的浏览器会话 |
 | 官方工作区树排除项目会话 | 通过 | 浏览器实测：官方树里 `test` 工作区下的项目会话行被加隐藏类，`getComputedStyle` 为 `display:none`；官方数据层未动（见第 29 条） |
 | 产品图标 | 通过（内联路径） | 宿主 web 端运行时无 sprite，`<use>` 引用必然落空（见第 31 条）；改为内联路径后浏览器实测图标尺寸 14×14 / 16×16、path 齐全 |
 | 角色槽位注入 | 通过 | `ctx.systemPrompt.context()` 注册运行时上下文（见第 24–25 条）；改 `SLOTS.md` 正文后下一轮 turn 注入新正文；注入前后两轮请求的工具定义数组逐字节一致（32 个工具） |

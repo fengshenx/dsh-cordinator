@@ -100,13 +100,34 @@ export function createProjectRemote({ service, cards, workers, workerSessions, c
     }
 
     /**
-     * 注销项目。协调者会话保留，不在项目里的会话历史不因注销而消失。
+     * 删除项目：先移除插件为它注册的工作区，再删项目记录。
+     *
+     * 工作区删除只删注册，目录与全部会话日志保留，会话因此落到宿主工作区树的
+     * 「未分组」下；协调者会话本身也保留。
+     *
+     * 「没有工作区可移除」（`skipped`：宿主没有工作区服务、项目没有插件注册的
+     * 工作区、工作区已不在宿主里）不带 `reason`——那不是故障，客户端据此落到
+     * 「文件夹与会话记录保留」那一支提示。宿主工作区服务不支持删除是真失败，
+     * `reason` 带回原因，项目照删。
+     *
+     * 项目已经不在了时报 `notFound`：删除是幂等的，客户端据此按成功收尾而不是
+     * 把「项目不存在」报成删除失败。
+     *
      * @param {string} id - 项目 id
-     * @returns {Promise<{removed: boolean}>} 是否确实注销了
+     * @returns {Promise<{removed: boolean, workspaceRemoved: boolean, notFound?: boolean, skipped?: boolean, reason?: string}>} 删除结果
      */
-    async unregister(id) {
-      const removed = await this.projects.remove(id)
-      return { removed: removed !== undefined }
+    async deleteProject(id) {
+      const result = await this.projects.remove(id)
+      if (result === undefined) {
+        return { removed: false, workspaceRemoved: false, notFound: true, reason: '项目不存在。' }
+      }
+      const workspaceRemoved = result.workspace.removed === true
+      if (result.workspace.reason !== undefined) {
+        return { removed: true, workspaceRemoved, reason: result.workspace.reason }
+      }
+      return result.workspace.skipped === true
+        ? { removed: true, workspaceRemoved, skipped: true }
+        : { removed: true, workspaceRemoved }
     }
 
     /**
@@ -139,19 +160,6 @@ export function createProjectRemote({ service, cards, workers, workerSessions, c
      */
     async attachCoordinator(id) {
       return this.projects.attachCoordinator(id)
-    }
-
-    /**
-     * 从宿主里移除项目的工作区。
-     *
-     * 只删工作区注册，目录与全部会话日志都留着；协调者会话仍在，只是不再归属
-     * 工作区，下次打开项目会重新注册并挂上。
-     *
-     * @param {string} id - 项目 id
-     * @returns {Promise<{removed: boolean, reason?: string}>} 移除结果
-     */
-    async removeWorkspace(id) {
-      return this.projects.removeWorkspace(id)
     }
 
     /**
