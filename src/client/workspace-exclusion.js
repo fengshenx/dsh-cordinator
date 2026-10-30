@@ -13,11 +13,24 @@
  * id，命中排除集的行加一个类由样式表隐藏。官方的数据层不动，用户在别处的操作
  * （打开会话、搜索）不受影响；代价是官方分组行上的会话计数仍包含被隐藏的会话。
  *
+ * 同一套渲染层还负责**压掉工作区的激活态**：官方按「当前会话属于哪个分组」给
+ * 目录图标上主色，隐藏会话后这个点亮就没了对应的行（见 {@link QUIET_CLASS}）。
+ *
  * @module dsh-coordinator/client/workspace-exclusion
  */
 
 /** 命中排除集的会话行所用的类名。 */
 const HIDDEN_CLASS = 'dsh-coordinator-excluded-session'
+
+/**
+ * 被压掉激活态的工作区行所用的类名。
+ *
+ * 官方给「当前会话所在的工作区分组」的目录图标上业务主色（`folderActive`，
+ * 蓝），并且只要分组里有当前会话就点亮。协调者与 worker 会话被本模块从官方树里
+ * 藏掉后，被点亮的分组里看不到是谁在点亮它——分组看起来是开着的，却找不到对应
+ * 的会话行。命中时把图标颜色压回三级标签色，视觉上与未打开时一致。
+ */
+const QUIET_CLASS = 'dsh-coordinator-quiet-workspace'
 
 /** 隐藏规则的样式表 id。 */
 const STYLE_ID = 'dsh-coordinator-workspace-exclusion'
@@ -25,6 +38,11 @@ const STYLE_ID = 'dsh-coordinator-workspace-exclusion'
 const STYLE_TEXT = `
 .dsh-coordinator-excluded-session {
   display: none !important;
+}
+/* 工作区行的第一个 span 是目录图标槽（宿主 Rows.tsx 的 slot folder 顺序），
+   图标颜色取自它；未激活时官方也是三级标签色（Rows.module.css 的 .slot）。 */
+.dsh-coordinator-quiet-workspace > span:first-child {
+  color: var(--dsw-alias-label-tertiary);
 }
 `
 
@@ -42,13 +60,14 @@ function ensureStyles() {
 }
 
 /**
- * 从 `data-row-key` 里取会话 id。
- * @param {string} rowKey - 行标识
- * @returns {string | undefined} 会话 id；不是会话行时 undefined
+ * 从 `data-row-key` 里取某类行的 id。
+ * @param {string | null} rowKey - 行标识
+ * @param {string} prefix - 前缀，如 `session:` / `workspace:`
+ * @returns {string | undefined} id；前缀不匹配时 undefined
  */
-function sessionIdOf(rowKey) {
-  if (typeof rowKey !== 'string' || !rowKey.startsWith('session:')) return undefined
-  return rowKey.slice('session:'.length)
+function idOf(rowKey, prefix) {
+  if (typeof rowKey !== 'string' || !rowKey.startsWith(prefix)) return undefined
+  return rowKey.slice(prefix.length)
 }
 
 /**
@@ -61,10 +80,24 @@ function sessionIdOf(rowKey) {
  * @returns {boolean} 该行是否被标记为隐藏
  */
 export function markSessionRow(row, excluded) {
-  const id = sessionIdOf(row.getAttribute('data-row-key'))
+  const id = idOf(row.getAttribute('data-row-key'), 'session:')
   const hidden = id !== undefined && excluded.has(id)
   row.classList.toggle(HIDDEN_CLASS, hidden)
   return hidden
+}
+
+/**
+ * 按压灰集合标记一个工作区行。
+ *
+ * @param {object} row - 工作区行元素
+ * @param {Set<string>} quieted - 要压掉激活态的工作区 id
+ * @returns {boolean} 该行是否被压灰
+ */
+export function markWorkspaceRow(row, quieted) {
+  const id = idOf(row.getAttribute('data-row-key'), 'workspace:')
+  const quiet = id !== undefined && quieted.has(id)
+  row.classList.toggle(QUIET_CLASS, quiet)
+  return quiet
 }
 
 /**
@@ -128,18 +161,22 @@ export function createFrameScheduler({ schedule, cancel }) {
 export function createWorkspaceExclusion() {
   /** @type {Set<string>} 要从官方树里排除的会话 id */
   let excluded = new Set()
+  /** @type {Set<string>} 要压掉激活态的工作区 id */
+  let quieted = new Set()
   /** @type {MutationObserver | undefined} 观察器 */
   let observer
 
   /**
-   * 按当前排除集重新标记所有会话行。
+   * 按当前集合重新标记会话行与工作区行。
    * @returns {void}
    */
   const markAll = () => {
     if (typeof document === 'undefined') return
-    const rows = document.querySelectorAll('[data-row-key^="session:"]')
-    for (const row of rows) {
+    for (const row of document.querySelectorAll('[data-row-key^="session:"]')) {
       markSessionRow(row, excluded)
+    }
+    for (const row of document.querySelectorAll('[data-row-key^="workspace:"]')) {
+      markWorkspaceRow(row, quieted)
     }
   }
 
@@ -161,30 +198,32 @@ export function createWorkspaceExclusion() {
 
   return {
     /**
-     * 更新排除集。
+     * 更新排除集与压灰集。
      *
-     * 排除集变化是低频事件，立即生效；观察回调才是高频路径，由调度器去抖。
+     * 两者变化都是低频事件，立即生效；观察回调才是高频路径，由调度器去抖。
      *
      * @param {Iterable<string>} sessionIds - 要排除的会话 id
+     * @param {Iterable<string>} [quietWorkspaceIds] - 要压掉激活态的工作区 id
      * @returns {void}
      */
-    update(sessionIds) {
+    update(sessionIds, quietWorkspaceIds = []) {
       excluded = new Set(sessionIds)
+      quieted = new Set(quietWorkspaceIds)
       markAll()
     },
 
     /**
-     * 停止观察并清理隐藏状态。
+     * 停止观察并清理标记。
      * @returns {void}
      */
     dispose() {
       observer?.disconnect()
       observer = undefined
-      // 必须先取消待执行的扫描：否则它会在清理之后把刚摘掉的隐藏标记又加回去。
+      // 必须先取消待执行的扫描：否则它会在清理之后把刚摘掉的标记又加回去。
       scheduler.cancel()
       if (typeof document === 'undefined') return
-      for (const row of document.querySelectorAll(`.${HIDDEN_CLASS}`)) {
-        row.classList.remove(HIDDEN_CLASS)
+      for (const row of document.querySelectorAll(`.${HIDDEN_CLASS}, .${QUIET_CLASS}`)) {
+        row.classList.remove(HIDDEN_CLASS, QUIET_CLASS)
       }
     },
   }

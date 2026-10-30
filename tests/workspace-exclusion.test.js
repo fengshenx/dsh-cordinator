@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createFrameScheduler, markSessionRow } from '../src/client/workspace-exclusion.js'
+import { createFrameScheduler, markSessionRow, markWorkspaceRow } from '../src/client/workspace-exclusion.js'
 
 /**
  * 造一个假的会话行：只需要 `getAttribute` 与 `classList.toggle`。
@@ -40,6 +40,35 @@ test('不是会话行的标识不参与排除', () => {
   const hidden = markSessionRow(row, new Set(['group-1']))
   assert.equal(hidden, false)
   assert.equal(row.classes.size, 0)
+})
+
+test('命中压灰集的工作区行被标记为不激活', () => {
+  const row = fakeRow('workspace:w1')
+  const quiet = markWorkspaceRow(row, new Set(['w1']))
+  assert.equal(quiet, true)
+  assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), true)
+})
+
+test('不在压灰集里的工作区行保持激活态', () => {
+  const row = fakeRow('workspace:w2')
+  const quiet = markWorkspaceRow(row, new Set(['w1']))
+  assert.equal(quiet, false)
+  assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), false)
+})
+
+test('压灰集变化后重新标记能恢复激活态', () => {
+  const row = fakeRow('workspace:w1')
+  markWorkspaceRow(row, new Set(['w1']))
+  assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), true)
+  markWorkspaceRow(row, new Set())
+  assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), false)
+})
+
+test('会话行与工作区行各认各的前缀', () => {
+  const sessionRow = fakeRow('session:s1')
+  const workspaceRow = fakeRow('workspace:session:junk')
+  assert.equal(markSessionRow(workspaceRow, new Set(['session:junk'])), false)
+  assert.equal(markWorkspaceRow(sessionRow, new Set(['s1'])), false)
 })
 
 test('排除集变化后重新标记能改回可见', () => {

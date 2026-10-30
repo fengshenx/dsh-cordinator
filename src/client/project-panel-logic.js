@@ -124,6 +124,43 @@ export function collectExcludedSessionIds(projects, sessionsByProject) {
 }
 
 /**
+ * 从会话快照里取主区域当前会话。
+ *
+ * 判据与宿主一致（`WorkspaceBrowser.tsx` 的 `current`）：`mainView` 持有数大于 0
+ * 的那条。宿主用它在官方树里高亮当前会话行、点亮它所在的工作区分组。
+ *
+ * @param {Record<string, object> | undefined} byId - 会话快照（`sessions.list`）
+ * @returns {string | undefined} 当前会话 id；主区域没有会话时 undefined
+ */
+export function currentSessionIdOf(byId) {
+  for (const [id, row] of Object.entries(byId ?? {})) {
+    if ((row?.retainedBy?.mainView ?? 0) > 0) return id
+  }
+  return undefined
+}
+
+/**
+ * 找出要压掉激活态的工作区。
+ *
+ * 官方把「当前会话所在分组」的目录图标点亮。当前会话若是被排除的会话（项目的
+ * 协调者或 worker），点亮的分组里看不到它——分组像是开着的，却找不到对应的
+ * 会话行。这时把承载它的工作区压回普通色；当前会话不是排除集里的，就不动。
+ *
+ * @param {string | undefined} currentSessionId - 主区域当前会话 id
+ * @param {Set<string>} excludedSessionIds - 从官方树里排除的会话 id
+ * @param {{workspaceId: string, sessionIds: readonly string[]}[]} workspaces - 工作区视图
+ * @returns {string | undefined} 要压灰的工作区 id；不需要时 undefined
+ */
+export function quietWorkspaceOf(currentSessionId, excludedSessionIds, workspaces) {
+  if (typeof currentSessionId !== 'string') return undefined
+  if (excludedSessionIds?.has(currentSessionId) !== true) return undefined
+  const owner = (workspaces ?? []).find(
+    (workspace) => (workspace?.sessionIds ?? []).includes(currentSessionId),
+  )
+  return typeof owner?.workspaceId === 'string' ? owner.workspaceId : undefined
+}
+
+/**
  * 判定归档失败是不是「会话还在跑」。
  *
  * 宿主对有心跳任务的会话默认拒绝归档（`workspace/session-active`），确认后才肯
