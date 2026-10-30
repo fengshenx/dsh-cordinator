@@ -14,7 +14,8 @@
  * （打开会话、搜索）不受影响；代价是官方分组行上的会话计数仍包含被隐藏的会话。
  *
  * 同一套渲染层还负责两件工作区行的事：**藏掉项目自建的工作区**
- * （{@link HIDDEN_WORKSPACE_CLASS}）与**压掉它的激活态**（{@link QUIET_CLASS}）。
+ * （{@link HIDDEN_WORKSPACE_CLASS}，连组内属于它的行一起，
+ * {@link HIDDEN_GROUP_ROW_CLASS}）与**压掉它的激活态**（{@link QUIET_CLASS}）。
  *
  * @module dsh-coordinator/client/workspace-exclusion
  */
@@ -34,6 +35,15 @@ const HIDDEN_CLASS = 'dsh-coordinator-excluded-session'
 const HIDDEN_WORKSPACE_CLASS = 'dsh-coordinator-hidden-workspace'
 
 /**
+ * 被藏掉的工作区分组里、属于该组的行所用的类名。
+ *
+ * 只藏 header 不够：分组展开时组内的会话行与「展开其余 N 个会话」按钮是 header 的
+ * 兄弟节点，会留下一批没有标题的孤儿行（打开协调者会话本身就会展开这一组，展开
+ * 是常态）。这些行跟着 header 一起藏。
+ */
+const HIDDEN_GROUP_ROW_CLASS = 'dsh-coordinator-hidden-workspace-group'
+
+/**
  * 被压掉激活态的工作区行所用的类名。
  *
  * 官方给「当前会话所在的工作区分组」的目录图标上业务主色（`folderActive`，
@@ -51,6 +61,9 @@ const STYLE_TEXT = `
   display: none !important;
 }
 .dsh-coordinator-hidden-workspace {
+  display: none !important;
+}
+.dsh-coordinator-hidden-workspace-group {
   display: none !important;
 }
 /* 工作区行的第一个 span 是目录图标槽（宿主 Rows.tsx 的 slot folder 顺序），
@@ -116,6 +129,51 @@ export function markWorkspaceRow(row, { quieted, hidden }) {
   row.classList.toggle(QUIET_CLASS, quiet)
   row.classList.toggle(HIDDEN_WORKSPACE_CLASS, hide)
   return { quiet, hidden: hide }
+}
+
+/** 分组容器里属于该组的行：会话行与「展开其余 N 个会话」按钮。 */
+const GROUP_ROW_SELECTOR = '[data-row-key^="session:"], [data-row-key^="overflow:"]'
+
+/**
+ * 找出一个行元素所属的工作区分组容器。
+ *
+ * 宿主的组是一个 `div`（`WorkspaceBrowser.tsx` 的 `css.groupSection`），直接子元素
+ * 依次是工作区 header、嵌套分组（`div[role="group"]`）与组内会话行；header 与
+ * 会话行外面各包着一层 HoverCard 的 `span`，所以行元素不是容器的直接子元素。容器
+ * 的类名被 CSS Modules 改写、认不出，但**容器的父元素带 `role`**：顶层列表是
+ * `tree`（`AnimatedRows`），嵌套分组是 `group`。
+ *
+ * @param {object} row - 行元素
+ * @returns {object | undefined} 分组容器；结构对不上时 undefined
+ */
+function groupSectionOf(row) {
+  let node = row.parentElement
+  while (node !== null && node !== undefined) {
+    const role = node.parentElement?.getAttribute('role')
+    if (role === 'tree' || role === 'group') return node
+    node = node.parentElement
+  }
+  return undefined
+}
+
+/**
+ * 藏掉一个工作区 header 所在分组里属于该组的行。
+ *
+ * 嵌套分组里的行不归这一组：各自的 header 都要显示，会话行只跟着自己那一组走。
+ * 抽成独立函数是为了能脱离 DOM 单测：行只需提供 `parentElement`、`getAttribute`
+ * 与 `classList`，容器只需要 `querySelectorAll`。
+ *
+ * @param {object} headerRow - 工作区行元素
+ * @param {boolean} hide - 是否藏掉
+ * @returns {void}
+ */
+export function markGroupRows(headerRow, hide) {
+  const section = groupSectionOf(headerRow)
+  if (section === undefined) return
+  for (const row of section.querySelectorAll(GROUP_ROW_SELECTOR)) {
+    if (groupSectionOf(row) !== section) continue
+    row.classList.toggle(HIDDEN_GROUP_ROW_CLASS, hide)
+  }
 }
 
 /**
@@ -196,7 +254,8 @@ export function createWorkspaceExclusion() {
       markSessionRow(row, excluded)
     }
     for (const row of document.querySelectorAll('[data-row-key^="workspace:"]')) {
-      markWorkspaceRow(row, { quieted, hidden: hiddenWorkspaces })
+      const mark = markWorkspaceRow(row, { quieted, hidden: hiddenWorkspaces })
+      markGroupRows(row, mark.hidden)
     }
   }
 
@@ -245,8 +304,9 @@ export function createWorkspaceExclusion() {
       // 必须先取消待执行的扫描：否则它会在清理之后把刚摘掉的标记又加回去。
       scheduler.cancel()
       if (typeof document === 'undefined') return
-      for (const row of document.querySelectorAll(`.${HIDDEN_CLASS}, .${QUIET_CLASS}, .${HIDDEN_WORKSPACE_CLASS}`)) {
-        row.classList.remove(HIDDEN_CLASS, QUIET_CLASS, HIDDEN_WORKSPACE_CLASS)
+      const all = `.${HIDDEN_CLASS}, .${QUIET_CLASS}, .${HIDDEN_WORKSPACE_CLASS}, .${HIDDEN_GROUP_ROW_CLASS}`
+      for (const row of document.querySelectorAll(all)) {
+        row.classList.remove(HIDDEN_CLASS, QUIET_CLASS, HIDDEN_WORKSPACE_CLASS, HIDDEN_GROUP_ROW_CLASS)
       }
     },
   }
