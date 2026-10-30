@@ -24,6 +24,14 @@ import { createReadySignal } from './ready-signal.js'
 import { WORKER_REPORT_NODE_KIND, workerReportDefinition } from './worker-report-definition.js'
 import { WorkerReportView } from './worker-report-view.js'
 
+/**
+ * 本插件在宿主注册表里的身份：tab 类型 id、面板与入口的注册键都用它。
+ *
+ * 这几处必须同值（guide 入口按 provider id 分发，宿主拿它当槽位键），写两遍
+ * 容易改一处漏另一处——漏了就静默退回「全局入口」，入口又对所有会话可见。
+ */
+const PLUGIN_ID = 'dsh-coordinator'
+
 export const inject = ['slots', 'sidebarRightTabs', 'sessions']
 
 /**
@@ -35,7 +43,7 @@ export function apply(ctx) {
   // 注册必须放进 effect：注册表把 effect 挂到调用方 fiber 上，在别的插件的
   // apply 里直接注册会让浏览器启动静默卡住。
   ctx.effect(() => ctx.sidebarRightTabs.register({
-    id: 'dsh-coordinator',
+    id: PLUGIN_ID,
     kind: 'dsh-coordinator-board',
     title: () => '看板',
     guide: [{
@@ -54,7 +62,7 @@ export function apply(ctx) {
   // 第三方 bundle 不能把它写进 inject（缺服务会让整个插件挂起）。
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab',
-    key: 'dsh-coordinator',
+    key: PLUGIN_ID,
     inject: () => ({
       getSessions: () => ctx.sessions,
       getUiWorkspace: () => ctx.get('uiWorkspace'),
@@ -68,7 +76,7 @@ export function apply(ctx) {
   // 按 provider id 分发，这里接管自己那一个：项目会话里画出来，其余返回 null。
   ctx.effect(() => ctx.slots.inject('sidebar.right.tab.guide.entry', () => ctx.slots.register({
     name: 'sidebar.right.tab.guide.entry',
-    key: 'dsh-coordinator',
+    key: PLUGIN_ID,
     inject: () => ({
       callRemote: (method, args) => callProjectRemote(ctx, method, args),
     }),

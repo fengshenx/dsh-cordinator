@@ -18,27 +18,24 @@
 import { createElement, useEffect, useState } from 'react'
 import { ensureBoardStyles } from './board-styles.js'
 import { productIcon } from './icons.js'
+import { onProjectRemoteReady } from './project-remote.js'
+import { onProjectsChanged } from './project-changes.js'
 import { BOARD_TAB_KIND } from './project-board-monitor.js'
-import {
-  fetchProjectWorkers,
-  isBoardEntryVisible,
-  isCoordinatorProject,
-  isProjectWorker,
-  resolveProject,
-} from './project-board-data.js'
+import { isBoardEntryVisible, resolveBoardAccess } from './project-board-data.js'
 
 /**
  * 看板入口胶囊。
  *
  * @param {object} props - 槽位注入的运行时属性
  * @param {string} props.sessionId - 当前会话
+ * @param {string} props.kind - tab 类型 kind；宿主用它在入口上标 `data-sidebar-right-guide-entry`
  * @param {string} props.title - 入口标题（来自 tab 类型的 guide 定义）
  * @param {string} [props.description] - 入口说明；guide 条目多时宿主不传
  * @param {() => { tab: { actions: object } }} props.useTabInfo - 宿主绑定的 tab 信息 hook
  * @param {(method: string, args: unknown[]) => Promise<unknown>} props.callRemote - 项目通道调用
  * @returns {object | null} React 元素；非项目会话时不渲染
  */
-export function BoardGuideEntry({ sessionId, title, description, useTabInfo, callRemote }) {
+export function BoardGuideEntry({ sessionId, kind, title, description, useTabInfo, callRemote }) {
   const { tab } = useTabInfo()
   const [visible, setVisible] = useState(false)
 
@@ -46,33 +43,33 @@ export function BoardGuideEntry({ sessionId, title, description, useTabInfo, cal
     ensureBoardStyles()
   }, [])
 
-  // 入口可见性跟着会话走：解析项目 → 非协调者时再确认是不是项目 worker。
-  // 窗口重新聚焦时复核一次：项目可能在另一个窗口里被建出来或换过协调者。
+  // 入口可见性跟着会话走：解析项目与身份，与看板面板读同一个判定。三种时机
+  // 重判——通道就绪（guide 页常比 `$mount` 先画出来，挂载那一次必然失败）、
+  // 窗口聚焦（项目可能在另一个窗口里被建出来或换过协调者）、项目有变（同窗口
+  // 里注销项目或换协调者）。
   useEffect(() => {
     let cancelled = false
     const check = async () => {
       try {
-        const project = await resolveProject(callRemote, sessionId)
+        const access = await resolveBoardAccess(callRemote, sessionId)
         if (cancelled) return
-        let worker = false
-        if (project !== undefined && !isCoordinatorProject(project, sessionId)) {
-          const workers = await fetchProjectWorkers(callRemote)
-          if (cancelled) return
-          worker = isProjectWorker(project.id, sessionId, workers)
-        }
-        setVisible(isBoardEntryVisible(project, sessionId, worker))
+        setVisible(isBoardEntryVisible(access.project, sessionId, access.worker))
       } catch {
-        // 项目通道未就绪或一次 RPC 失败：按不可见处理，聚焦时再试。这里吞掉是
-        // 有意的——guide 页不能因为一次远程失败就把入口闪出来再消失。
+        // 项目通道未就绪或一次 RPC 失败：按不可见处理，上面三个时机都会再试。
+        // 这里吞掉是有意的——guide 页不能因为一次远程失败就把入口闪出来再消失。
         if (!cancelled) setVisible(false)
       }
     }
     void check()
+    const stopReady = onProjectRemoteReady(() => { void check() })
+    const stopChanged = onProjectsChanged(() => { void check() })
     const onFocus = () => { void check() }
     window.addEventListener('focus', onFocus)
     return () => {
       cancelled = true
       window.removeEventListener('focus', onFocus)
+      stopReady()
+      stopChanged()
     }
   }, [sessionId, callRemote])
 
@@ -83,10 +80,10 @@ export function BoardGuideEntry({ sessionId, title, description, useTabInfo, cal
     {
       type: 'button',
       className: 'dsh-coordinator-guide-entry',
-      onClick: () => {
-        tab.actions.openTab(BOARD_TAB_KIND, { replaceTab: true })
-        tab.actions.close()
-      },
+      // 宿主 EntryBox 用 entry.kind 标这一枚胶囊；接管渲染后保留同一个可观测
+      // 标识，真机取证与后续 e2e 才认得出它是哪个入口。
+      'data-sidebar-right-guide-entry': kind,
+      onClick: () => { tab.actions.openTab(BOARD_TAB_KIND, { replaceTab: true }) },
     },
     createElement(
       'span',

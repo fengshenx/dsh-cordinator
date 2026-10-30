@@ -57,6 +57,7 @@ export function isCoordinatorProject(project, sessionId) {
  * 普通会话不能——它们在项目目录里干活，但不拥有这个项目的呈现面。
  *
  * - `no-project`：会话不属于任何项目；
+ * - `pending`：项目在，但还没问出当前会话是不是 worker（身份未判定）；
  * - `coordinator-dead`：项目在，但绑定的协调者会话已失效（归档或被替换）；
  * - `not-viewable`：项目里能解析到，但当前会话既不是协调者也不是 worker
  *   （同目录的普通会话）；
@@ -64,17 +65,26 @@ export function isCoordinatorProject(project, sessionId) {
  *
  * `coordinatorAlive` 为 `undefined`（不知道）时按「还在」处理，不误报失效。
  *
+ * `isWorker` 传 `undefined` 表示「还没判定」：worker 身份要额外问一次宿主，
+ * 未回来之前不能按普通会话下结论——那会让 worker 先闪一句「看板只在项目会话
+ * 中打开」。判定出来之前走 `pending`，由调用方给骨架。
+ *
  * @param {object | undefined} project - 项目摘要
  * @param {string} sessionId - 当前面板所属会话
- * @param {boolean} [isWorker] - 当前会话是否是该项目的 worker
- * @returns {'no-project' | 'coordinator-dead' | 'not-viewable' | 'coordinator' | 'worker'} 视图状态
+ * @param {boolean | undefined} isWorker - 当前会话是否是该项目的 worker；`undefined` 表示未判定
+ * @returns {'no-project' | 'pending' | 'coordinator-dead' | 'not-viewable' | 'coordinator' | 'worker'} 视图状态
  */
-export function boardViewState(project, sessionId, isWorker = false) {
+export function boardViewState(project, sessionId, isWorker) {
   if (project === undefined) return 'no-project'
+  if (isCoordinatorProject(project, sessionId)) {
+    return project.coordinatorAlive === false ? 'coordinator-dead' : 'coordinator'
+  }
+  // 身份没问出来之前不下结论：每一步 await 之间都可能渲染一次。
+  if (isWorker === undefined) return 'pending'
+  // 协调者失效时 worker 与同目录普通会话都归「失效出口」——面板对两者都给
+  // 「去换新协调者」的引导（#19 的设计）；入口另按身份判，见 isBoardEntryVisible。
   if (project.coordinatorAlive === false) return 'coordinator-dead'
-  if (isCoordinatorProject(project, sessionId)) return 'coordinator'
-  if (isWorker) return 'worker'
-  return 'not-viewable'
+  return isWorker ? 'worker' : 'not-viewable'
 }
 
 /**
@@ -82,10 +92,10 @@ export function boardViewState(project, sessionId, isWorker = false) {
  *
  * @param {object | undefined} project - 项目摘要
  * @param {string} sessionId - 当前面板所属会话
- * @param {boolean} [isWorker] - 当前会话是否是该项目的 worker
+ * @param {boolean | undefined} isWorker - 当前会话是否是该项目的 worker；`undefined` 表示未判定，按不可看处理
  * @returns {boolean} 是否可展示看板
  */
-export function isBoardViewable(project, sessionId, isWorker = false) {
+export function isBoardViewable(project, sessionId, isWorker) {
   const view = boardViewState(project, sessionId, isWorker)
   return view === 'coordinator' || view === 'worker'
 }
@@ -93,18 +103,49 @@ export function isBoardViewable(project, sessionId, isWorker = false) {
 /**
  * 这个会话的右栏「看板」入口该不该出现。
  *
- * 入口跟着项目会话走：协调者与 worker 有，同目录的普通会话没有。协调者失效
- * 时入口仍然保留——点开是「去左栏换新协调者」的引导，藏起来等于把出口一起
- * 藏掉。
+ * 入口跟着**身份**走，不跟面板的视图状态走：协调者与 worker 有，同目录的普通
+ * 会话没有。协调者失效时项目会话的入口仍然保留——点开是「去左栏换新协调者」
+ * 的引导，藏起来等于把出口一起藏掉；但普通会话在同一个「协调者失效」状态下
+ * 也拿到入口，就是对不该看的会话撒谎（面板侧给它们失效引导是 #19 的有意设计，
+ * 入口不该照抄那个出口）。
  *
  * @param {object | undefined} project - 项目摘要
  * @param {string} sessionId - 当前会话
- * @param {boolean} [isWorker] - 当前会话是否是该项目的 worker
+ * @param {boolean | undefined} isWorker - 当前会话是否是该项目的 worker；`undefined` 表示未判定，不画
  * @returns {boolean} 是否显示入口
  */
-export function isBoardEntryVisible(project, sessionId, isWorker = false) {
-  const view = boardViewState(project, sessionId, isWorker)
-  return view !== 'no-project' && view !== 'not-viewable'
+export function isBoardEntryVisible(project, sessionId, isWorker) {
+  if (project === undefined) return false
+  return isCoordinatorProject(project, sessionId) || isWorker === true
+}
+
+/**
+ * 解析当前会话对项目看板的访问权：所属项目 + 是不是该项目的 worker。
+ *
+ * 入口与面板共用这一个判定，口径只写一遍。worker 身份要另问一次宿主
+ * （`sessionsByProject`）：协调者身份由项目摘要直接给出，其余会话只有登记表
+ * 知道。worker 表取数失败按「不是 worker」处理（fail closed）——判错这一侧的
+ * 代价是项目会话少看见板，比同目录的普通会话看见别人的看板小。
+ *
+ * 项目解析本身失败照常抛出：那是「有没有项目」都答不上来，调用方要自己决定是
+ * 重试还是显示错误。
+ *
+ * @param {(method: string, args: unknown[]) => Promise<unknown>} callRemote - 远程调用
+ * @param {string} sessionId - 当前会话
+ * @returns {Promise<{ project: object | undefined, worker: boolean }>} 访问权
+ */
+export async function resolveBoardAccess(callRemote, sessionId) {
+  const project = await resolveProject(callRemote, sessionId)
+  if (project === undefined) return { project, worker: false }
+  if (isCoordinatorProject(project, sessionId)) return { project, worker: false }
+  try {
+    const workers = await fetchProjectWorkers(callRemote)
+    return { project, worker: isProjectWorker(project.id, sessionId, workers) }
+  } catch {
+    // worker 表读不到时按「不是 worker」处理：入口与面板都不越权展示，下一轮
+    // 复核或聚焦时会重问。
+    return { project, worker: false }
+  }
 }
 
 /**
@@ -121,7 +162,8 @@ export async function fetchProjectWorkers(callRemote) {
   const table = new Map()
   if (!Array.isArray(groups)) return table
   for (const group of groups) {
-    if (typeof group?.projectId !== 'string' || !Array.isArray(group.sessionIds)) continue
+    // 空项目 id 永远匹配不上任何项目，进表只会让人以为有归属。
+    if (typeof group?.projectId !== 'string' || group.projectId === '' || !Array.isArray(group.sessionIds)) continue
     const ids = group.sessionIds.filter((id) => typeof id === 'string' && id !== '')
     table.set(group.projectId, new Set(ids))
   }

@@ -9,6 +9,7 @@ import {
   isCoordinatorProject,
   isProjectWorker,
   newCardIds,
+  resolveBoardAccess,
   resolveProject,
   sameProjectSummary,
 } from '../src/client/project-board-data.js'
@@ -37,47 +38,69 @@ test('看板只认项目协调者：worker 与同目录普通会话都不算', (
   assert.equal(isCoordinatorProject(undefined, 'coordinator-1'), false)
 })
 
-test('看板视图状态：归属、身份与存活收敛成五种出口', () => {
+test('看板视图状态：归属、身份与存活收敛成六种出口', () => {
   const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
-  assert.equal(boardViewState(undefined, 'coordinator-1'), 'no-project')
+  assert.equal(boardViewState(undefined, 'coordinator-1', false), 'no-project')
   // 协调者失效优先于身份：项目会话与旧协调者本人都该看到「去换新协调者」
-  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'coordinator-1'), 'coordinator-dead')
-  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'worker-1'), 'coordinator-dead')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'coordinator-1', false), 'coordinator-dead')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'worker-1', true), 'coordinator-dead')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'worker-1', false), 'coordinator-dead')
   // 项目 worker 可看；同目录的普通会话不可看
   assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'worker-1', true), 'worker')
-  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'worker-1'), 'not-viewable')
-  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'plain-1'), 'not-viewable')
-  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'coordinator-1'), 'coordinator')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'worker-1', false), 'not-viewable')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'plain-1', false), 'not-viewable')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'coordinator-1', false), 'coordinator')
   // 协调者本人不会被 worker 参数改判
   assert.equal(boardViewState(base, 'coordinator-1', true), 'coordinator')
   // 存活状态未知按「还在」处理
-  assert.equal(boardViewState(base, 'coordinator-1'), 'coordinator')
+  assert.equal(boardViewState(base, 'coordinator-1', false), 'coordinator')
+})
+
+test('看板视图状态：身份未判定时走 pending，不落进 not-viewable', () => {
+  const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  // worker 表那趟还没回来：既不能说「不是项目会话」，也不能说可看
+  assert.equal(boardViewState(base, 'worker-1', undefined), 'pending')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'worker-1', undefined), 'pending')
+  // 协调者身份由项目摘要直接给出，不需要等 worker 表
+  assert.equal(boardViewState(base, 'coordinator-1', undefined), 'coordinator')
+  // pending 不是可看状态：卡片取数不能抢跑
+  assert.equal(isBoardViewable(base, 'worker-1', undefined), false)
 })
 
 test('看板可看性：协调者与项目 worker 可看，普通会话不可看', () => {
   const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
-  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'coordinator-1'), true)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'coordinator-1', false), true)
   assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'worker-1', true), true)
   // 存活状态未知时按「还在」处理，不误报失效
-  assert.equal(isBoardViewable(base, 'coordinator-1'), true)
-  assert.equal(isBoardViewable({ ...base, coordinatorAlive: false }, 'coordinator-1'), false)
+  assert.equal(isBoardViewable(base, 'coordinator-1', false), true)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: false }, 'coordinator-1', false), false)
   assert.equal(isBoardViewable({ ...base, coordinatorAlive: false }, 'worker-1', true), false)
-  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'worker-1'), false)
-  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'plain-1'), false)
-  assert.equal(isBoardViewable(undefined, 'coordinator-1'), false)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'worker-1', false), false)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'plain-1', false), false)
+  assert.equal(isBoardViewable(undefined, 'coordinator-1', false), false)
 })
 
 test('入口可见性：只有项目会话有入口，协调者失效时仍保留出口', () => {
   const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
-  assert.equal(isBoardEntryVisible(base, 'coordinator-1'), true)
+  assert.equal(isBoardEntryVisible(base, 'coordinator-1', false), true)
   assert.equal(isBoardEntryVisible(base, 'worker-1', true), true)
   // 同目录里的普通会话没有看板入口
-  assert.equal(isBoardEntryVisible(base, 'plain-1'), false)
-  assert.equal(isBoardEntryVisible(base, 'worker-1'), false)
-  assert.equal(isBoardEntryVisible(undefined, 'coordinator-1'), false)
-  // 协调者已失效：入口留着，点开是「去左栏换新协调者」的引导
-  assert.equal(isBoardEntryVisible({ ...base, coordinatorAlive: false }, 'coordinator-1'), true)
-  assert.equal(isBoardEntryVisible({ ...base, coordinatorAlive: false }, 'worker-1', true), true)
+  assert.equal(isBoardEntryVisible(base, 'plain-1', false), false)
+  assert.equal(isBoardEntryVisible(base, 'worker-1', false), false)
+  assert.equal(isBoardEntryVisible(undefined, 'coordinator-1', false), false)
+  // 身份没问出来之前不画：宁可晚一拍，也不能先对普通会话撒谎
+  assert.equal(isBoardEntryVisible(base, 'worker-1', undefined), false)
+})
+
+test('入口可见性：协调者失效时，三条会话出口各归各位', () => {
+  const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  const dead = { ...base, coordinatorAlive: false }
+  // 旧协调者本人：入口留着，点开是「去左栏换新协调者」的引导
+  assert.equal(isBoardEntryVisible(dead, 'coordinator-1', false), true)
+  // 项目 worker：同样留着出口
+  assert.equal(isBoardEntryVisible(dead, 'worker-1', true), true)
+  // 同目录的普通会话：看板面板会给失效引导（#19 的有意设计），但入口不该画
+  assert.equal(isBoardEntryVisible(dead, 'plain-1', false), false)
 })
 
 test('项目 worker 表：按项目归组，非数组当空表', async () => {
@@ -92,8 +115,65 @@ test('项目 worker 表：按项目归组，非数组当空表', async () => {
   assert.equal(isProjectWorker('p1', 'plain-1', table), false)
   assert.equal(isProjectWorker('missing', 'w1', table), false)
   assert.equal(isProjectWorker('p1', '', table), false)
+  // 项目 id 为空、sessionIds 不是数组的条目都不进表
+  assert.equal(table.has(''), false)
+  assert.equal(table.has('p3'), false)
   assert.deepEqual(await fetchProjectWorkers(async () => 'not-an-array'), new Map())
   assert.deepEqual(await fetchProjectWorkers(async () => undefined), new Map())
+})
+
+/**
+ * 造一个项目通道假件：按方法名回值或抛错，并记录调用顺序。
+ *
+ * @param {Record<string, unknown>} answers - 方法名到返回值；`Error` 表示抛出
+ * @returns {{ calls: string[], callRemote: (method: string, args: unknown[]) => Promise<unknown> }} 假件
+ */
+function fakeRemote(answers) {
+  const calls = []
+  const callRemote = async (method) => {
+    calls.push(method)
+    const answer = answers[method]
+    if (answer instanceof Error) throw answer
+    return answer
+  }
+  return { calls, callRemote }
+}
+
+test('解析看板访问权：协调者不问 worker 表，worker 与普通会话都问', async () => {
+  const project = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  const groups = [{ projectId: 'p1', sessionIds: ['worker-1'] }]
+
+  const coordinator = fakeRemote({ resolveProject: project, sessionsByProject: groups })
+  assert.deepEqual(await resolveBoardAccess(coordinator.callRemote, 'coordinator-1'), { project, worker: false })
+  // 协调者身份由项目摘要直接给出，不必再问 worker 表
+  assert.deepEqual(coordinator.calls, ['resolveProject'])
+
+  const worker = fakeRemote({ resolveProject: project, sessionsByProject: groups })
+  assert.deepEqual(await resolveBoardAccess(worker.callRemote, 'worker-1'), { project, worker: true })
+  assert.deepEqual(worker.calls, ['resolveProject', 'sessionsByProject'])
+
+  const plain = fakeRemote({ resolveProject: project, sessionsByProject: groups })
+  assert.deepEqual(await resolveBoardAccess(plain.callRemote, 'plain-1'), { project, worker: false })
+})
+
+test('解析看板访问权：不属于项目就不问 worker 表', async () => {
+  const remote = fakeRemote({ resolveProject: undefined })
+  assert.deepEqual(await resolveBoardAccess(remote.callRemote, 'plain-1'), { project: undefined, worker: false })
+  assert.deepEqual(remote.calls, ['resolveProject'])
+})
+
+test('解析看板访问权：worker 表失败按「不是 worker」兜底', async () => {
+  const project = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  const remote = fakeRemote({
+    resolveProject: project,
+    sessionsByProject: new Error('项目通道调用失败：sessionsByProject（boom）'),
+  })
+  assert.deepEqual(await resolveBoardAccess(remote.callRemote, 'worker-1'), { project, worker: false })
+})
+
+test('解析看板访问权：项目解析失败照常抛出', async () => {
+  const remote = fakeRemote({ resolveProject: new Error('项目通道不可用') })
+  await assert.rejects(() => resolveBoardAccess(remote.callRemote, 's-1'), /项目通道不可用/)
 })
 
 test('项目摘要比较：名字、协调者或存活状态变了才算变化', () => {

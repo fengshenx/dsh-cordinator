@@ -30,11 +30,8 @@ import {
   BOARD_REFRESH_MS,
   boardViewState,
   fetchBoardCards,
-  fetchProjectWorkers,
   isBoardViewable,
-  isCoordinatorProject,
-  isProjectWorker,
-  resolveProject,
+  resolveBoardAccess,
   sameProjectSummary,
 } from './project-board-data.js'
 import { SlotRetention, retainTargetOf } from './slot-retain.js'
@@ -287,6 +284,25 @@ function BoardEmpty({ allDone, projectName }) {
 }
 
 /**
+ * 看板骨架：项目或身份还没解析出来时的占位。
+ *
+ * @returns {object} React 元素
+ */
+function BoardSkeleton() {
+  return createElement(
+    'div',
+    { className: 'dsh-coordinator-board-list' },
+    createElement(
+      'div',
+      { className: 'dsh-coordinator-board-group' },
+      createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
+      createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
+      createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
+    ),
+  )
+}
+
+/**
  * 看板面板主体实现。
  *
  * @param {object} props - 组件属性
@@ -303,7 +319,9 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   // 不能先闪一句「不属于任何项目」——那是还没问完就下的结论。
   const [resolved, setResolved] = useState(false)
   // 当前会话是不是该项目的 worker：看板对项目会话开放，worker 也算。
-  const [worker, setWorker] = useState(false)
+  // `undefined` 表示还没判定——不能默认 false，那会让 worker 的首帧落进
+  // 「看板只在项目会话中打开」的分支。
+  const [worker, setWorker] = useState(undefined)
   const [cards, setCards] = useState(() => [])
   // 两个错误源分开存：项目复核失败与卡片刷新失败各自有出口，否则一方成功
   // 会把另一方的错误清掉，错误页闪进闪出且提示与真实原因不符。
@@ -330,25 +348,20 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
     let cancelled = false
     setProjectError(null)
     setResolved(false)
-    // 换了会话就是换了项目，上一个项目的卡片不能留在面板里。
+    // 换了会话就是换了项目，上一个项目的卡片与身份不能留在面板里。
     setCards([])
     setLoaded(false)
+    setWorker(undefined)
     const load = () => {
-      resolveProject(callRemote, sessionId)
-        .then(async (resolvedProject) => {
+      resolveBoardAccess(callRemote, sessionId)
+        .then((access) => {
           if (cancelled) return
           // 摘要没变时保持旧引用：否则卡片取数的 effect 会跟着每 30 秒重启一次。
-          setProject((previous) => (sameProjectSummary(previous, resolvedProject) ? previous : resolvedProject))
+          // 项目与 worker 身份同一批落地：中间没有「有项目但身份未知」的渲染。
+          setProject((previous) => (sameProjectSummary(previous, access.project) ? previous : access.project))
+          setWorker(access.worker)
           setResolved(true)
           setProjectError(null)
-          // 只有非协调者才需要确认 worker 身份：协调者身份由项目摘要直接给出。
-          if (resolvedProject === undefined || isCoordinatorProject(resolvedProject, sessionId)) {
-            setWorker(false)
-            return
-          }
-          const workers = await fetchProjectWorkers(callRemote)
-          if (cancelled) return
-          setWorker(isProjectWorker(resolvedProject.id, sessionId, workers))
         })
         .catch((cause) => {
           if (cancelled) return
@@ -455,14 +468,14 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
               '看板按项目组织：在项目会话（协调者或 worker）里打开它。',
             ),
           )
-        : createElement(
-            'div',
-            { className: 'dsh-coordinator-board-group' },
-            createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
-            createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
-            createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
-          ),
+        : createElement(BoardSkeleton),
     )
+  }
+
+  // 身份还没问出来（worker 表那一趟还没回来）：先给骨架。这里不能落进下面的
+  // 「不是项目会话」分支——worker 打开看板会先闪一句错话再跳到卡片列表。
+  if (view === 'pending') {
+    return createElement(BoardSkeleton)
   }
 
   // 属于项目但不是项目会话（同目录的普通会话）；协调者本身已失效（归档或被
@@ -501,17 +514,7 @@ function BoardPanel({ sessionId, getSessions, getUiWorkspace, useSessionStatus, 
   }
 
   if (!loaded) {
-    return createElement(
-      'div',
-      { className: 'dsh-coordinator-board-list' },
-      createElement(
-        'div',
-        { className: 'dsh-coordinator-board-group' },
-        createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
-        createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
-        createElement('div', { className: 'dsh-coordinator-board-skeleton' }),
-      ),
-    )
+    return createElement(BoardSkeleton)
   }
 
   if (cards.length === 0) {
