@@ -98,6 +98,9 @@ const STYLE_TEXT = `
   height: 20px;
 }
 
+/* 图形点的弱化沿用 alpha：这里没有「比 tertiary 更浅」的 token 档，而点要的是
+   面积上的退让而不是色相的语义。文字类弱化一律换档不叠 alpha（编号/时间用
+   label-caption、折叠开关用 label-secondary），两条界线互不越界 */
 .dsh-coordinator-board-signal {
   display: inline-block;
   box-sizing: border-box;
@@ -216,13 +219,17 @@ const STYLE_TEXT = `
 
 /* 链接 chip：宿主「可点击产物链接」的示能——link 色 + 500 字重、默认无
    下划线、hover 与键盘焦点同为点状下划线，外面套一层发丝线圆角壳把它和
-   卡面分开。17px 高属「低于 H20 的微型控件」，圆角取 R4 */
+   卡面分开。18px 高属「低于 H20 的微型控件」，圆角取 R4。
+   max-width 是 border-box 下的 123px：内容盒正好 110px，与改前 content-box
+   写法（110 内容 + 12 横向 padding + 1 双边边框 = 总宽 124）等价——换材质不该
+   顺带把长标签截短。测量层与真实 chip 同 class，两边量到的都是这个 border-box
+   宽度，排布逻辑不受影响 */
 .dsh-coordinator-board-link-chip {
   display: inline-flex;
   flex: none;
   align-items: center;
   box-sizing: border-box;
-  max-width: 110px;
+  max-width: 123px;
   padding: 0 6px;
   border: 0.5px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-xs);
@@ -239,8 +246,10 @@ const STYLE_TEXT = `
 /* 链路行是 overflow: hidden 的横向裁切带，外扩焦点环只剩左右两段弧，
    所以焦点环改内嵌；下划线示能与 hover 一致。
    下划线偏移取 1px 而不是宿主的 3px：chip 的内容盒只有 16px（line-height
-   16 + 上下各 0.5px 发丝线），3px 落到底边框之外，被 chip 与 chip-body 的
-   overflow 裁掉，真机上整条不可见；1px 是能整条画在盒内的偏移 */
+   16 + 上下各 0.5px 发丝线）。偏移到 3px 时点线仍然画得出来，但已经压在底
+   边框上、与发丝线糊成一条；再往上整条落到 padding box 外，被两层 overflow
+   裁掉——两处独立读数分别从 4px 与 5px 起消失，差异来自 0.5px 边框在 Chrome
+   被取整成 1px（chip 实际 18px 高）。1px 留出可读的间距 */
 .dsh-coordinator-board-link-chip:focus-visible {
   text-decoration: underline dotted;
   text-underline-offset: 1px;
