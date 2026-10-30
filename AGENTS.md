@@ -22,6 +22,7 @@ dsh-coordinator —— dsh（DeepSeek Harness）的**仓外插件 bundle**：协
 | 起开发实例、多 worktree 并行 | [README 的开发一节](README.md#开发)、`scripts/dev.mjs` |
 | worker 生命周期、派工与结算 | [2026-10-29-worker-as-root-session.md](.agents/notes/2026-10-29-worker-as-root-session.md)、[2026-10-23-dispatch-and-wakeup.md](.agents/notes/2026-10-23-dispatch-and-wakeup.md) |
 | 卡片、槽位与项目绑定 | [2026-10-23-card-storage-and-numbering-scope.md](.agents/notes/2026-10-23-card-storage-and-numbering-scope.md)、[2026-10-27-project-bound-board.md](.agents/notes/2026-10-27-project-bound-board.md) |
+| 项目级提示词（`COORDINATOR.md` / `SLOTS.md`） | [2026-10-29-coordinator-manual-injection.md](.agents/notes/2026-10-29-coordinator-manual-injection.md)、`src/host/coordinator-context.js`、`src/host/slots/` |
 | 真机 / GUI 取证 | [docs/e2e-testing.md](docs/e2e-testing.md) |
 | 审查 PR、以 bot 身份发评论 | [用 bot 身份发评论](#用-bot-身份发评论)、`scripts/github-app-token.mjs` |
 | 协议层文案（`skills/`） | 现有 `skills/coordinator-mode/` 的行文与结构，保持同一口吻 |
@@ -39,6 +40,8 @@ build/client.mjs    esbuild 客户端构建（closure-factory 封装）
 scripts/            开发实例（dev.mjs）与 worktree 工具（worktree-spawn.mjs）
 docs/               长期文档（宿主能力边界、真机取证指引）
 .agents/notes/      非平凡改动的决策记忆
+COORDINATOR.md      本仓作为项目时，协调者会话自动注入的手册
+SLOTS.md            本仓作为项目时，执行者角色槽位（discuss / dev / review）
 ```
 
 ## 常用命令
