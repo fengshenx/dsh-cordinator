@@ -17,6 +17,8 @@ P2 的看板只有数据通道与一个能列出卡片的壳：卡面是带边�
 
 **active 卡三层**：标题行（14px 固定信号槽 → `#编号` mono 11px → 标题 13px/500 两行 clamp → 停滞时长）→ 链接行（缩进 22px，圆角胶囊 chip）→ 元信息行（槽位 chip：状态点 + 槽位名）。done 卡是单行轻量变体（绿勾 + 编号 + 标题 + 相对完成时间）。卡面无边框无阴影，静态零装饰，hover 只出背景。
 
+> 卡面视觉在 P6 被推翻：信息结构（三层 / done 单行 / 信号灯 / chip 排布）保留，材质换成宿主的行内卡片材质，见[看板卡面改用宿主卡片材质](2026-10-30-board-card-host-materials.md)。
+
 **链接 chip 按实测宽度排布**。`fitLinkChips` 的做法：可见 chip 数由实测宽度决定，放不下的收进「+N」胶囊；测量层是全量 chip 的不可见副本（`visibility:hidden` 仍参与布局，`<a>`/`<button>` 与真实 chip 同构），`ResizeObserver` 监听行宽变化重排。首帧未测量时全量展示而不是藏链接。chip 间距取 CSS 的真值（`getComputedStyle`），JS 里不再写第二份常量——两份会各改各的，排布就算错。
 
 **交互三语义**：点卡面其他区域 → 开只读详情浮层；点有 URL 的链接 chip → 新标签打开（`stopPropagation`）；点槽位 chip → 打开该槽位绑定的会话。键盘 Enter/Space 只在事件来自卡面根本身时触发——嵌套控件的 Enter/Space 归自己。

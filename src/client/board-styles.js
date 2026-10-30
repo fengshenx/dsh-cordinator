@@ -1,7 +1,13 @@
 /**
  * 看板样式表。
  *
- * 数值：8px 圆角、6px 卡间距、13px 标题、11px 弱化文字、22px 链接行缩进。颜色一律走
+ * 材质与几何全部取宿主的共享令牌，不写死数值：卡面是宿主「行内卡片」的
+ * 组合——`--dsw-alias-bg-layer-2` 底、`--dsw-elevation-stroke` 发丝描边、
+ * `--dsw-radius-*` 圆角，hover 换描边档并升到 `--dsw-elevation-panel`；
+ * 焦点环走 `--dsw-focus-ring-*`。同构的实现是宿主
+ * `client-ui-agent-team` 的成员卡与 `ui-sidebar-files` 的浮起树。
+ *
+ * 数值约定：8px 卡间距、13px 标题、11px 弱化文字、22px 链接行缩进。颜色一律走
  * 宿主 `--dsw-*` 令牌，不写死色值——第三方 bundle 不能 import 宿主 UI 包
  * （见 docs/subsystems/web-client.zh.md:93），既没有 Tailwind 也没有宿主 CSS
  * module 可用，只能自注入样式表（沿用 `modal-shell.js` 的做法）。
@@ -27,37 +33,54 @@ const STYLE_TEXT = `
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 12px 24px;
+  padding: 10px 12px 24px;
+  /* 滚动条取宿主浮层面板的 l2 一档（同 ui-sidebar-files 的浮起树） */
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
 .dsh-coordinator-board-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
-/* 卡面：无边框无阴影，静态零装饰，hover 只出背景 */
+/* 卡面：宿主行内卡片材质——bg-layer-2 底 + elevation-stroke 发丝描边，
+   hover 换描边档并升到 panel 投影。与 client-ui-agent-team 的成员卡同构：
+   重绑 stroke 色而不叠 border——中性 border 配 elevation 阴影被宿主
+   ui-theme 的 elevation spec 拒绝。静态取 l3 而不是成员卡的 l2：看板卡在
+   浅色 sidebar 上独自立着，没有弹出面板的暗底衬着，l2 在 1x 屏读不出边界。 */
 .dsh-coordinator-board-card {
   display: block;
+  box-sizing: border-box;
   width: 100%;
   border: 0;
-  border-radius: 8px;
-  padding: 6px 10px;
-  background: transparent;
+  border-radius: var(--dsw-radius-md);
+  padding: 10px 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l3);
+  box-shadow: var(--dsw-elevation-stroke);
   text-align: left;
   color: inherit;
   font: inherit;
   cursor: pointer;
-  transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out);
+  transition:
+    box-shadow var(--ds-transition-duration) var(--ds-ease-in-out),
+    background-color var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
-.dsh-coordinator-board-card:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .dsh-coordinator-board-card:hover {
+    --dsw-elevation-stroke-color: var(--dsw-alias-border-l4);
+    box-shadow: var(--dsw-elevation-panel);
+  }
 }
 
+/* 卡面在贴边滚动容器里，外扩焦点环会被裁掉，用内嵌环 */
 .dsh-coordinator-board-card:focus-visible {
-  outline: 1px solid var(--dsw-alias-link);
-  outline-offset: -1px;
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
 
 .dsh-coordinator-board-card-title-row {
@@ -138,8 +161,7 @@ const STYLE_TEXT = `
   font-size: 11px;
   line-height: 20px;
   font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-tertiary);
-  opacity: 0.7;
+  color: var(--dsw-alias-label-caption);
 }
 
 .dsh-coordinator-board-card-title {
@@ -162,7 +184,8 @@ const STYLE_TEXT = `
   font-size: 11px;
   line-height: 20px;
   font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-state-warn-primary);
+  /* warn 的 label 档比 primary 档在浅色下更可读 */
+  color: var(--dsw-alias-state-warn-label);
 }
 
 /* 链接行与元信息行缩进 22px，对齐标题文字起点 */
@@ -171,7 +194,7 @@ const STYLE_TEXT = `
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-top: 2px;
+  margin-top: 6px;
   padding-left: 22px;
   overflow: hidden;
   white-space: nowrap;
@@ -191,26 +214,34 @@ const STYLE_TEXT = `
   pointer-events: none;
 }
 
+/* 链接 chip：宿主「可点击产物链接」的示能——link 色 + 500 字重、默认无
+   下划线、hover 时点状下划线，外面套一层发丝线圆角壳把它和卡面分开 */
 .dsh-coordinator-board-link-chip {
   display: inline-flex;
   flex: none;
   align-items: center;
+  box-sizing: border-box;
   max-width: 110px;
-  padding: 1px 6px;
-  border: 1px solid var(--dsw-alias-border-l3);
-  border-radius: 999px;
+  padding: 0 6px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
   font-size: 11px;
   line-height: 16px;
+  font-weight: 500;
   color: var(--dsw-alias-link);
-  opacity: 0.8;
   background: transparent;
   cursor: pointer;
   text-decoration: none;
   overflow: hidden;
 }
 
-.dsh-coordinator-board-link-chip:hover {
-  opacity: 1;
+@media (hover: hover) {
+  .dsh-coordinator-board-link-chip:hover {
+    border-color: var(--dsw-alias-border-l4);
+    background: var(--dsw-alias-interactive-bg-hover);
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
 }
 
 .dsh-coordinator-board-link-chip-body {
@@ -232,14 +263,13 @@ const STYLE_TEXT = `
   font-family: var(--ds-font-family-code);
   font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-tertiary);
-  opacity: 1;
 }
 
 .dsh-coordinator-board-card-meta {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 2px;
+  margin-top: 6px;
   padding-left: 22px;
 }
 
@@ -256,8 +286,10 @@ const STYLE_TEXT = `
   cursor: pointer;
 }
 
-.dsh-coordinator-board-slot-chip:hover {
-  color: var(--dsw-alias-label-primary);
+@media (hover: hover) {
+  .dsh-coordinator-board-slot-chip:hover {
+    color: var(--dsw-alias-label-primary);
+  }
 }
 
 .dsh-coordinator-board-slot-dot {
@@ -266,6 +298,7 @@ const STYLE_TEXT = `
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--dsw-alias-label-tertiary);
   opacity: 0.4;
 }
@@ -309,14 +342,16 @@ const STYLE_TEXT = `
   .dsh-coordinator-board-slot-dot-waiting { animation: none; }
 }
 
-/* done 卡：单行轻量变体 */
+/* done 卡：单行轻量变体。成品不需要抢注意力，就没有卡面材质——
+   透明的行，靠 hover 与 active 卡的卡面区分 */
 .dsh-coordinator-board-card-done {
   display: flex;
   align-items: center;
+  box-sizing: border-box;
   gap: 8px;
   width: 100%;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm);
   padding: 6px 10px;
   background: transparent;
   text-align: left;
@@ -326,13 +361,16 @@ const STYLE_TEXT = `
   transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
-.dsh-coordinator-board-card-done:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .dsh-coordinator-board-card-done:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .dsh-coordinator-board-card-done:focus-visible {
-  outline: 1px solid var(--dsw-alias-link);
-  outline-offset: -1px;
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
 }
 
 .dsh-coordinator-board-done-check {
@@ -358,15 +396,14 @@ const STYLE_TEXT = `
   font-size: 11px;
   line-height: 20px;
   font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-tertiary);
-  opacity: 0.7;
+  color: var(--dsw-alias-label-caption);
 }
 
 /* done 折叠区 */
 .dsh-coordinator-board-done-section {
-  margin-top: 12px;
-  padding-top: 4px;
-  border-top: 1px solid var(--dsw-alias-border-l3);
+  margin-top: 16px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--dsw-alias-border-l3);
 }
 
 .dsh-coordinator-board-done-toggle {
@@ -375,7 +412,7 @@ const STYLE_TEXT = `
   gap: 6px;
   width: 100%;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-sm);
   padding: 6px 4px;
   background: transparent;
   font-size: 13px;
@@ -387,9 +424,11 @@ const STYLE_TEXT = `
   text-align: left;
 }
 
-.dsh-coordinator-board-done-toggle:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  opacity: 1;
+@media (hover: hover) {
+  .dsh-coordinator-board-done-toggle:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+    opacity: 1;
+  }
 }
 
 .dsh-coordinator-board-done-chevron {
@@ -406,7 +445,8 @@ const STYLE_TEXT = `
   flex: none;
   padding: 1px 6px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+  corner-shape: round;
+  background: var(--dsw-alias-interactive-bg-hover);
   font-size: 11px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
@@ -415,8 +455,8 @@ const STYLE_TEXT = `
 
 /* 骨架与空态 */
 .dsh-coordinator-board-skeleton {
-  height: 56px;
-  border-radius: 8px;
+  height: 64px;
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-skeleton);
   animation: dsh-coordinator-board-fade 1.4s ease-in-out infinite;
 }
@@ -445,7 +485,7 @@ const STYLE_TEXT = `
   justify-content: center;
   width: 48px;
   height: 48px;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-tertiary);
 }
@@ -459,8 +499,7 @@ const STYLE_TEXT = `
   margin-top: 12px;
   font-size: 14px;
   line-height: 20px;
-  color: var(--dsw-alias-label-primary);
-  opacity: 0.7;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .dsh-coordinator-board-empty-hint {
@@ -512,8 +551,10 @@ const STYLE_TEXT = `
   cursor: pointer;
 }
 
-.dsh-coordinator-card-detail-close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .dsh-coordinator-card-detail-close:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .dsh-coordinator-card-detail-meta {
@@ -528,13 +569,13 @@ const STYLE_TEXT = `
   font-size: 11px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-tertiary);
-  opacity: 0.7;
+  color: var(--dsw-alias-label-caption);
 }
 
 .dsh-coordinator-card-detail-status {
   padding: 2px 8px;
   border-radius: 999px;
+  corner-shape: round;
   background: var(--dsw-alias-interactive-bg-hover);
   font-size: 11px;
   line-height: 16px;
@@ -597,9 +638,17 @@ const STYLE_TEXT = `
   padding: 6px 0;
   font-size: 13px;
   line-height: 20px;
+  font-weight: 500;
   color: var(--dsw-alias-link);
   text-decoration: none;
-  border-bottom: 1px solid var(--dsw-alias-border-l3);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+@media (hover: hover) {
+  .dsh-coordinator-card-detail-link:hover {
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
 }
 
 .dsh-coordinator-card-detail-link:last-child {
