@@ -49,6 +49,10 @@ function createFakeHost(sessionCwds) {
     },
     on(event, handler) {
       holder.handlers.set(event, handler)
+      // 宿主的 `ctx.on` 一定返回 disposer：插件卸载时派工器会调用它解除订阅。
+      return () => {
+        holder.handlers.delete(event)
+      }
     },
     provide(key, value) {
       holder.provided.set(key, value)
