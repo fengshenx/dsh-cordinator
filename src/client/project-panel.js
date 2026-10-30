@@ -30,19 +30,22 @@
  * @module dsh-coordinator/client/project-panel
  */
 
-import { createElement, Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import {
   classifyDeletionResult,
   collectExcludedSessionIds,
+  collectHiddenWorkspaceIds,
+  currentSessionIdOf,
   defaultProjectName,
   describeDeletionNotice,
   describeProjectRemoval,
   isArchiveActiveRefusal,
   isProjectOpenable,
   openCoordinatorSession,
+  quietWorkspaceOf,
   validateProjectName,
 } from './project-panel-logic.js'
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
@@ -88,6 +91,10 @@ export function ProjectPanel(props) {
   const [archiveError, setArchiveError] = useState('')
   /** 已归档的会话 id：宿主快照是真源，左栏只按它把行藏起来。 */
   const [archivedSessionIds, setArchivedSessionIds] = useState(() => new Set())
+  /** 主区域的当前会话 id；宿主按它点亮会话行与工作区分组。 */
+  const [currentSessionId, setCurrentSessionId] = useState(undefined)
+  /** 工作区视图（`{ workspaceId, sessionIds }`）；用来从当前会话反查所属工作区。 */
+  const [workspaceItems, setWorkspaceItems] = useState([])
   /**
    * 等待用户改名的待建项目；null 表示没有。
    *
@@ -170,6 +177,7 @@ export function ProjectPanel(props) {
         }
       }
       setSessionRows(rows)
+      setCurrentSessionId(currentSessionIdOf(snapshot.byId))
       // 归属重算要过宿主，合并到一次延迟刷新里，避免每条事件都打一次远程调用。
       if (pending !== null) clearTimeout(pending)
       pending = setTimeout(() => { pending = null; void refreshSessionIndex() }, 1000)
@@ -199,6 +207,7 @@ export function ProjectPanel(props) {
         setArchivedSessionIds(new Set(Array.isArray(snapshot?.archivedSessionIds)
           ? snapshot.archivedSessionIds
           : []))
+        setWorkspaceItems(Array.isArray(snapshot?.items) ? snapshot.items : [])
       }
       sync()
       unsubscribe = list.subscribe(sync)
@@ -211,14 +220,30 @@ export function ProjectPanel(props) {
     }
   }, [getWorkspaces, onWorkspacesReady])
 
+  const excludedSessionIds = useMemo(
+    () => collectExcludedSessionIds(projects, sessionsByProject),
+    [projects, sessionsByProject],
+  )
+
   // 项目的协调者与 worker 会话都不在官方工作区树里重复出现：它们由项目区块呈现。
   // worker 是普通根会话（不是 subagent），官方树不会自己滤掉，只能按会话 id 排除。
   // 用户在项目目录里手动开的会话不属于项目，留在官方树里。
+  //
+  // 当前会话若就是被排除的那条，它所属的工作区在官方树里会点亮成「开着」的样子，
+  // 而里面没有可见的会话行——这个点亮一并压掉。
+  const quietWorkspaceId = quietWorkspaceOf(currentSessionId, excludedSessionIds, workspaceItems)
+  // 项目自建的工作区（`workspaceId`）在官方树里整行藏掉：那个目录已经在项目区块里，
+  // 工作区树里再来一行是用户没加过的东西。
+  const hiddenWorkspaceIds = useMemo(() => collectHiddenWorkspaceIds(projects), [projects])
   useEffect(() => {
     const exclusion = createWorkspaceExclusion()
-    exclusion.update(collectExcludedSessionIds(projects, sessionsByProject))
+    exclusion.update({
+      sessionIds: excludedSessionIds,
+      quietWorkspaceIds: quietWorkspaceId === undefined ? [] : [quietWorkspaceId],
+      hiddenWorkspaceIds,
+    })
     return () => exclusion.dispose()
-  }, [projects, sessionsByProject])
+  }, [excludedSessionIds, quietWorkspaceId, hiddenWorkspaceIds])
 
   const startAdd = useCallback(async () => {
     if (busy) return
