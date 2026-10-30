@@ -5,7 +5,7 @@
  * 组合——`--dsw-alias-bg-layer-2` 底、`--dsw-elevation-stroke` 发丝描边、
  * `--dsw-radius-*` 圆角，hover 换描边档并升到 `--dsw-elevation-panel`；
  * 焦点环走 `--dsw-focus-ring-*`。同构的实现是宿主
- * `client-ui-agent-team` 的成员卡与 `ui-sidebar-files` 的浮起树。
+ * `client-ui-agent-team` 的成员卡。
  *
  * 数值约定：8px 卡间距、13px 标题、11px 弱化文字、22px 链接行缩进。颜色一律走
  * 宿主 `--dsw-*` 令牌，不写死色值——第三方 bundle 不能 import 宿主 UI 包
@@ -34,9 +34,8 @@ const STYLE_TEXT = `
   min-height: 0;
   overflow-y: auto;
   padding: 10px 12px 24px;
-  /* 滚动条取宿主浮层面板的 l2 一档（同 ui-sidebar-files 的浮起树） */
-  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
-  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  /* 滚动条档位不在这里重绑：看板所在的宿主 paneBody/floatBody 已按浮起面绑成
+     l2，本层再绑一次只是同值重复；写 body 的基础档反而会在浮起面上读成脏印 */
 }
 
 .dsh-coordinator-board-group {
@@ -55,7 +54,7 @@ const STYLE_TEXT = `
   box-sizing: border-box;
   width: 100%;
   border: 0;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--dsw-radius-lg);
   padding: 10px 12px;
   background: var(--dsw-alias-bg-layer-2);
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l3);
@@ -105,6 +104,7 @@ const STYLE_TEXT = `
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--dsw-alias-label-tertiary);
   opacity: 0.4;
 }
@@ -215,7 +215,8 @@ const STYLE_TEXT = `
 }
 
 /* 链接 chip：宿主「可点击产物链接」的示能——link 色 + 500 字重、默认无
-   下划线、hover 时点状下划线，外面套一层发丝线圆角壳把它和卡面分开 */
+   下划线、hover 与键盘焦点同为点状下划线，外面套一层发丝线圆角壳把它和
+   卡面分开。17px 高属「低于 H20 的微型控件」，圆角取 R4 */
 .dsh-coordinator-board-link-chip {
   display: inline-flex;
   flex: none;
@@ -224,7 +225,7 @@ const STYLE_TEXT = `
   max-width: 110px;
   padding: 0 6px;
   border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--dsw-radius-xs);
   font-size: 11px;
   line-height: 16px;
   font-weight: 500;
@@ -235,12 +236,25 @@ const STYLE_TEXT = `
   overflow: hidden;
 }
 
+/* 链路行是 overflow: hidden 的横向裁切带，外扩焦点环只剩左右两段弧，
+   所以焦点环改内嵌；下划线示能与 hover 一致。
+   下划线偏移取 1px 而不是宿主的 3px：chip 的内容盒只有 16px（line-height
+   16 + 上下各 0.5px 发丝线），3px 落到底边框之外，被 chip 与 chip-body 的
+   overflow 裁掉，真机上整条不可见；1px 是能整条画在盒内的偏移 */
+.dsh-coordinator-board-link-chip:focus-visible {
+  text-decoration: underline dotted;
+  text-underline-offset: 1px;
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
 @media (hover: hover) {
   .dsh-coordinator-board-link-chip:hover {
     border-color: var(--dsw-alias-border-l4);
     background: var(--dsw-alias-interactive-bg-hover);
     text-decoration: underline dotted;
-    text-underline-offset: 3px;
+    text-underline-offset: 1px;
   }
 }
 
@@ -351,7 +365,7 @@ const STYLE_TEXT = `
   gap: 8px;
   width: 100%;
   border: 0;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--dsw-radius-md);
   padding: 6px 10px;
   background: transparent;
   text-align: left;
@@ -412,14 +426,13 @@ const STYLE_TEXT = `
   gap: 6px;
   width: 100%;
   border: 0;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: var(--dsw-radius-md);
   padding: 6px 4px;
   background: transparent;
   font-size: 13px;
   line-height: 20px;
   font-weight: 500;
-  color: var(--dsw-alias-label-primary);
-  opacity: 0.7;
+  color: var(--dsw-alias-label-secondary);
   cursor: pointer;
   text-align: left;
 }
@@ -427,7 +440,7 @@ const STYLE_TEXT = `
 @media (hover: hover) {
   .dsh-coordinator-board-done-toggle:hover {
     background: var(--dsw-alias-interactive-bg-hover);
-    opacity: 1;
+    color: var(--dsw-alias-label-primary);
   }
 }
 
@@ -456,7 +469,7 @@ const STYLE_TEXT = `
 /* 骨架与空态 */
 .dsh-coordinator-board-skeleton {
   height: 64px;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--dsw-radius-lg);
   background: var(--dsw-alias-bg-skeleton);
   animation: dsh-coordinator-board-fade 1.4s ease-in-out infinite;
 }
@@ -485,7 +498,7 @@ const STYLE_TEXT = `
   justify-content: center;
   width: 48px;
   height: 48px;
-  border-radius: var(--dsw-radius-md);
+  border-radius: var(--dsw-radius-lg);
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-tertiary);
 }
@@ -649,6 +662,12 @@ const STYLE_TEXT = `
     text-decoration: underline dotted;
     text-underline-offset: 3px;
   }
+}
+
+/* 键盘焦点与 hover 同一示能；不可跳转的链接渲染成 div，不在此列 */
+.dsh-coordinator-card-detail-link:focus-visible {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
 }
 
 .dsh-coordinator-card-detail-link:last-child {
