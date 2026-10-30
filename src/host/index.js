@@ -1,10 +1,11 @@
 /**
  * dsh-coordinator 的宿主侧插件。
  *
- * 贡献八件事：bundle 内置 skill 的发现（协议层）、后台派工工具、worker 会话的
- * 创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具 + worker 自己用
- * `worker_done` 交作业）、派工完成后的自动唤醒、任务看板卡片存储与卡片工具、
- * 项目注册表、项目数据的 Typert 远程通道，以及角色槽位到系统提示词的注入。
+ * 贡献九件事：bundle 内置 skill 的发现（协议层）、后台派工工具、worker 会话的
+ * 创建与续聊（常驻根会话 + 登记表落盘 + `message_worker` 工具）、轮次结束时由
+ * 会话事件自动结算回报并唤醒协调者、任务看板卡片存储与卡片工具、项目注册表、
+ * 项目数据的 Typert 远程通道、角色槽位到系统提示词的注入，以及项目协调者手册
+ * （`COORDINATOR.md`）的注入。
  *
  * 客户端侧（交付看板 UI 与左栏项目区块）在 `src/client/`，跑在浏览器进程，与本
  * 模块不共处。
@@ -21,7 +22,6 @@ import { createCreateCardTool, createUpdateCardTool, createListCardsTool } from 
 import { createNotificationStore, resolveDshHome } from './notification-store.js'
 import { createWorkerRegistry } from './worker-registry.js'
 import { createWorkerSessions } from './worker-sessions.js'
-import { createWorkerDoneTool } from './tools/worker-done.js'
 import { createCardStore } from './cards/store.js'
 import { createProjectStore } from './projects/store.js'
 import { createProjectService } from './projects/service.js'
@@ -29,6 +29,7 @@ import { createProjectRemote } from './projects/remote.js'
 import { createDispatcher } from './dispatch.js'
 import { applyToolGate } from './tools/gate.js'
 import { applyRoleContext } from './slots/index.js'
+import { applyCoordinatorContext } from './coordinator-context.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -117,8 +118,6 @@ export function apply(ctx) {
 
   ctx.tools.register(createSpawnWorkerTool({ dispatcher }))
   ctx.tools.register(createMessageWorkerTool({ dispatcher }))
-  // worker 收尾交作业的入口：只有 worker 会话能看见（见 gate.js 的工具面分配）。
-  ctx.tools.register(createWorkerDoneTool({ dispatcher }))
 
   // 建卡与改卡对所有会话开放：worker 边干活边把状态写回卡片，普通会话也能为
   // 项目登记待办；查全库卡片只给协调者。
@@ -135,6 +134,16 @@ export function apply(ctx) {
     // 项目目录。都不是时回落会话自己的目录。
     resolveDirectory: (sessionId) => projectService.directoryOfCoordinator(sessionId)
       ?? ctx.get('sessions')?.get(sessionId)?.header?.cwd,
+    logger,
+  })
+
+  // 协调者手册注入：项目的协调者会话每轮 turn 注入项目根 `COORDINATOR.md` 的
+  // 正文。它按身份决定，不需要卡片绑定——协调者天然属于这个项目。
+  applyCoordinatorContext({
+    ctx,
+    // 只有协调者会话在这里有值；索引还没重建完时同样为空，那一轮不注入、
+    // 下一轮补上（上下文每轮重新求值）。
+    resolveDirectory: (sessionId) => projectService.directoryOfCoordinator(sessionId),
     logger,
   })
 

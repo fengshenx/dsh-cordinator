@@ -59,6 +59,20 @@ test('投递失败时通知留在队列并累计尝试次数', async () => {
   }
 })
 
+test('同一 id 重复入队只留一条，不覆盖已落盘的内容', async () => {
+  const { store, home } = await createStore()
+  try {
+    await store.enqueue(SAMPLE)
+    // 落盘失败重试或投递失败后重结算会再入队同一个 id：内容以第一次落盘的为准。
+    await store.enqueue({ ...SAMPLE, text: '新一轮的正文' })
+    const pending = await store.listPending()
+    assert.equal(pending.length, 1)
+    assert.equal(pending[0].text, SAMPLE.text)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('队列文件损坏时备份并以空队列继续', async () => {
   const { store, home } = await createStore()
   const logs = []

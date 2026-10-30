@@ -16,8 +16,8 @@
 
 import {
   BOARD_REFRESH_MS,
+  boardViewState,
   fetchBoardCards,
-  isBoardViewable,
   newCardIds,
   resolveProject,
 } from './project-board-data.js'
@@ -83,13 +83,15 @@ export function createBoardWatch({ callRemote, onNewCard }) {
      */
     async poll() {
       if (typeof sessionId !== 'string' || sessionId === '') return
-      // 看板只给项目协调者：worker 或项目目录里的普通会话在屏幕上时，新卡不该
-      // 把看板弹到它们的右栏。
+      // 自动弹出只给项目协调者：worker 能看待办，但新卡不该在它干活时把右栏
+      // 弹到看板上；同目录的普通会话更不该被打断。
       if (ineligible) return
       if (project === undefined) {
         const resolved = await resolveProject(callRemote, sessionId)
         if (resolved === undefined) return
-        if (!isBoardViewable(resolved, sessionId)) {
+        // 显式写成「协调者」：自动弹出只给协调者，不靠 `isBoardViewable` 的
+        // 默认参数把 worker 挡在外面——那读起来像「可看就弹」。
+        if (boardViewState(resolved, sessionId, false) !== 'coordinator') {
           ineligible = true
           return
         }
@@ -99,7 +101,7 @@ export function createBoardWatch({ callRemote, onNewCard }) {
         // 继续弹给一个已经不是协调者的会话。
         const resolved = await resolveProject(callRemote, sessionId)
         if (resolved === undefined) return
-        if (!isBoardViewable(resolved, sessionId)) {
+        if (boardViewState(resolved, sessionId, false) !== 'coordinator') {
           ineligible = true
           return
         }

@@ -166,8 +166,8 @@ export function createProjectService({
    *
    * 工具面在 `agent/created` 里按 `isCoordinatorSession()` 当场裁，而那个事件在
    * 建会话内部就发出来了。先建会话、后登记的话，协调者出生的那一刻注册表里还没
-   * 有它，于是被裁成普通会话——`spawn_worker` / `message_worker` / `list_cards` /
-   * `worker_done` 全没。裁错的限制不会自己松开，要等这个会话下次冷恢复重算。
+   * 有它，于是被裁成普通会话——`spawn_worker` / `message_worker` / `list_cards`
+   * 全没。裁错的限制不会自己松开，要等这个会话下次冷恢复重算。
    *
    * 所以 id 由这里预生成、先登记，再让宿主用它建会话。两条建会话路径都接受传入
    * 的 id（`sessionController.create({ sessionId })` 与 `agents.create({ sessionId })`）。
@@ -362,7 +362,7 @@ export function createProjectService({
       const project = await store.get(projectId)
       if (project === undefined) return undefined
       // 项目里的普通会话与 worker 也能解析到项目（卡片归属要用），但看板只对
-      // 协调者开放——客户端拿这条指针判断。
+      // 项目会话开放——客户端拿这条指针与 worker 表判断。
       return summarizeProject(project)
     },
 

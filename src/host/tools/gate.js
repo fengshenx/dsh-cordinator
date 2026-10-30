@@ -12,8 +12,8 @@
  *   （会话由 `agents.create` 建，会话头没有 `origin` 标记，只能按登记判）；
  * - **普通会话**：其余会话。
  *
- * 协调者拿到全部工具；普通会话与 worker 都没有 worker 编排与全库查询，worker
- * 另可交作业。
+ * 协调者拿到全部工具；普通会话与 worker 都没有 worker 编排与全库查询。worker 的
+ * 完成回报不占工具面：由 `dispatch.js` 订阅会话事件自动结算。
  */
 
 /** 只有协调者能用的工具：worker 编排与全库卡片查询。 */
@@ -21,11 +21,6 @@ export const COORDINATOR_ONLY_TOOLS = Object.freeze([
   'list_cards',
   'spawn_worker',
   'message_worker',
-])
-
-/** 只有 worker 能用的工具：收尾交作业。 */
-export const WORKER_ONLY_TOOLS = Object.freeze([
-  'worker_done',
 ])
 
 /**
@@ -57,8 +52,8 @@ export const COORDINATOR_UNUSABLE_TOOLS = Object.freeze([
 export function deniedToolsFor({ agent, isCoordinatorSession, isWorkerSession }) {
   const worker = typeof isWorkerSession === 'function' && isWorkerSession(agent?.id) === true
   if (worker) return [...COORDINATOR_ONLY_TOOLS]
-  if (isCoordinatorSession(agent?.id)) return [...WORKER_ONLY_TOOLS, ...COORDINATOR_UNUSABLE_TOOLS]
-  return [...COORDINATOR_ONLY_TOOLS, ...WORKER_ONLY_TOOLS]
+  if (isCoordinatorSession(agent?.id)) return [...COORDINATOR_UNUSABLE_TOOLS]
+  return [...COORDINATOR_ONLY_TOOLS]
 }
 
 /**

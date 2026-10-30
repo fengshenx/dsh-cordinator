@@ -12,9 +12,9 @@
  * - 会话是普通会话，人可以直接打开它输入新指令；
  * - 会话有独立 JSONL，进程重启后由 `agents.resume()` 接着跑。
  *
- * 本模块只管「会话活着没有、这轮怎么发起」，完成回报由 `worker_done` 工具负责：
- * 根会话没有 `activation.result` 那种终态 promise，宿主也没有给第三方读「最后一轮
- * 产出」的稳定 API（`Session.snapshotEvents` 已标废弃），所以产出由 worker 自己报。
+ * 本模块只管「会话活着没有、这轮怎么发起」；完成回报由 `dispatch.js` 订阅会话事件
+ * 结算——它在 `turn/end` 那一刻折叠这一轮的 `assistant/message`，不要求 worker 主动
+ * 交付，也不占工具面。
  *
  * @module dsh-coordinator/host/worker-sessions
  */
