@@ -3,8 +3,11 @@ import { test } from 'node:test'
 import {
   boardViewState,
   fetchBoardCards,
+  fetchProjectWorkers,
+  isBoardEntryVisible,
   isBoardViewable,
   isCoordinatorProject,
+  isProjectWorker,
   newCardIds,
   resolveProject,
   sameProjectSummary,
@@ -34,26 +37,63 @@ test('看板只认项目协调者：worker 与同目录普通会话都不算', (
   assert.equal(isCoordinatorProject(undefined, 'coordinator-1'), false)
 })
 
-test('看板视图状态：归属、身份与存活收敛成四种出口', () => {
+test('看板视图状态：归属、身份与存活收敛成五种出口', () => {
   const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
   assert.equal(boardViewState(undefined, 'coordinator-1'), 'no-project')
-  // 协调者失效优先于身份：执行会话与旧协调者本人都该看到「去换新协调者」
+  // 协调者失效优先于身份：项目会话与旧协调者本人都该看到「去换新协调者」
   assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'coordinator-1'), 'coordinator-dead')
   assert.equal(boardViewState({ ...base, coordinatorAlive: false }, 'worker-1'), 'coordinator-dead')
+  // 项目 worker 可看；同目录的普通会话不可看
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'worker-1', true), 'worker')
   assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'worker-1'), 'not-viewable')
+  assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'plain-1'), 'not-viewable')
   assert.equal(boardViewState({ ...base, coordinatorAlive: true }, 'coordinator-1'), 'coordinator')
+  // 协调者本人不会被 worker 参数改判
+  assert.equal(boardViewState(base, 'coordinator-1', true), 'coordinator')
   // 存活状态未知按「还在」处理
   assert.equal(boardViewState(base, 'coordinator-1'), 'coordinator')
 })
 
-test('看板可看性：协调者会话还得没失效', () => {
+test('看板可看性：协调者与项目 worker 可看，普通会话不可看', () => {
   const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
   assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'coordinator-1'), true)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'worker-1', true), true)
   // 存活状态未知时按「还在」处理，不误报失效
   assert.equal(isBoardViewable(base, 'coordinator-1'), true)
   assert.equal(isBoardViewable({ ...base, coordinatorAlive: false }, 'coordinator-1'), false)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: false }, 'worker-1', true), false)
   assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'worker-1'), false)
+  assert.equal(isBoardViewable({ ...base, coordinatorAlive: true }, 'plain-1'), false)
   assert.equal(isBoardViewable(undefined, 'coordinator-1'), false)
+})
+
+test('入口可见性：只有项目会话有入口，协调者失效时仍保留出口', () => {
+  const base = { id: 'p1', name: '项目一', coordinatorSessionId: 'coordinator-1' }
+  assert.equal(isBoardEntryVisible(base, 'coordinator-1'), true)
+  assert.equal(isBoardEntryVisible(base, 'worker-1', true), true)
+  // 同目录里的普通会话没有看板入口
+  assert.equal(isBoardEntryVisible(base, 'plain-1'), false)
+  assert.equal(isBoardEntryVisible(base, 'worker-1'), false)
+  assert.equal(isBoardEntryVisible(undefined, 'coordinator-1'), false)
+  // 协调者已失效：入口留着，点开是「去左栏换新协调者」的引导
+  assert.equal(isBoardEntryVisible({ ...base, coordinatorAlive: false }, 'coordinator-1'), true)
+  assert.equal(isBoardEntryVisible({ ...base, coordinatorAlive: false }, 'worker-1', true), true)
+})
+
+test('项目 worker 表：按项目归组，非数组当空表', async () => {
+  const table = await fetchProjectWorkers(async () => [
+    { projectId: 'p1', sessionIds: ['w1', 'w2'] },
+    { projectId: 'p2', sessionIds: ['w3'] },
+    { projectId: '', sessionIds: ['bad'] },
+    { projectId: 'p3', sessionIds: 'not-an-array' },
+  ])
+  assert.equal(isProjectWorker('p1', 'w1', table), true)
+  assert.equal(isProjectWorker('p2', 'w1', table), false)
+  assert.equal(isProjectWorker('p1', 'plain-1', table), false)
+  assert.equal(isProjectWorker('missing', 'w1', table), false)
+  assert.equal(isProjectWorker('p1', '', table), false)
+  assert.deepEqual(await fetchProjectWorkers(async () => 'not-an-array'), new Map())
+  assert.deepEqual(await fetchProjectWorkers(async () => undefined), new Map())
 })
 
 test('项目摘要比较：名字、协调者或存活状态变了才算变化', () => {

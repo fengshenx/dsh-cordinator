@@ -83,8 +83,8 @@ export function createBoardWatch({ callRemote, onNewCard }) {
      */
     async poll() {
       if (typeof sessionId !== 'string' || sessionId === '') return
-      // 看板只给项目协调者：worker 或项目目录里的普通会话在屏幕上时，新卡不该
-      // 把看板弹到它们的右栏。
+      // 自动弹出只给项目协调者：worker 能看待办，但新卡不该在它干活时把右栏
+      // 弹到看板上；同目录的普通会话更不该被打断。
       if (ineligible) return
       if (project === undefined) {
         const resolved = await resolveProject(callRemote, sessionId)

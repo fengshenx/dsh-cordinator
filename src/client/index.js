@@ -15,6 +15,7 @@
  */
 
 import { BoardBody } from './board.js'
+import { BoardGuideEntry } from './board-guide-entry.js'
 import { ProjectPanel } from './project-panel.js'
 import { mountCoordinatorView, watchCoordinatorSessions } from './coordinator-view.js'
 import { callProjectRemote, mountProjectRemote, reportProjectRemoteError } from './project-remote.js'
@@ -41,7 +42,7 @@ export function apply(ctx) {
       id: 'board',
       order: 10,
       title: () => '看板',
-      description: () => '项目协调者会话里的任务交付看板',
+      description: () => '项目协调者与 worker 会话里的任务交付看板',
     }],
   }), 'dsh-coordinator 看板 tab 类型')
 
@@ -60,6 +61,18 @@ export function apply(ctx) {
       callRemote: (method, args) => callProjectRemote(ctx, method, args),
     }),
   }, BoardBody)), 'dsh-coordinator 看板面板')
+
+  // 右栏 guide 页的「看板」入口由本插件自己渲染。宿主的入口来自 tab 类型的
+  // 静态注册，注册表没有按会话过滤的扩展点（docs/capability-gaps.md 第 15 条），
+  // 于是普通会话里也能看到一枚点开即空的「看板」胶囊。`sidebar.right.tab.guide.entry`
+  // 按 provider id 分发，这里接管自己那一个：项目会话里画出来，其余返回 null。
+  ctx.effect(() => ctx.slots.inject('sidebar.right.tab.guide.entry', () => ctx.slots.register({
+    name: 'sidebar.right.tab.guide.entry',
+    key: 'dsh-coordinator',
+    inject: () => ({
+      callRemote: (method, args) => callProjectRemote(ctx, method, args),
+    }),
+  }, BoardGuideEntry)), 'dsh-coordinator 看板入口')
 
   // 项目区块挂左栏底部（`sidebar.footer.action`）：左栏正文区只有
   // `sidebar.workspaces` 一个槽（已被宿主的工作区浏览占用），slot 机制没有装饰
