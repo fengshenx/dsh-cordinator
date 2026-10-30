@@ -43,6 +43,7 @@ import {
   validateProjectName,
 } from './project-panel-logic.js'
 import { isProjectRemoteReady, onProjectRemoteReady, projectRemoteError } from './project-remote.js'
+import { notifyProjectsChanged } from './project-changes.js'
 import { createWorkspaceExclusion } from './workspace-exclusion.js'
 import { ConfirmDialog } from './confirm-dialog.js'
 import { describeWorkspaceRemoval } from './project-panel-logic.js'
@@ -101,6 +102,10 @@ export function ProjectPanel(props) {
     try {
       const value = await callRemote('list', [])
       setProjects(Array.isArray(value) ? value : [])
+      // 项目有变就广播：右栏「看板」入口按项目与会话身份画，注销项目或换协调者
+      // 之后不通知，那里会留下一枚点开说「不属于任何项目」的胶囊。增删改的每个
+      // 入口都在成功之后调本函数，广播放这里就不会漏。
+      notifyProjectsChanged()
     } catch (error) {
       setNotice(`读取项目失败：${error instanceof Error ? error.message : String(error)}`)
     }
