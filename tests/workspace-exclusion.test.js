@@ -42,33 +42,61 @@ test('不是会话行的标识不参与排除', () => {
   assert.equal(row.classes.size, 0)
 })
 
+/**
+ * 造一份工作区标记状态。
+ *
+ * @param {object} [state] - 覆盖项
+ * @param {string[]} [state.quieted] - 压灰集
+ * @param {string[]} [state.hidden] - 藏行集
+ * @returns {{ quieted: Set<string>, hidden: Set<string> }} 状态
+ */
+function markState({ quieted = [], hidden = [] } = {}) {
+  return { quieted: new Set(quieted), hidden: new Set(hidden) }
+}
+
 test('命中压灰集的工作区行被标记为不激活', () => {
   const row = fakeRow('workspace:w1')
-  const quiet = markWorkspaceRow(row, new Set(['w1']))
-  assert.equal(quiet, true)
+  const mark = markWorkspaceRow(row, markState({ quieted: ['w1'] }))
+  assert.equal(mark.quiet, true)
   assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), true)
 })
 
 test('不在压灰集里的工作区行保持激活态', () => {
   const row = fakeRow('workspace:w2')
-  const quiet = markWorkspaceRow(row, new Set(['w1']))
-  assert.equal(quiet, false)
+  const mark = markWorkspaceRow(row, markState({ quieted: ['w1'] }))
+  assert.equal(mark.quiet, false)
   assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), false)
 })
 
 test('压灰集变化后重新标记能恢复激活态', () => {
   const row = fakeRow('workspace:w1')
-  markWorkspaceRow(row, new Set(['w1']))
+  markWorkspaceRow(row, markState({ quieted: ['w1'] }))
   assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), true)
-  markWorkspaceRow(row, new Set())
+  markWorkspaceRow(row, markState())
   assert.equal(row.classes.has('dsh-coordinator-quiet-workspace'), false)
+})
+
+test('命中藏行集的工作区行被整行隐藏', () => {
+  const row = fakeRow('workspace:w1')
+  const mark = markWorkspaceRow(row, markState({ hidden: ['w1'] }))
+  assert.equal(mark.hidden, true)
+  assert.equal(row.classes.has('dsh-coordinator-hidden-workspace'), true)
+})
+
+test('藏行集变化后重新标记能恢复显示', () => {
+  const row = fakeRow('workspace:w1')
+  markWorkspaceRow(row, markState({ hidden: ['w1'] }))
+  assert.equal(row.classes.has('dsh-coordinator-hidden-workspace'), true)
+  markWorkspaceRow(row, markState())
+  assert.equal(row.classes.has('dsh-coordinator-hidden-workspace'), false)
 })
 
 test('会话行与工作区行各认各的前缀', () => {
   const sessionRow = fakeRow('session:s1')
   const workspaceRow = fakeRow('workspace:session:junk')
   assert.equal(markSessionRow(workspaceRow, new Set(['session:junk'])), false)
-  assert.equal(markWorkspaceRow(sessionRow, new Set(['s1'])), false)
+  assert.equal(markWorkspaceRow(sessionRow, markState({ quieted: ['s1'], hidden: ['s1'] })).quiet, false)
+  assert.equal(markWorkspaceRow(sessionRow, markState({ quieted: ['s1'], hidden: ['s1'] })).hidden, false)
 })
 
 test('排除集变化后重新标记能改回可见', () => {

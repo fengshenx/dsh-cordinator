@@ -124,6 +124,29 @@ export function collectExcludedSessionIds(projects, sessionsByProject) {
 }
 
 /**
+ * 挑出要从官方工作区树里藏掉的工作区。
+ *
+ * 只有插件自己注册的工作区才记进项目记录的 `workspaceId`（复用的用户工作区不记，
+ * 见 `ensureWorkspace`）。加项目时目录还不是工作区的话，宿主会顺带注册一个——
+ * 那个工作区在左栏里就是「用户没加过的一行」，凭空出现在项目目录旁边。项目记录
+ * 里的 id 正好是它的身份依据。
+ *
+ * 藏只是渲染层的事：工作区仍在宿主数据里，协调者会话的归属与打开路径都靠它。
+ *
+ * @param {object[]} projects - 项目记录
+ * @returns {Set<string>} 要藏掉的工作区 id
+ */
+export function collectHiddenWorkspaceIds(projects) {
+  const hidden = new Set()
+  for (const project of projects ?? []) {
+    if (typeof project?.workspaceId === 'string' && project.workspaceId !== '') {
+      hidden.add(project.workspaceId)
+    }
+  }
+  return hidden
+}
+
+/**
  * 从会话快照里取主区域当前会话。
  *
  * 判据与宿主一致（`WorkspaceBrowser.tsx` 的 `current`）：`mainView` 持有数大于 0

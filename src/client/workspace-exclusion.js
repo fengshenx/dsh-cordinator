@@ -13,14 +13,25 @@
  * id，命中排除集的行加一个类由样式表隐藏。官方的数据层不动，用户在别处的操作
  * （打开会话、搜索）不受影响；代价是官方分组行上的会话计数仍包含被隐藏的会话。
  *
- * 同一套渲染层还负责**压掉工作区的激活态**：官方按「当前会话属于哪个分组」给
- * 目录图标上主色，隐藏会话后这个点亮就没了对应的行（见 {@link QUIET_CLASS}）。
+ * 同一套渲染层还负责两件工作区行的事：**藏掉项目自建的工作区**
+ * （{@link HIDDEN_WORKSPACE_CLASS}）与**压掉它的激活态**（{@link QUIET_CLASS}）。
  *
  * @module dsh-coordinator/client/workspace-exclusion
  */
 
 /** 命中排除集的会话行所用的类名。 */
 const HIDDEN_CLASS = 'dsh-coordinator-excluded-session'
+
+/**
+ * 项目自建的工作区行所用的类名。
+ *
+ * 协调者会话要能被官方界面打开，就得归属某个工作区；项目目录还不是工作区时，
+ * 建项目会顺带注册一个（见 `ensureWorkspace`）。于是左栏工作区树里凭空多出一项
+ * ——用户没加过它，项目区块里已经有同一个目录。这一项在渲染层藏掉，工作区仍留在
+ * 宿主数据里（会话归属与打开路径都靠它）。用户自己加的同目录工作区不在此列：
+ * 项目记录里只记插件注册的那个（`workspaceId`）。
+ */
+const HIDDEN_WORKSPACE_CLASS = 'dsh-coordinator-hidden-workspace'
 
 /**
  * 被压掉激活态的工作区行所用的类名。
@@ -37,6 +48,9 @@ const STYLE_ID = 'dsh-coordinator-workspace-exclusion'
 
 const STYLE_TEXT = `
 .dsh-coordinator-excluded-session {
+  display: none !important;
+}
+.dsh-coordinator-hidden-workspace {
   display: none !important;
 }
 /* 工作区行的第一个 span 是目录图标槽（宿主 Rows.tsx 的 slot folder 顺序），
@@ -87,17 +101,21 @@ export function markSessionRow(row, excluded) {
 }
 
 /**
- * 按压灰集合标记一个工作区行。
+ * 按两个集合标记一个工作区行。
  *
  * @param {object} row - 工作区行元素
- * @param {Set<string>} quieted - 要压掉激活态的工作区 id
- * @returns {boolean} 该行是否被压灰
+ * @param {object} state - 标记状态
+ * @param {Set<string>} state.quieted - 要压掉激活态的工作区 id
+ * @param {Set<string>} state.hidden - 要整行藏掉的工作区 id
+ * @returns {{ quiet: boolean, hidden: boolean }} 该行的标记结果
  */
-export function markWorkspaceRow(row, quieted) {
+export function markWorkspaceRow(row, { quieted, hidden }) {
   const id = idOf(row.getAttribute('data-row-key'), 'workspace:')
   const quiet = id !== undefined && quieted.has(id)
+  const hide = id !== undefined && hidden.has(id)
   row.classList.toggle(QUIET_CLASS, quiet)
-  return quiet
+  row.classList.toggle(HIDDEN_WORKSPACE_CLASS, hide)
+  return { quiet, hidden: hide }
 }
 
 /**
@@ -156,13 +174,15 @@ export function createFrameScheduler({ schedule, cancel }) {
  * 重新标记。扫描范围是「所有会话行」，左栏里数量有限，但聊天流式渲染与看板投影
  * 更新会连续触发观察回调，因此同一帧内只扫一次。
  *
- * @returns {{ update: (sessionIds: Iterable<string>) => void, dispose: () => void }} 排除器
+ * @returns {{ update: (state: object) => void, dispose: () => void }} 排除器
  */
 export function createWorkspaceExclusion() {
   /** @type {Set<string>} 要从官方树里排除的会话 id */
   let excluded = new Set()
   /** @type {Set<string>} 要压掉激活态的工作区 id */
   let quieted = new Set()
+  /** @type {Set<string>} 要整行藏掉的工作区 id */
+  let hiddenWorkspaces = new Set()
   /** @type {MutationObserver | undefined} 观察器 */
   let observer
 
@@ -176,7 +196,7 @@ export function createWorkspaceExclusion() {
       markSessionRow(row, excluded)
     }
     for (const row of document.querySelectorAll('[data-row-key^="workspace:"]')) {
-      markWorkspaceRow(row, quieted)
+      markWorkspaceRow(row, { quieted, hidden: hiddenWorkspaces })
     }
   }
 
@@ -198,17 +218,20 @@ export function createWorkspaceExclusion() {
 
   return {
     /**
-     * 更新排除集与压灰集。
+     * 更新三个集合。
      *
-     * 两者变化都是低频事件，立即生效；观察回调才是高频路径，由调度器去抖。
+     * 三者变化都是低频事件，立即生效；观察回调才是高频路径，由调度器去抖。
      *
-     * @param {Iterable<string>} sessionIds - 要排除的会话 id
-     * @param {Iterable<string>} [quietWorkspaceIds] - 要压掉激活态的工作区 id
+     * @param {object} state - 集合
+     * @param {Iterable<string>} state.sessionIds - 要排除的会话 id
+     * @param {Iterable<string>} [state.quietWorkspaceIds] - 要压掉激活态的工作区 id
+     * @param {Iterable<string>} [state.hiddenWorkspaceIds] - 要整行藏掉的工作区 id
      * @returns {void}
      */
-    update(sessionIds, quietWorkspaceIds = []) {
+    update({ sessionIds, quietWorkspaceIds = [], hiddenWorkspaceIds = [] }) {
       excluded = new Set(sessionIds)
       quieted = new Set(quietWorkspaceIds)
+      hiddenWorkspaces = new Set(hiddenWorkspaceIds)
       markAll()
     },
 
@@ -222,8 +245,8 @@ export function createWorkspaceExclusion() {
       // 必须先取消待执行的扫描：否则它会在清理之后把刚摘掉的标记又加回去。
       scheduler.cancel()
       if (typeof document === 'undefined') return
-      for (const row of document.querySelectorAll(`.${HIDDEN_CLASS}, .${QUIET_CLASS}`)) {
-        row.classList.remove(HIDDEN_CLASS, QUIET_CLASS)
+      for (const row of document.querySelectorAll(`.${HIDDEN_CLASS}, .${QUIET_CLASS}, .${HIDDEN_WORKSPACE_CLASS}`)) {
+        row.classList.remove(HIDDEN_CLASS, QUIET_CLASS, HIDDEN_WORKSPACE_CLASS)
       }
     },
   }

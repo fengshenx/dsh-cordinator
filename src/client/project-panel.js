@@ -36,6 +36,7 @@ import { ProjectSection } from './project-section.js'
 import { productIcon } from './icons.js'
 import {
   collectExcludedSessionIds,
+  collectHiddenWorkspaceIds,
   currentSessionIdOf,
   defaultProjectName,
   isArchiveActiveRefusal,
@@ -224,11 +225,18 @@ export function ProjectPanel(props) {
   // 当前会话若就是被排除的那条，它所属的工作区在官方树里会点亮成「开着」的样子，
   // 而里面没有可见的会话行——这个点亮一并压掉。
   const quietWorkspaceId = quietWorkspaceOf(currentSessionId, excludedSessionIds, workspaceItems)
+  // 项目自建的工作区（`workspaceId`）在官方树里整行藏掉：那个目录已经在项目区块里，
+  // 工作区树里再来一行是用户没加过的东西。
+  const hiddenWorkspaceIds = useMemo(() => collectHiddenWorkspaceIds(projects), [projects])
   useEffect(() => {
     const exclusion = createWorkspaceExclusion()
-    exclusion.update(excludedSessionIds, quietWorkspaceId === undefined ? [] : [quietWorkspaceId])
+    exclusion.update({
+      sessionIds: excludedSessionIds,
+      quietWorkspaceIds: quietWorkspaceId === undefined ? [] : [quietWorkspaceId],
+      hiddenWorkspaceIds,
+    })
     return () => exclusion.dispose()
-  }, [excludedSessionIds, quietWorkspaceId])
+  }, [excludedSessionIds, quietWorkspaceId, hiddenWorkspaceIds])
 
   const startAdd = useCallback(async () => {
     if (busy) return
